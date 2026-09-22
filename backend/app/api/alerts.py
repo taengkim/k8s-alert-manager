@@ -121,8 +121,10 @@ async def get_live_alerts(
         alerts = [a for a in alerts if a["labels"].get("kam_team") == team.slug]
 
     if severity:
+        # "none" is a synthetic value the frontend offers for alerts with no
+        # severity label at all (labels.get("severity", "") flattens to "").
         wanted = {s.strip() for s in severity.split(",") if s.strip()}
-        alerts = [a for a in alerts if a["severity"] in wanted]
+        alerts = [a for a in alerts if (a["severity"] or "none") in wanted]
 
     if namespace:
         alerts = [a for a in alerts if a["namespace"] == namespace]

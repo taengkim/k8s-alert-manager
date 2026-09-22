@@ -56,7 +56,6 @@ SAMPLE_ALERTS = [
         "fingerprint": "f4",
         "labels": {
             "alertname": "Unassigned",
-            "severity": "warning",
             "namespace": "default",
         },
         "annotations": {},
@@ -168,6 +167,16 @@ async def test_severity_filter_accepts_comma_separated_multi(client: AsyncClient
     response = await client.get("/api/v1/alerts/live?severity=critical,info")
     body = response.json()
     assert {a["alertname"] for a in body["alerts"]} == {"PlatformCritical", "PlatformInfo"}
+
+
+@respx.mock
+async def test_severity_none_filter_matches_unlabeled_alerts(client: AsyncClient) -> None:
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/live?severity=none")
+    body = response.json()
+    assert [a["alertname"] for a in body["alerts"]] == ["Unassigned"]
 
 
 @respx.mock
