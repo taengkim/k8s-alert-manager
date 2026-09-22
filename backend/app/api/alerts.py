@@ -3,6 +3,7 @@ scoped by team and filtered server-side.
 """
 
 import asyncio
+import logging
 from typing import Any, Literal
 
 import httpx
@@ -16,6 +17,8 @@ from app.models.cluster import Cluster
 from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.services.alertmanager import AlertmanagerClient, AlertmanagerUnavailableError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 
@@ -78,12 +81,24 @@ def _flatten(cluster_name: str, raw: dict[str, Any]) -> dict[str, Any]:
 async def _fetch_cluster_alerts(
     cluster: Cluster, http_client: httpx.AsyncClient
 ) -> tuple[str, list[dict[str, Any]], str | None]:
+    """Fetch+flatten one cluster's alerts. Any failure -- connect/timeout,
+    a malformed (non-JSON or non-list) response body, whatever -- degrades
+    to an errors[] entry for this cluster rather than failing the whole
+    fan-out (asyncio.gather has no return_exceptions, so an uncaught
+    exception here would 500 the entire request and blank out every other
+    cluster's alerts too).
+    """
     client = AlertmanagerClient(cluster, http_client)
     try:
         raw_alerts = await client.get_alerts()
+        return cluster.name, [_flatten(cluster.name, a) for a in raw_alerts], None
     except AlertmanagerUnavailableError as exc:
         return cluster.name, [], str(exc)
-    return cluster.name, [_flatten(cluster.name, a) for a in raw_alerts], None
+    except Exception:
+        logger.exception(
+            "unexpected error fetching alerts for cluster '%s'", cluster.name
+        )
+        return cluster.name, [], "unexpected error fetching alerts"
 
 
 @router.get("/live")

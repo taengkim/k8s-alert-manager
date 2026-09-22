@@ -224,3 +224,45 @@ async def test_alertmanager_connection_error_returns_partial_failure(
     assert body["alerts"] == []
     assert len(body["errors"]) == 1
     assert body["errors"][0]["cluster"] == "local"
+
+
+@respx.mock
+async def test_alertmanager_non_json_body_returns_partial_failure(
+    client: AsyncClient,
+) -> None:
+    """A misbehaving proxy/gateway in front of Alertmanager could return a
+    200 with an HTML error page instead of JSON. That must degrade to an
+    errors[] entry for this cluster, not 500 the whole endpoint.
+    """
+    respx.get(AM_URL).mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/html"}, text="<html>not json</html>"
+        )
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/live")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alerts"] == []
+    assert len(body["errors"]) == 1
+    assert body["errors"][0]["cluster"] == "local"
+
+
+@respx.mock
+async def test_alertmanager_non_list_json_body_returns_partial_failure(
+    client: AsyncClient,
+) -> None:
+    """AM's v2 alerts endpoint should always return a JSON array, but a
+    malformed/incompatible response (e.g. a JSON object) must also degrade
+    to an errors[] entry rather than raising while flattening.
+    """
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json={"error": "boom"}))
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/live")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alerts"] == []
+    assert len(body["errors"]) == 1
+    assert body["errors"][0]["cluster"] == "local"
