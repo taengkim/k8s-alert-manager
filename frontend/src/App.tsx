@@ -8,6 +8,8 @@ import TeamSwitcher from "./components/TeamSwitcher";
 import Alerts from "./pages/Alerts";
 import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
+import RuleEditor from "./pages/RuleEditor";
+import Rules from "./pages/Rules";
 import TeamSettings from "./pages/TeamSettings";
 import Admin from "./pages/Admin";
 
@@ -97,8 +99,11 @@ export default function App() {
           <Route element={<AuthenticatedShell />}>
             <Route path="/" element={<Navigate to="/alerts" replace />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/rules" element={<Rules />} />
+            <Route path="/rules/new" element={<RuleEditor />} />
+            <Route path="/rules/:slug/edit" element={<RuleEditor />} />
             {sections
-              .filter((section) => section.key !== "alerts")
+              .filter((section) => section.key !== "alerts" && section.key !== "rules")
               .map((section) => (
                 <Route
                   key={section.key}
