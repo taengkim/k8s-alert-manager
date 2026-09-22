@@ -51,7 +51,7 @@ def upgrade() -> None:
     sa.Column('object_ref', sa.String(length=255), nullable=False),
     sa.Column('detail', sa.JSON(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['team_id'], ['teams.id'], ),
+    sa.ForeignKeyConstraint(['team_id'], ['teams.id'], ondelete='SET NULL'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

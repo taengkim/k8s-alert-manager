@@ -16,7 +16,13 @@ class AuditLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    # ON DELETE SET NULL: deleting a team writes a 'team.delete' audit row
+    # referencing that same team_id in the same transaction, then deletes
+    # the team itself -- without this, an FK-enforcing DB (Postgres, or
+    # SQLite with PRAGMA foreign_keys=ON) rejects the team delete.
+    team_id: Mapped[int | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
+    )
     action: Mapped[str] = mapped_column(String(64))
     object_type: Mapped[str] = mapped_column(String(64))
     object_ref: Mapped[str] = mapped_column(String(255))

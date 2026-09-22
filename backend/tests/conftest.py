@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.db as db_module
@@ -15,6 +16,16 @@ from app.services.ldap_auth import LdapUserInfo
 @pytest.fixture
 async def app() -> AsyncGenerator[FastAPI, None]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    # SQLite ignores FK constraints unless a connection explicitly turns them
+    # on -- without this, tests wouldn't catch FK-violation bugs that a real
+    # (Postgres) deployment would hit.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     async def override_get_session():
