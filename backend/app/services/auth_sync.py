@@ -10,21 +10,29 @@ from app.models.team import TeamLdapMapping, TeamMembership
 from app.models.user import User
 from app.services.ldap_auth import LdapUserInfo
 
-# A DN is itself comma-separated (e.g. "cn=admins,ou=groups,dc=example,dc=org"),
-# so a plain `.split(",")` would shred every configured DN into its RDN
-# components. Settings conventionally write DNs with no space after a comma,
-# so multiple admin DNs are delimited by ", " (comma + whitespace) instead.
-_ADMIN_GROUPS_SPLIT_RE = re.compile(r",\s+")
+# settings.ldap_admin_groups is a ';'-separated list of DNs, NOT ','-
+# separated: a DN is itself comma-separated (e.g.
+# "cn=admins,ou=groups,dc=example,dc=org"), so ',' can't double as the list
+# delimiter without shredding every DN into its RDN components.
+_ADMIN_GROUPS_SPLIT_RE = re.compile(r"\s*;\s*")
+
+# DN comparisons are lowercased and have any whitespace after a comma
+# collapsed, so "cn=x, ou=g" and "cn=x,ou=g" are treated as equal.
+_COMMA_SPACE_RE = re.compile(r",\s+")
+
+
+def _normalize_dn(dn: str) -> str:
+    return _COMMA_SPACE_RE.sub(",", dn.strip()).lower()
 
 
 def _is_admin_group(group_dns: list[str]) -> bool:
     settings = get_settings()
     admin_dns = {
-        dn.strip().lower()
+        _normalize_dn(dn)
         for dn in _ADMIN_GROUPS_SPLIT_RE.split(settings.ldap_admin_groups)
         if dn.strip()
     }
-    return any(dn.lower() in admin_dns for dn in group_dns)
+    return any(_normalize_dn(dn) in admin_dns for dn in group_dns)
 
 
 async def sync_user(session, info: LdapUserInfo) -> User:
@@ -61,8 +69,8 @@ async def _sync_memberships(session, user: User, group_dns: list[str]) -> None:
     mapping_result = await session.execute(select(TeamLdapMapping))
     mappings = mapping_result.scalars().all()
 
-    group_dn_set = {dn.lower() for dn in group_dns}
-    matched_mappings = [m for m in mappings if m.ldap_group_dn.lower() in group_dn_set]
+    group_dn_set = {_normalize_dn(dn) for dn in group_dns}
+    matched_mappings = [m for m in mappings if _normalize_dn(m.ldap_group_dn) in group_dn_set]
     matched_team_ids = {m.team_id for m in matched_mappings}
 
     # All existing memberships for this user, keyed by team_id, regardless of

@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     ldap_user_base: str = "ou=users,dc=example,dc=org"
     ldap_user_filter: str = "(uid={username})"
     ldap_group_base: str = "ou=groups,dc=example,dc=org"
+    # Admin group DNs, ';'-separated (NOT ',' -- a DN is itself comma-
+    # separated, e.g. "dn1;dn2;dn3").
     ldap_admin_groups: str = "cn=kam-admins,ou=groups,dc=example,dc=org"
 
     default_cluster_name: str = "local"
