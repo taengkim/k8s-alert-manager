@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
+  App,
   Button,
   Form,
   Input,
@@ -89,6 +90,7 @@ interface MembersTabProps {
 
 function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [form] = Form.useForm<{ user_id: number; role: TeamRole }>();
@@ -120,6 +122,11 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
   const removeMemberMutation = useMutation({
     mutationFn: (membershipId: number) => removeMember(teamId, membershipId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-members", teamId] }),
+    onError: (err) => {
+      message.error(
+        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+      );
+    },
   });
 
   const columns = [
@@ -235,6 +242,7 @@ interface MappingsTabProps {
 
 function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [form] = Form.useForm<{ ldap_group_dn: string; role: TeamRole }>();
@@ -260,6 +268,11 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
   const removeMappingMutation = useMutation({
     mutationFn: (mappingId: number) => removeMapping(teamId, mappingId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-mappings", teamId] }),
+    onError: (err) => {
+      message.error(
+        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+      );
+    },
   });
 
   const columns = [

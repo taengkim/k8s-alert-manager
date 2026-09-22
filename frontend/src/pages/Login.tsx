@@ -34,11 +34,13 @@ export default function Login() {
           setError("아이디 또는 비밀번호가 올바르지 않습니다");
         } else if (err.status === 403) {
           setError("비활성화된 계정입니다");
+        } else if (err.status === 503) {
+          setError("인증 서버(LDAP)에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.");
         } else {
-          setError(err.detail || "로그인에 실패했습니다");
+          setError("로그인 중 오류가 발생했습니다");
         }
       } else {
-        setError("로그인에 실패했습니다");
+        setError("로그인 중 오류가 발생했습니다");
       }
     } finally {
       setSubmitting(false);

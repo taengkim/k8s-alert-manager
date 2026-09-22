@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Form, Input, Modal, Popconfirm, Switch, Table, Tabs } from "antd";
+import { Alert, App, Button, Form, Input, Modal, Popconfirm, Switch, Table, Tabs } from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../api/client";
 import { createTeam, deleteTeam, listTeams, patchTeam } from "../api/teams";
@@ -48,6 +48,7 @@ interface TeamEditValues {
 
 function TeamsTab() {
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const [createOpen, setCreateOpen] = useState(false);
   const [editTeam, setEditTeam] = useState<Team | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -89,6 +90,11 @@ function TeamsTab() {
   const deleteMutation = useMutation({
     mutationFn: (teamId: number) => deleteTeam(teamId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["teams"] }),
+    onError: (err) => {
+      message.error(
+        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+      );
+    },
   });
 
   const columns = [
