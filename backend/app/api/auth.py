@@ -1,7 +1,8 @@
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,14 +14,14 @@ from app.models.user import User
 from app.security import create_jwt
 from app.services import audit
 from app.services.auth_sync import sync_user
-from app.services.ldap_auth import authenticate
+from app.services.ldap_auth import LdapUnavailableError, authenticate
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
     username: str
-    password: str
+    password: str = Field(min_length=1)
 
 
 async def _user_payload(session: AsyncSession, user: User) -> dict[str, Any]:
@@ -49,7 +50,17 @@ async def login(
     response: Response,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    info = authenticate(body.username, body.password)
+    # authenticate() does blocking network I/O (ldap3 is synchronous); run it
+    # off the event loop so one slow/stuck LDAP call doesn't stall every
+    # other request being served by this process.
+    try:
+        info = await asyncio.to_thread(authenticate, body.username, body.password)
+    except LdapUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="authentication backend unavailable",
+        ) from exc
+
     if info is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
