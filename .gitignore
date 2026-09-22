@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# SQLite
+*.db
+*.sqlite3
+
+# OMC / superpowers
+.omc/
+.superpowers/
+
+# Backend static (built SPA output)
+backend/app/static/
+
+# Env / OS
+.env
+.DS_Store

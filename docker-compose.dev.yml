@@ -1,0 +1,28 @@
+services:
+  openldap:
+    image: bitnami/openldap:latest
+    ports:
+      - "1389:1389"
+    environment:
+      LDAP_ADMIN_USERNAME: admin
+      LDAP_ADMIN_PASSWORD: adminpassword
+      LDAP_ROOT: dc=example,dc=org
+    volumes:
+      - ./dev/ldap:/ldifs
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  postgres:
+    image: postgres:16-alpine
+    profiles:
+      - postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: kam
+      POSTGRES_PASSWORD: kam
+      POSTGRES_DB: kam
