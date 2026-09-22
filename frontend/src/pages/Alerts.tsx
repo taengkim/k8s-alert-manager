@@ -1,0 +1,280 @@
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import dayjs from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  Alert,
+  Badge,
+  Button,
+  Descriptions,
+  Drawer,
+  Empty,
+  Input,
+  Segmented,
+  Select,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd";
+import { useAuth } from "../auth/AuthProvider";
+import { useTeam } from "../auth/TeamContext";
+import { getLiveAlerts } from "../api/alerts";
+import type { LiveAlert } from "../api/alerts";
+
+dayjs.extend(relativeTime);
+
+const { Text, Title } = Typography;
+
+type StateFilter = "all" | "active" | "suppressed";
+
+const SEVERITY_OPTIONS = [
+  { value: "critical", label: "critical" },
+  { value: "warning", label: "warning" },
+  { value: "info", label: "info" },
+  { value: "none", label: "없음" },
+];
+
+const SEVERITY_TAG_COLOR: Record<string, string> = {
+  critical: "red",
+  warning: "orange",
+  info: "blue",
+};
+
+function severityColor(severity: string): string {
+  return SEVERITY_TAG_COLOR[severity] ?? "default";
+}
+
+export default function Alerts() {
+  const { user } = useAuth();
+  const { currentTeam, teams } = useTeam();
+  const isAdmin = !!user?.is_admin;
+
+  const [severity, setSeverity] = useState<string[]>([]);
+  const [namespace, setNamespace] = useState<string | undefined>(undefined);
+  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<LiveAlert | null>(null);
+
+  const teamId = currentTeam?.id;
+  const noTeamSelected = !isAdmin && teams.length === 0;
+
+  const query = useQuery({
+    queryKey: ["alerts-live", teamId, severity, namespace, stateFilter, search],
+    queryFn: () =>
+      getLiveAlerts({
+        teamId,
+        severity: severity.length > 0 ? severity : undefined,
+        namespace,
+        state: stateFilter === "all" ? undefined : stateFilter,
+        search: search || undefined,
+      }),
+    enabled: isAdmin || !!teamId,
+    refetchInterval: 30_000,
+  });
+
+  const alerts = useMemo(() => query.data?.alerts ?? [], [query.data]);
+  const errors = query.data?.errors ?? [];
+
+  const namespaceOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const alert of alerts) {
+      if (alert.namespace) seen.add(alert.namespace);
+    }
+    return Array.from(seen)
+      .sort()
+      .map((ns) => ({ value: ns, label: ns }));
+  }, [alerts]);
+
+  if (noTeamSelected) {
+    return (
+      <div>
+        <h2>알럿</h2>
+        <Alert
+          type="info"
+          showIcon
+          message="소속된 팀이 없습니다"
+          description="관리자에게 팀 추가를 요청하세요."
+        />
+      </div>
+    );
+  }
+
+  const columns = [
+    {
+      title: "상태",
+      dataIndex: "state",
+      key: "state",
+      width: 110,
+      render: (state: string) =>
+        state === "active" ? (
+          <Badge status="processing" color="red" text="active" />
+        ) : (
+          <Badge status="default" text={state || "-"} />
+        ),
+    },
+    { title: "알럿명", dataIndex: "alertname", key: "alertname" },
+    {
+      title: "심각도",
+      dataIndex: "severity",
+      key: "severity",
+      render: (value: string) => <Tag color={severityColor(value)}>{value || "none"}</Tag>,
+    },
+    { title: "네임스페이스", dataIndex: "namespace", key: "namespace" },
+    { title: "클러스터", dataIndex: "cluster", key: "cluster" },
+    {
+      title: "시작 시각",
+      dataIndex: "starts_at",
+      key: "starts_at",
+      render: (startsAt: string) => (
+        <Tooltip title={dayjs(startsAt).format("YYYY-MM-DD HH:mm:ss")}>
+          {dayjs(startsAt).fromNow()}
+        </Tooltip>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 16,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>
+          알럿{" "}
+          <Text type="secondary" style={{ fontSize: 14, fontWeight: "normal" }}>
+            ({alerts.length}건)
+          </Text>
+        </h2>
+        <Button onClick={() => query.refetch()} loading={query.isFetching}>
+          새로고침
+        </Button>
+      </div>
+
+      {errors.map((err) => (
+        <Alert
+          key={err.cluster}
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`클러스터 ${err.cluster} 조회 실패: ${err.message}`}
+        />
+      ))}
+
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <Select
+          mode="multiple"
+          allowClear
+          placeholder="심각도"
+          style={{ minWidth: 220 }}
+          options={SEVERITY_OPTIONS}
+          value={severity}
+          onChange={setSeverity}
+        />
+        <Select
+          allowClear
+          placeholder="네임스페이스"
+          style={{ minWidth: 200 }}
+          options={namespaceOptions}
+          value={namespace}
+          onChange={setNamespace}
+        />
+        <Segmented<StateFilter>
+          value={stateFilter}
+          onChange={setStateFilter}
+          options={[
+            { label: "전체", value: "all" },
+            { label: "active", value: "active" },
+            { label: "suppressed", value: "suppressed" },
+          ]}
+        />
+        <Input.Search
+          placeholder="알럿명 검색"
+          allowClear
+          style={{ minWidth: 240 }}
+          onSearch={setSearch}
+        />
+      </div>
+
+      <Table<LiveAlert>
+        rowKey="fingerprint"
+        loading={query.isLoading}
+        dataSource={alerts}
+        columns={columns}
+        pagination={{ pageSize: 20 }}
+        onRow={(record) => ({
+          onClick: () => setSelected(record),
+          style: { cursor: "pointer" },
+        })}
+        locale={{ emptyText: <Empty description="알럿이 없습니다" /> }}
+      />
+
+      <Drawer
+        title={selected?.alertname}
+        open={!!selected}
+        onClose={() => setSelected(null)}
+        width={480}
+      >
+        {selected && (
+          <>
+            <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
+              <Descriptions.Item label="상태">{selected.state}</Descriptions.Item>
+              <Descriptions.Item label="심각도">
+                <Tag color={severityColor(selected.severity)}>{selected.severity || "none"}</Tag>
+              </Descriptions.Item>
+              <Descriptions.Item label="네임스페이스">{selected.namespace}</Descriptions.Item>
+              <Descriptions.Item label="클러스터">{selected.cluster}</Descriptions.Item>
+              <Descriptions.Item label="시작 시각">
+                {dayjs(selected.starts_at).format("YYYY-MM-DD HH:mm:ss")}
+              </Descriptions.Item>
+              <Descriptions.Item label="Silenced by">
+                {selected.silenced_by.length > 0 ? (
+                  selected.silenced_by.map((id) => (
+                    <Tag key={id} style={{ marginBottom: 4 }}>
+                      {id}
+                    </Tag>
+                  ))
+                ) : (
+                  <Text type="secondary">-</Text>
+                )}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Title level={5}>레이블</Title>
+            <div style={{ marginBottom: 24 }}>
+              {Object.entries(selected.labels).map(([key, value]) => (
+                <Tag key={key} style={{ marginBottom: 4 }}>
+                  {key}={value}
+                </Tag>
+              ))}
+            </div>
+
+            <Title level={5}>어노테이션</Title>
+            <div style={{ whiteSpace: "pre-wrap", marginBottom: 24 }}>
+              {Object.entries(selected.annotations).length > 0 ? (
+                Object.entries(selected.annotations).map(([key, value]) => (
+                  <div key={key} style={{ marginBottom: 8 }}>
+                    <Text strong>{key}: </Text>
+                    {value}
+                  </div>
+                ))
+              ) : (
+                <Text type="secondary">-</Text>
+              )}
+            </div>
+
+            {selected.generator_url && (
+              <a href={selected.generator_url} target="_blank" rel="noreferrer">
+                Prometheus에서 보기
+              </a>
+            )}
+          </>
+        )}
+      </Drawer>
+    </div>
+  );
+}

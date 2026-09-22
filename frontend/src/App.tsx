@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
 import { TeamProvider } from "./auth/TeamContext";
 import TeamSwitcher from "./components/TeamSwitcher";
+import Alerts from "./pages/Alerts";
 import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
 import TeamSettings from "./pages/TeamSettings";
@@ -95,13 +96,16 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route element={<AuthenticatedShell />}>
             <Route path="/" element={<Navigate to="/alerts" replace />} />
-            {sections.map((section) => (
-              <Route
-                key={section.key}
-                path={section.path}
-                element={<Placeholder title={section.label} />}
-              />
-            ))}
+            <Route path="/alerts" element={<Alerts />} />
+            {sections
+              .filter((section) => section.key !== "alerts")
+              .map((section) => (
+                <Route
+                  key={section.key}
+                  path={section.path}
+                  element={<Placeholder title={section.label} />}
+                />
+              ))}
             <Route path="/team" element={<TeamSettings />} />
             <Route path="/admin" element={<Admin />} />
           </Route>
