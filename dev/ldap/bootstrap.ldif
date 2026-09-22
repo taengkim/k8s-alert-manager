@@ -1,0 +1,67 @@
+# Bootstrap data for the bitnami/openldap dev container (LDAP_ROOT=dc=example,dc=org).
+#
+# NOTE: bitnami/openldap only auto-imports files from /ldifs/*.ldif on the
+# container's FIRST start, when its data volume is empty. If this file is
+# added/changed after the volume already has data, re-import by wiping the
+# volume and starting fresh:
+#
+#   docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d
+#
+# Admin bind for verification: cn=admin,dc=example,dc=org / adminpassword
+
+dn: dc=example,dc=org
+objectClass: dcObject
+objectClass: organization
+o: Example Org
+dc: example
+
+dn: ou=users,dc=example,dc=org
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=users,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Kim
+sn: Kim
+givenName: Alice
+mail: alice@example.org
+userPassword: password
+
+dn: uid=bob,ou=users,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Lee
+sn: Lee
+givenName: Bob
+mail: bob@example.org
+userPassword: password
+
+dn: uid=carol,ou=users,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: carol
+cn: Carol Park
+sn: Park
+givenName: Carol
+mail: carol@example.org
+userPassword: password
+
+dn: cn=team-platform,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: team-platform
+member: uid=alice,ou=users,dc=example,dc=org
+member: uid=bob,ou=users,dc=example,dc=org
+
+dn: cn=team-payments,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: team-payments
+member: uid=carol,ou=users,dc=example,dc=org
+
+dn: cn=kam-admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: kam-admins
+member: uid=alice,ou=users,dc=example,dc=org

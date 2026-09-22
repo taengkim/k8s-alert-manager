@@ -1,0 +1,14 @@
+# kind cluster config for local k8s-alert-manager dev.
+# Exposes Prometheus (30090) and Alertmanager (30093) NodePorts on the host
+# so the kube-prometheus-stack UIs/APIs are reachable without kubectl port-forward.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30090
+        hostPort: 30090
+        protocol: TCP
+      - containerPort: 30093
+        hostPort: 30093
+        protocol: TCP

@@ -1,0 +1,45 @@
+# Seed PrometheusRules for local dev — always-firing demo alerts so the
+# Alertmanager -> webhook pipeline can be exercised without waiting on a
+# real incident. Applied into the `kam-rules` namespace by dev/setup.sh.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kam-platform-always-firing
+  namespace: kam-rules
+  labels:
+    app.kubernetes.io/managed-by: kam
+    kam/team-id: "1"
+spec:
+  groups:
+    - name: kam-platform-always-firing
+      rules:
+        - alert: KamAlwaysFiring
+          expr: vector(1)
+          labels:
+            severity: info
+            kam_team: platform
+            namespace: kam-demo
+          annotations:
+            summary: "KAM demo alert: always firing"
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kam-platform-critical-demo
+  namespace: kam-rules
+  labels:
+    app.kubernetes.io/managed-by: kam
+    kam/team-id: "1"
+spec:
+  groups:
+    - name: kam-platform-critical-demo
+      rules:
+        - alert: KamCriticalDemo
+          expr: vector(1)
+          for: 1m
+          labels:
+            severity: critical
+            kam_team: platform
+            namespace: payments-prod
+          annotations:
+            summary: "KAM demo alert: critical severity demo"

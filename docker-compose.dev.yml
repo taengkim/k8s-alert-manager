@@ -1,6 +1,8 @@
 services:
   openldap:
-    image: bitnami/openldap:latest
+    # bitnami/openldap:latest was pulled from Docker Hub's free tier in 2025;
+    # bitnamilegacy/* keeps the last free images available, pinned by tag.
+    image: bitnamilegacy/openldap:2.6.10-debian-12-r4
     ports:
       - "1389:1389"
     environment:
