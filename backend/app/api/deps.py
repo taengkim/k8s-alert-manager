@@ -10,8 +10,13 @@ from app.db import get_session
 from app.models.team import TeamMembership
 from app.models.user import User
 from app.security import decode_jwt
+from app.services.k8s import K8sClientFactory
 
 COOKIE_NAME = "kam_token"
+
+
+def get_k8s_factory(request: Request) -> K8sClientFactory:
+    return request.app.state.k8s_factory
 
 
 async def get_current_user(

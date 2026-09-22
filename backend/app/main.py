@@ -7,12 +7,16 @@ from fastapi import FastAPI
 import app.db as db_module
 from app.api.alerts import router as alerts_router
 from app.api.auth import router as auth_router
+from app.api.clusters import namespaces_router
 from app.api.clusters import router as clusters_router
 from app.api.ops import router as ops_router
+from app.api.rules import router as rules_router
+from app.api.rules import validate_router as rules_validate_router
 from app.api.teams import router as teams_router
 from app.api.users import router as users_router
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
+from app.services.k8s import K8sClientFactory
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,10 @@ async def lifespan(app: FastAPI):
     # Shared client for outbound calls to per-cluster Alertmanager/Prometheus
     # instances, reused across requests instead of reconnecting each time.
     app.state.http_client = httpx.AsyncClient()
+
+    # Caches per-cluster kubernetes ApiClients (see K8sClientFactory docstring
+    # for the cache-invalidation rule).
+    app.state.k8s_factory = K8sClientFactory()
 
     try:
         async with db_module.async_session_factory() as session:
@@ -46,7 +54,10 @@ def create_app() -> FastAPI:
     app.include_router(teams_router)
     app.include_router(users_router)
     app.include_router(clusters_router)
+    app.include_router(namespaces_router)
     app.include_router(alerts_router)
+    app.include_router(rules_router)
+    app.include_router(rules_validate_router)
     return app
 
 
