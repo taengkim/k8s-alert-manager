@@ -12,6 +12,9 @@ dependencies = [
     "asyncpg",
     "pydantic-settings",
     "httpx",
+    "ldap3",
+    "pyjwt",
+    "cryptography",
 ]
 
 [dependency-groups]
@@ -25,6 +28,14 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+filterwarnings = [
+    # ldap3 -> pyasn1 internal deprecation, unrelated to our code.
+    "ignore:tagMap is deprecated.*:DeprecationWarning",
+    "ignore:typeMap is deprecated.*:DeprecationWarning",
+    # PyJWT warns that the dev-only default secret_key is short for HS256;
+    # expected in tests, which use that same default.
+    "ignore::jwt.InsecureKeyLengthWarning",
+]
 
 [tool.ruff.lint]
 # B008: FastAPI's `Depends(...)` in argument defaults is the documented pattern.

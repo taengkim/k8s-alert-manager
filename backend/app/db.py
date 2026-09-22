@@ -18,3 +18,9 @@ class Base(DeclarativeBase):
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:
         yield session
+
+
+# Import model modules so they register on Base.metadata (needed for both
+# create_all in tests and Alembic autogenerate). Placed at the bottom to
+# avoid a circular import, since model modules do `from app.db import Base`.
+from app import models  # noqa: F401
