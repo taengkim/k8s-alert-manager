@@ -1,0 +1,31 @@
+[project]
+name = "kam-backend"
+version = "0.1.0"
+description = "k8s-alert-manager backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic",
+    "aiosqlite",
+    "asyncpg",
+    "pydantic-settings",
+    "httpx",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff.lint]
+# B008: FastAPI's `Depends(...)` in argument defaults is the documented pattern.
+ignore = ["B008"]
