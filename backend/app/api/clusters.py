@@ -332,6 +332,29 @@ async def update_cluster(
             setattr(cluster, field, getattr(body, field))
             changed = True
 
+    # A kind change with no new credentials, while old ones are still on
+    # file, would otherwise silently 200 into an unusable config: the stored
+    # ciphertext stays whatever shape the *old* kind expected (a kubeconfig
+    # YAML string, say), read back under a k8s_auth_kind that expects
+    # something else (a {token, ca_cert} JSON blob) -- POST already refuses
+    # this combination outright (credentials required per auth kind); PATCH
+    # must refuse it too rather than deferring the failure to the next time
+    # something actually tries to build a k8s client for this cluster.
+    # `credentials: null` is how an admin explicitly clears the old value
+    # instead -- that still reaches _validate_and_encrypt_credentials below
+    # ("credentials" is in fields_set) and is accepted for every kind that
+    # doesn't itself require credentials.
+    kind_is_changing = "k8s_auth_kind" in fields_set and body.k8s_auth_kind != cluster.k8s_auth_kind
+    if (
+        kind_is_changing
+        and "credentials" not in fields_set
+        and cluster.credentials_encrypted is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="새 인증 방식의 자격증명을 함께 제공하세요",
+        )
+
     # k8s_auth_kind and credentials are handled together: re-validating
     # credentials against whichever auth kind is effective *after* this
     # update (a PATCH changing both at once must validate against the new
