@@ -10,6 +10,7 @@ from sqlalchemy import select
 import app.db as db_module
 from app.models.alert import AlertEvent
 from app.models.cluster import Cluster
+from app.models.share import AlertShare
 from app.models.team import Team, TeamMembership
 from tests.conftest import login_as
 
@@ -481,3 +482,144 @@ async def test_detail_grafana_url_prefers_annotation(client: AsyncClient) -> Non
 
     response = await client.get(f"/api/v1/alerts/history/{event_id}")
     assert response.json()["grafana_url"] == "https://direct-link.example.com/d/x"
+
+
+# -- Phase 14: shared visibility ---------------------------------------------
+
+
+async def test_own_team_events_have_shared_from_null(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="PlatformOne", team_id=platform.id
+    )
+    await login_as(client, username="alice")
+    await _add_membership(client, platform.id)
+
+    response = await client.get(f"/api/v1/alerts/history?team_id={platform.id}")
+    body = response.json()
+    assert [i["shared_from"] for i in body["items"]] == [None]
+
+
+async def test_view_share_exposes_owners_history_with_shared_from(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="PlatformOne", team_id=platform.id
+    )
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f2", alertname="PaymentsOne", team_id=payments.id
+    )
+    async with db_module.async_session_factory() as session:
+        session.add(AlertShare(owner_team_id=platform.id, target_team_id=payments.id, mode="view"))
+        await session.commit()
+
+    await login_as(client, username="carol")
+    await _add_membership(client, payments.id)
+
+    response = await client.get(f"/api/v1/alerts/history?team_id={payments.id}")
+    assert response.status_code == 200
+    body = response.json()
+    by_name = {i["alertname"]: i for i in body["items"]}
+    assert set(by_name) == {"PlatformOne", "PaymentsOne"}
+    assert by_name["PaymentsOne"]["shared_from"] is None
+    assert by_name["PlatformOne"]["shared_from"] == "platform"
+
+
+async def test_no_share_keeps_other_teams_history_hidden(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="PlatformOne", team_id=platform.id
+    )
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f2", alertname="PaymentsOne", team_id=payments.id
+    )
+    await login_as(client, username="carol")
+    await _add_membership(client, payments.id)
+
+    response = await client.get(f"/api/v1/alerts/history?team_id={payments.id}")
+    body = response.json()
+    assert [i["alertname"] for i in body["items"]] == ["PaymentsOne"]
+
+
+async def test_share_matcher_scope_narrows_shared_history(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="f-crit",
+        alertname="PlatformCritical",
+        team_id=platform.id,
+        severity="critical",
+    )
+    await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="f-info",
+        alertname="PlatformInfo",
+        team_id=platform.id,
+        severity="info",
+    )
+    async with db_module.async_session_factory() as session:
+        session.add(
+            AlertShare(
+                owner_team_id=platform.id,
+                target_team_id=payments.id,
+                mode="view",
+                matchers=[
+                    {"kind": "include", "target": "alertname", "key": None, "pattern": "Critical$"}
+                ],
+            )
+        )
+        await session.commit()
+
+    await login_as(client, username="carol")
+    await _add_membership(client, payments.id)
+
+    response = await client.get(f"/api/v1/alerts/history?team_id={payments.id}")
+    body = response.json()
+    names = {i["alertname"] for i in body["items"]}
+    assert "PlatformCritical" in names
+    assert "PlatformInfo" not in names
+
+
+async def test_shared_event_detail_is_readable_by_target_member(client: AsyncClient) -> None:
+    """Section 4's explicit policy: detail GET is allowed via a share (it's
+    a read), independent of ack/comment mutation staying 403 (covered in
+    test_alert_actions_api.py).
+    """
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="PlatformOne", team_id=platform.id
+    )
+    async with db_module.async_session_factory() as session:
+        session.add(AlertShare(owner_team_id=platform.id, target_team_id=payments.id, mode="view"))
+        await session.commit()
+
+    await login_as(client, username="carol")
+    await _add_membership(client, payments.id)
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alertname"] == "PlatformOne"
+    assert body["shared_from"] == "platform"
+
+
+async def test_unshared_event_detail_stays_403_for_non_member(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="PlatformOne", team_id=platform.id
+    )
+    await login_as(client, username="carol")
+    await _add_membership(client, payments.id)
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 403

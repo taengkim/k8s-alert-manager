@@ -13,6 +13,7 @@ import app.db as db_module
 from app.models.alert import AlertEvent
 from app.models.audit import AuditLog
 from app.models.cluster import Cluster
+from app.models.share import AlertShare
 from app.models.team import Team, TeamMembership
 from tests.conftest import login_as
 
@@ -392,3 +393,155 @@ async def test_ack_status_matches_and_scopes_by_team(app, client: AsyncClient) -
     assert matched[0]["acknowledged"] is False
     assert matched[0]["assignee_username"] == "alice"
     assert matched[0]["event_id"] == platform_event
+
+
+# -- Phase 14: shared visibility never grants write access -------------------
+#
+# A view/view_notify AlertShare only ever widens *read* access (detail,
+# notification history, comment listing) to a target team's members --
+# every mutation (ack, assignee, comment create/delete, resolve-test) must
+# stay exactly as restricted as it was pre-Phase-14: own-team membership (or
+# admin) only.
+
+
+async def _share(owner_team_id: int, target_team_id: int, mode: str = "view_notify") -> None:
+    async with db_module.async_session_factory() as session:
+        session.add(AlertShare(owner_team_id=owner_team_id, target_team_id=target_team_id, mode=mode))
+        await session.commit()
+
+
+async def test_shared_viewer_can_read_detail_notifications_and_comments(
+    client: AsyncClient,
+) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+    await _share(platform, payments)
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    detail = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert detail.status_code == 200
+    assert detail.json()["shared_from"] == "platform"
+
+    notifications = await client.get(f"/api/v1/alerts/history/{event_id}/notifications")
+    assert notifications.status_code == 200
+
+    comments = await client.get(f"/api/v1/alerts/history/{event_id}/comments")
+    assert comments.status_code == 200
+
+
+async def test_shared_viewer_ack_is_still_403(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+    await _share(platform, payments)
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.post(f"/api/v1/alerts/history/{event_id}/ack")
+    assert response.status_code == 403
+
+
+async def test_shared_viewer_comment_create_is_still_403(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+    await _share(platform, payments)
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.post(
+        f"/api/v1/alerts/history/{event_id}/comments", json={"body": "hello"}
+    )
+    assert response.status_code == 403
+
+
+async def test_shared_viewer_assignee_is_still_403(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+    await _share(platform, payments)
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.put(
+        f"/api/v1/alerts/history/{event_id}/assignee", json={"user_id": carol_id}
+    )
+    assert response.status_code == 403
+
+
+async def test_non_shared_viewer_detail_stays_403(client: AsyncClient) -> None:
+    """No AlertShare at all -- unchanged pre-Phase-14 behavior."""
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 403
+
+
+async def test_view_mode_share_also_grants_read_access(client: AsyncClient) -> None:
+    """Read access comes from having ANY share (view or view_notify) --
+    view_notify's extra effect is purely about route_event's notify
+    fan-out, not about read visibility, which both modes grant equally.
+    """
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=platform)
+    await _share(platform, payments, mode="view")
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 200
+
+
+async def test_share_matcher_scope_gates_read_access_too(client: AsyncClient) -> None:
+    """A share's matcher scope isn't just for live/history listing -- it
+    also gates whether an out-of-scope event's detail is even reachable via
+    that share.
+    """
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+    event_id = await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="NotCovered", team_id=platform
+    )
+    async with db_module.async_session_factory() as session:
+        session.add(
+            AlertShare(
+                owner_team_id=platform,
+                target_team_id=payments,
+                mode="view",
+                matchers=[{"kind": "include", "target": "alertname", "pattern": "^OnlyThis$"}],
+            )
+        )
+        await session.commit()
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 403

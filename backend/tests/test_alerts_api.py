@@ -6,6 +6,7 @@ from sqlalchemy import select
 import app.db as db_module
 from app.config import get_settings
 from app.models.cluster import Cluster
+from app.models.share import AlertShare
 from app.models.team import Team, TeamMembership
 from tests.conftest import login_as
 
@@ -376,3 +377,105 @@ async def test_live_alert_grafana_url_annotation_wins_over_cluster(client: Async
     response = await client.get(f"/api/v1/alerts/live?cluster_id={cluster.id}")
     alert = response.json()["alerts"][0]
     assert alert["grafana_url"] == "https://direct-link.example.com/d/x"
+
+
+# -- Phase 14: shared visibility ---------------------------------------------
+
+
+@respx.mock
+async def test_own_team_alerts_have_shared_from_null(client: AsyncClient) -> None:
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    team_id = await _create_team("platform")
+    await login_as(client, username="alice")
+    await _add_membership(client, team_id)
+
+    response = await client.get(f"/api/v1/alerts/live?team_id={team_id}")
+    body = response.json()
+    assert {a["shared_from"] for a in body["alerts"]} == {None}
+
+
+@respx.mock
+async def test_view_share_exposes_owners_alerts_with_shared_from(client: AsyncClient) -> None:
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    platform_id = await _create_team("platform")
+    payments_id = await _create_team("payments")
+    async with db_module.async_session_factory() as session:
+        session.add(AlertShare(owner_team_id=platform_id, target_team_id=payments_id, mode="view"))
+        await session.commit()
+
+    await login_as(client, username="carol")
+    await _add_membership(client, payments_id)
+
+    response = await client.get(f"/api/v1/alerts/live?team_id={payments_id}")
+    assert response.status_code == 200
+    body = response.json()
+    by_name = {a["alertname"]: a for a in body["alerts"]}
+    assert set(by_name) == {"PaymentsWarn", "PlatformCritical", "PlatformInfo"}
+    assert by_name["PaymentsWarn"]["shared_from"] is None
+    assert by_name["PlatformCritical"]["shared_from"] == "platform"
+    assert by_name["PlatformInfo"]["shared_from"] == "platform"
+
+
+@respx.mock
+async def test_share_with_no_matching_share_keeps_other_teams_alerts_hidden(
+    client: AsyncClient,
+) -> None:
+    """No AlertShare at all between the two teams -- unchanged pre-Phase-14
+    behavior: payments never sees platform's alerts.
+    """
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    await _create_team("platform")
+    payments_id = await _create_team("payments")
+    await login_as(client, username="carol")
+    await _add_membership(client, payments_id)
+
+    response = await client.get(f"/api/v1/alerts/live?team_id={payments_id}")
+    body = response.json()
+    assert [a["alertname"] for a in body["alerts"]] == ["PaymentsWarn"]
+
+
+@respx.mock
+async def test_share_matcher_scope_narrows_shared_alerts(client: AsyncClient) -> None:
+    """A share with matchers only exposes alerts within that scope --
+    PlatformCritical (severity=critical) passes a severity=critical
+    include matcher; PlatformInfo (severity=info) doesn't.
+    """
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    platform_id = await _create_team("platform")
+    payments_id = await _create_team("payments")
+    async with db_module.async_session_factory() as session:
+        session.add(
+            AlertShare(
+                owner_team_id=platform_id,
+                target_team_id=payments_id,
+                mode="view_notify",
+                matchers=[
+                    {"kind": "include", "target": "label", "key": "severity", "pattern": "^critical$"}
+                ],
+            )
+        )
+        await session.commit()
+
+    await login_as(client, username="carol")
+    await _add_membership(client, payments_id)
+
+    response = await client.get(f"/api/v1/alerts/live?team_id={payments_id}")
+    body = response.json()
+    names = {a["alertname"] for a in body["alerts"]}
+    assert "PlatformCritical" in names
+    assert "PlatformInfo" not in names
+    assert "PaymentsWarn" in names
+
+
+@respx.mock
+async def test_admin_unscoped_view_never_sets_shared_from(client: AsyncClient) -> None:
+    """The unscoped admin ("all alerts") view isn't "viewing as a team", so
+    sharing doesn't apply -- shared_from stays None even for alerts owned
+    by a team other than the admin's own.
+    """
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/live")
+    body = response.json()
+    assert {a["shared_from"] for a in body["alerts"]} == {None}
