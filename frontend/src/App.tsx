@@ -10,6 +10,8 @@ import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
 import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
+import RouteEditor from "./pages/RouteEditor";
+import RoutesPage from "./pages/Routes";
 import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
 import Silences from "./pages/Silences";
@@ -112,13 +114,17 @@ export default function App() {
             <Route path="/rules/:slug/edit" element={<RuleEditor />} />
             <Route path="/silences" element={<Silences />} />
             <Route path="/channels" element={<Channels />} />
+            <Route path="/routes" element={<RoutesPage />} />
+            <Route path="/routes/new" element={<RouteEditor />} />
+            <Route path="/routes/:id/edit" element={<RouteEditor />} />
             {sections
               .filter(
                 (section) =>
                   section.key !== "alerts" &&
                   section.key !== "rules" &&
                   section.key !== "silences" &&
-                  section.key !== "channels",
+                  section.key !== "channels" &&
+                  section.key !== "routes",
               )
               .map((section) => (
                 <Route

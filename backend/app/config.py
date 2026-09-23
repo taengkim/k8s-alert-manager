@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # plugins-dir discovery entirely.
     plugins_dir: str = ""
 
+    # Base URL the frontend is served from -- used to build a notification
+    # payload's app_url (a deep link back to the alert's history detail).
+    app_base_url: str = "http://localhost:5173"
+
+    # 'embedded': app.main's lifespan runs the outbox worker loop as a
+    # background asyncio task. 'off': no worker runs in-process (used by
+    # the test app fixture, and by any deployment running
+    # `python -m app.worker.runner` as a separate process instead).
+    worker_mode: str = "embedded"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,4 +1,7 @@
+import asyncio
 import logging
+import socket
+import uuid
 from contextlib import asynccontextmanager
 
 import httpx
@@ -13,6 +16,8 @@ from app.api.clusters import namespaces_router
 from app.api.clusters import router as clusters_router
 from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
+from app.api.routes import router as routes_router
+from app.api.routes import team_router as routes_team_router
 from app.api.rules import router as rules_router
 from app.api.rules import validate_router as rules_validate_router
 from app.api.silences import router as silences_router
@@ -23,6 +28,7 @@ from app.channels.registry import ChannelRegistry
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
 from app.services.k8s import K8sClientFactory
+from app.worker.outbox import run_loop
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +66,33 @@ async def lifespan(app: FastAPI):
         # yet); the app will just have no default cluster until retried.
         logger.exception("failed to seed default cluster")
 
+    # Embedded outbox worker: runs as a background task inside this same
+    # process. 'off' is for a standalone `python -m app.worker.runner`
+    # process instead (or the test app fixture, which must never race
+    # tests with its own delivery attempts).
+    worker_task: asyncio.Task | None = None
+    stop_event = asyncio.Event()
+    if settings.worker_mode == "embedded":
+        worker_id = f"embedded-{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+        worker_task = asyncio.create_task(
+            run_loop(
+                stop_event,
+                # Read here (lifespan startup), not at import time -- the
+                # test app fixture repoints this module attribute at its
+                # own in-memory engine before entering the lifespan context,
+                # so this already sees that override when worker_mode isn't
+                # 'off'.
+                session_factory=db_module.async_session_factory,
+                registry=app.state.channel_registry,
+                worker_id=worker_id,
+            )
+        )
+
     yield
+
+    if worker_task is not None:
+        stop_event.set()
+        await worker_task
 
     await app.state.http_client.aclose()
 
@@ -81,6 +113,8 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router)
     app.include_router(channel_types_router)
     app.include_router(channels_router)
+    app.include_router(routes_team_router)
+    app.include_router(routes_router)
     return app
 
 

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.alert import AlertEvent
 from app.models.cluster import Cluster
 from app.models.team import Team
+from app.services.routing import route_event
 
 logger = logging.getLogger(__name__)
 
@@ -128,9 +129,12 @@ async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: st
     call along with it) can still be rolled back by a later failure in the
     same batch.
 
-    Phase 9: 라우팅/outbox 연결점 -- notification dispatch will hang off
-    this hook. No-op for now.
+    Delegates to `app.services.routing.route_event`, which honors that
+    contract: it only stages `NotificationOutbox` rows (and
+    `AlertEvent.suppressed_by_rule_id`) -- delivery is
+    `app/worker/outbox.py`'s job, against rows this leaves 'pending'.
     """
+    await route_event(session, event, kind)
 
 
 async def _ingest_one(

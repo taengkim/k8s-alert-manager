@@ -231,7 +231,12 @@ async def test_delete_channel_owner_only(app) -> None:
         assert resp.status_code == 204
 
     async with db_module.async_session_factory() as session:
-        assert await session.get(Channel, channel_id) is None
+        # Soft-deleted, not removed: the row (and its delivery history)
+        # must survive -- see test_channel_soft_delete.py for the fuller
+        # soft-delete behavior (list exclusion, name reuse, etc).
+        channel = await session.get(Channel, channel_id)
+        assert channel is not None
+        assert channel.deleted_at is not None
 
 
 async def test_test_endpoint_success_202_and_audit_row(client: AsyncClient) -> None:

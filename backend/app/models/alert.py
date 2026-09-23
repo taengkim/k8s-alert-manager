@@ -57,3 +57,9 @@ class AlertEvent(Base):
         UTCDateTime, default=lambda: datetime.now(UTC)
     )
     receive_count: Mapped[int] = mapped_column(default=1)
+    # Set by route_event() when a 'suppress' routing rule matched this
+    # event -- ON DELETE SET NULL so deleting the rule later doesn't lose
+    # the historical fact that this event was suppressed.
+    suppressed_by_rule_id: Mapped[int | None] = mapped_column(
+        ForeignKey("routing_rules.id", ondelete="SET NULL"), nullable=True
+    )

@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.db import get_session
 from app.models.alert import AlertEvent
+from app.models.channel import Channel
 from app.models.cluster import Cluster
+from app.models.outbox import NotificationOutbox
 from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.services.alertmanager import AlertmanagerClient, AlertmanagerUnavailableError
@@ -262,25 +264,68 @@ async def get_alert_history(
     }
 
 
+async def _get_event_or_404(session: AsyncSession, event_id: int) -> AlertEvent:
+    event = await session.get(AlertEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    return event
+
+
+async def _authorize_event_access(session: AsyncSession, event: AlertEvent, user: User) -> None:
+    if user.is_admin:
+        return
+    if event.team_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    result = await session.execute(
+        select(TeamMembership).where(
+            TeamMembership.team_id == event.team_id, TeamMembership.user_id == user.id
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+
 @router.get("/history/{event_id}")
 async def get_alert_history_detail(
     event_id: int,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    event = await session.get(AlertEvent, event_id)
-    if event is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
-
-    if not user.is_admin:
-        if event.team_id is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-        result = await session.execute(
-            select(TeamMembership).where(
-                TeamMembership.team_id == event.team_id, TeamMembership.user_id == user.id
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
+    event = await _get_event_or_404(session, event_id)
+    await _authorize_event_access(session, event, user)
     return _serialize_event_detail(event)
+
+
+@router.get("/history/{event_id}/notifications")
+async def get_alert_history_notifications(
+    event_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Delivery history for one alert event: the outbox row per channel it
+    was routed to (or would-be-routed to before delivery), for the alert
+    history detail drawer's "notification history" section.
+    """
+    event = await _get_event_or_404(session, event_id)
+    await _authorize_event_access(session, event, user)
+
+    result = await session.execute(
+        select(NotificationOutbox, Channel.name)
+        .join(Channel, Channel.id == NotificationOutbox.channel_id)
+        .where(NotificationOutbox.alert_event_id == event_id)
+        .order_by(NotificationOutbox.created_at)
+    )
+    return [
+        {
+            "id": outbox.id,
+            "channel_id": outbox.channel_id,
+            "channel_name": channel_name,
+            "trigger": outbox.trigger,
+            "status": outbox.status,
+            "attempts": outbox.attempts,
+            "last_error": outbox.last_error,
+            "created_at": outbox.created_at,
+            "delivered_at": outbox.delivered_at,
+        }
+        for outbox, channel_name in result.all()
+    ]

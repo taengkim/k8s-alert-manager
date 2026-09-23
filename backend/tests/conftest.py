@@ -1,3 +1,12 @@
+import os
+
+# Must be set before any `app.*` import: app.config.get_settings() is
+# @lru_cache'd and app.db reads it at module import time. The embedded
+# outbox worker (app.worker.outbox.run_loop) would otherwise start polling
+# the same in-memory sqlite db every test uses, racing test assertions
+# about outbox row state.
+os.environ.setdefault("KAM_WORKER_MODE", "off")
+
 from collections.abc import AsyncGenerator
 from unittest.mock import patch
 

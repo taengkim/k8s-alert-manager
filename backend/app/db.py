@@ -1,8 +1,13 @@
 from collections.abc import AsyncGenerator
 from datetime import UTC
 
-from sqlalchemy import DateTime
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import DateTime, event
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.types import TypeDecorator
 
@@ -10,7 +15,38 @@ from app.config import get_settings
 
 settings = get_settings()
 
+
+def register_sqlite_pragmas(engine: AsyncEngine) -> None:
+    """Turn on FK enforcement + WAL for a SQLite engine. No-op for any
+    other dialect (Postgres enforces FKs natively and doesn't have this
+    journal-mode knob).
+
+    FK enforcement matters more than it looks: SQLite reuses a table's
+    rowid after a row is deleted (none of our tables use AUTOINCREMENT),
+    so if `ON DELETE CASCADE` never actually fires because enforcement
+    defaults to off, a deleted routing rule's orphaned `routing_matchers`/
+    `routing_rule_channels` rows can silently reattach themselves to a
+    *different*, later-inserted rule that happens to reuse the same id --
+    without FK enforcement nothing ever cleans them up first. WAL mode +
+    a busy_timeout matter because the embedded outbox worker writes
+    against the same on-disk file as ingest requests every ~3s; without
+    them, concurrent writers can hit "database is locked" under any real
+    concurrency instead of just waiting briefly for the lock.
+    """
+    if engine.sync_engine.dialect.name != "sqlite":
+        return
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
+
 engine = create_async_engine(settings.database_url)
+register_sqlite_pragmas(engine)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 

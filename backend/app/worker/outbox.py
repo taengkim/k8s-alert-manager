@@ -1,0 +1,303 @@
+"""The outbox delivery worker: claims `NotificationOutbox` rows staged by
+`app.services.routing.route_event` and dispatches them through the channel
+they're addressed to.
+
+Deliberately FastAPI-free (no `fastapi` import anywhere in this module, nor
+transitively via its imports) -- this is meant to be runnable as a
+standalone process (see `app/worker/runner.py`) as well as embedded in the
+API process's lifespan (see `app/main.py`).
+"""
+
+import asyncio
+import json
+import logging
+import random
+import time
+from datetime import UTC, datetime, timedelta
+
+from pydantic import ValidationError
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.channels.base import AlertNotification
+from app.channels.registry import ChannelRegistry
+from app.models.channel import Channel
+from app.models.outbox import NotificationOutbox
+from app.security import decrypt_str
+
+logger = logging.getLogger(__name__)
+
+MAX_ATTEMPTS = 8
+BASE_BACKOFF_SECONDS = 30
+MAX_BACKOFF_SECONDS = 1800
+JITTER_MAX_SECONDS = 15
+DELIVERY_TIMEOUT_SECONDS = 30
+DEFAULT_LEASE_TIMEOUT = timedelta(minutes=5)
+
+
+async def claim_batch(
+    session: AsyncSession, worker_id: str, limit: int = 20
+) -> list[NotificationOutbox]:
+    """Atomically claim up to `limit` due 'pending' rows for this worker,
+    marking them 'in_progress'.
+
+    Dialect-branched: Postgres uses `FOR UPDATE SKIP LOCKED` so multiple
+    worker processes can claim disjoint batches concurrently without
+    blocking on each other. SQLite has no such row-locking, so it falls
+    back to plain SELECT-then-UPDATE under the (documented) assumption that
+    only a single worker process runs against a SQLite database at a time.
+    """
+    now = datetime.now(UTC)
+    dialect = session.get_bind().dialect.name
+
+    if dialect == "postgresql":
+        due_ids_subquery = (
+            select(NotificationOutbox.id)
+            .where(
+                NotificationOutbox.status == "pending",
+                NotificationOutbox.next_attempt_at <= now,
+            )
+            .order_by(NotificationOutbox.next_attempt_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        claimed = await session.execute(
+            update(NotificationOutbox)
+            .where(NotificationOutbox.id.in_(due_ids_subquery))
+            .values(status="in_progress", locked_by=worker_id, locked_at=now)
+            .returning(NotificationOutbox.id)
+            # Nothing is loaded in this Session that this UPDATE could
+            # invalidate, so there's nothing to synchronize -- and leaving
+            # the default ("evaluate") composes ORM auto-synchronization
+            # with a RETURNING fetch in a way that isn't the well-trodden
+            # path on Postgres. No live-Postgres test for this branch in
+            # this repo yet (Phase 21's packaging work brings a Postgres
+            # profile); reasoned correct against SQLAlchemy 2.0's docs.
+            .execution_options(synchronize_session=False)
+        )
+        claimed_ids = list(claimed.scalars().all())
+        await session.commit()
+        if not claimed_ids:
+            return []
+        result = await session.execute(
+            select(NotificationOutbox).where(NotificationOutbox.id.in_(claimed_ids))
+        )
+        return list(result.scalars().all())
+
+    # SQLite: single-process assumption -- no concurrent worker can race
+    # this claim, so a plain select-then-update is safe.
+    result = await session.execute(
+        select(NotificationOutbox)
+        .where(
+            NotificationOutbox.status == "pending",
+            NotificationOutbox.next_attempt_at <= now,
+        )
+        .order_by(NotificationOutbox.next_attempt_at)
+        .limit(limit)
+    )
+    rows = list(result.scalars().all())
+    for row in rows:
+        row.status = "in_progress"
+        row.locked_by = worker_id
+        row.locked_at = now
+    await session.commit()
+    return rows
+
+
+def _truncate_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"[:500]
+
+
+async def _mark_dead(session: AsyncSession, row: NotificationOutbox, reason: str) -> None:
+    row.status = "dead"
+    row.last_error = reason[:500]
+    row.locked_by = None
+    row.locked_at = None
+    await session.commit()
+
+
+async def _mark_delivery_failure(
+    session: AsyncSession, row: NotificationOutbox, exc: Exception
+) -> None:
+    row.attempts += 1
+    row.last_error = _truncate_error(exc)
+    row.locked_by = None
+    row.locked_at = None
+    if row.attempts >= MAX_ATTEMPTS:
+        row.status = "dead"
+    else:
+        row.status = "pending"
+        backoff = min(BASE_BACKOFF_SECONDS * 2**row.attempts, MAX_BACKOFF_SECONDS)
+        jitter = random.uniform(0, JITTER_MAX_SECONDS)
+        row.next_attempt_at = datetime.now(UTC) + timedelta(seconds=backoff + jitter)
+    await session.commit()
+
+
+async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: AsyncSession) -> None:
+    """Deliver one claimed row. Always resolves the row to a terminal-ish
+    state and commits -- 'delivered', 'pending' (scheduled for retry), or
+    'dead' -- never leaves it 'in_progress' on return.
+    """
+    channel = await session.get(Channel, row.channel_id)
+    if channel is None:
+        await _mark_dead(session, row, "channel disabled or deleted")
+        return
+    if channel.deleted_at is not None:
+        await _mark_dead(session, row, "channel deleted")
+        return
+    if not channel.enabled:
+        await _mark_dead(session, row, "channel disabled or deleted")
+        return
+
+    channel_cls = registry.get(channel.type)
+    if channel_cls is None:
+        await _mark_dead(session, row, f"unknown channel type '{channel.type}'")
+        return
+
+    try:
+        raw_config = json.loads(decrypt_str(channel.config_encrypted))
+        config = channel_cls.config_schema(**raw_config)
+    except (json.JSONDecodeError, ValidationError) as exc:
+        # The stored config's JSON/schema itself is broken (corrupted JSON,
+        # or a schema that changed shape underneath an old config) --
+        # retrying can't fix bytes that never change between attempts, so
+        # this goes straight to dead instead of burning through 8 backoff
+        # attempts (~40 minutes) for something no amount of waiting will
+        # resolve.
+        #
+        # `cryptography.fernet.InvalidToken` (decrypt failure) is
+        # deliberately NOT included here, even though it also means
+        # "this config will never successfully decrypt as-is": it usually
+        # means the *key* is wrong (KAM_SECRET_KEY rotated or
+        # misconfigured on this process), which is an operator-fixable
+        # misconfiguration rather than corrupted data. Fast-deading it
+        # would take down the entire pending queue in a single tick the
+        # moment a key issue hits; falling through to the `except
+        # Exception` below (the normal retry-then-dead-after-8-attempts
+        # path) instead gives an operator ~40 minutes to fix the key
+        # before anything is permanently lost.
+        await _mark_dead(session, row, f"invalid channel config: {type(exc).__name__}: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        await _mark_delivery_failure(session, row, exc)
+        return
+
+    try:
+        instance = channel_cls(config)
+        notification = AlertNotification(**row.payload)
+        async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
+            await instance.send(notification)
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately catch-all (ChannelDeliveryError, the asyncio.timeout
+        # block's TimeoutError, and anything else a channel's send() could
+        # raise): every transient failure mode gets the same backoff-and-
+        # retry treatment, never an unhandled exception that would kill
+        # the worker loop.
+        await _mark_delivery_failure(session, row, exc)
+        return
+
+    row.status = "delivered"
+    row.delivered_at = datetime.now(UTC)
+    row.locked_by = None
+    row.locked_at = None
+    await session.commit()
+
+
+async def recover_stale_leases(
+    session: AsyncSession, lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT
+) -> int:
+    """Reclaim rows a worker claimed but never resolved (crashed, killed
+    mid-delivery, ...) so they become claimable again instead of stuck
+    'in_progress' forever.
+    """
+    cutoff = datetime.now(UTC) - lease_timeout
+    result = await session.execute(
+        update(NotificationOutbox)
+        .where(NotificationOutbox.status == "in_progress", NotificationOutbox.locked_at < cutoff)
+        .values(status="pending", locked_by=None, locked_at=None)
+    )
+    await session.commit()
+    return result.rowcount or 0
+
+
+async def run_tick(
+    session_factory: async_sessionmaker[AsyncSession],
+    registry: ChannelRegistry,
+    worker_id: str,
+    *,
+    limit: int = 20,
+) -> int:
+    """Claim one batch, then deliver each row in its own session.
+
+    Each row gets a fresh session (re-fetched by id) rather than sharing
+    one across the whole batch: `Session.rollback()` -- needed to recover
+    from a row whose delivery broke outside `deliver()`'s own try/except --
+    expires every object still attached to that session, so a shared
+    session would leave the *other*, perfectly fine claimed rows in this
+    batch expired too. Their next attribute access would then attempt an
+    implicit lazy-refresh outside of any awaited call, which raises
+    `MissingGreenlet` under SQLAlchemy's asyncio extension -- silently
+    skipping the rest of the batch instead of actually delivering it. A
+    per-row session sidesteps this entirely: one row's failure can't touch
+    any other row's ORM state.
+    """
+    async with session_factory() as claim_session:
+        claimed_ids = [row.id for row in await claim_batch(claim_session, worker_id, limit=limit)]
+
+    for row_id in claimed_ids:
+        try:
+            async with session_factory() as session:
+                row = await session.get(NotificationOutbox, row_id)
+                if row is None:
+                    continue
+                await deliver(row, registry, session)
+        except Exception:
+            # deliver() already catches every failure mode a channel's
+            # send() can raise internally -- reaching here means
+            # something broke outside that (e.g. a malformed stored
+            # payload, or the DB connection dropping mid-commit). This
+            # row's session is simply discarded on the way out of the
+            # `async with` block (closing it implicitly rolls back), and
+            # the row stays 'in_progress' for the next lease-recovery pass
+            # to reclaim -- it never touches any other row's session.
+            logger.exception(
+                "outbox worker: unexpected error delivering row id=%s -- skipping",
+                row_id,
+            )
+    return len(claimed_ids)
+
+
+async def run_loop(
+    stop_event: asyncio.Event,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    registry: ChannelRegistry,
+    worker_id: str,
+    poll_interval: float = 3.0,
+    lease_recovery_interval: float = 60.0,
+    lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT,
+) -> None:
+    """Poll for due outbox rows until `stop_event` is set.
+
+    Robust by design: any exception during a tick (claim, deliver, or lease
+    recovery) is logged and swallowed so one bad iteration never kills the
+    loop -- the next poll just tries again.
+    """
+    last_lease_recovery = time.monotonic() - lease_recovery_interval  # run once immediately
+    while not stop_event.is_set():
+        try:
+            if time.monotonic() - last_lease_recovery >= lease_recovery_interval:
+                async with session_factory() as session:
+                    recovered = await recover_stale_leases(session, lease_timeout)
+                    if recovered:
+                        logger.warning("outbox worker: recovered %d stale lease(s)", recovered)
+                last_lease_recovery = time.monotonic()
+
+            await run_tick(session_factory, registry, worker_id)
+        except Exception:
+            logger.exception("outbox worker: tick failed -- continuing")
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+        except TimeoutError:
+            pass
