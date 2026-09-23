@@ -13,10 +13,10 @@ job, running against rows this leaves in `status='pending'`.
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -30,11 +30,27 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingMatcher, RoutingRule
+from app.models.share import AlertShare
 from app.models.team import Team
 from app.services.grafana import resolve_grafana_url
 from app.services.rules import RUNBOOK_ANNOTATION
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class Matchable(Protocol):
+    """The (alertname, labels, annotations) shape a matcher reads from --
+    satisfied structurally by `AlertEvent` as-is, and by Phase 14's
+    `app.services.sharing.MatchableAlert` adapter for a live Alertmanager
+    alert dict (`app/api/alerts.py`'s `_flatten`). This is what lets
+    `matcher_matches`/`share_matches` evaluate either an ingested event or a
+    live alert with identical matcher semantics.
+    """
+
+    alertname: str
+    labels: Mapping[str, str]
+    annotations: Mapping[str, str]
 
 
 class VerdictKind(str, Enum):
@@ -100,16 +116,23 @@ def _compile_patterns(patterns: Sequence[str] | None, *, context: str) -> list[r
     return compiled
 
 
-def compile_rule(rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> CompiledRule:
-    """Pre-compile a rule's regex-bearing fields.
+def compile_matchers(
+    matchers: Sequence[RoutingMatcher], *, context: str
+) -> tuple[tuple["CompiledMatcher", ...], tuple["CompiledMatcher", ...]]:
+    """Compile a matcher list into (include, exclude) `CompiledMatcher`
+    tuples, dropping (with a warning) any pattern that fails to compile --
+    the shared primitive behind both `compile_rule` (a routing rule's own
+    matchers) and `app.services.sharing.share_matches` (an `AlertShare`'s
+    scope matchers, via `build_transient_matchers`), so a rule matcher and a
+    share matcher use identical include/exclude compilation.
 
     Defensive by design: a pattern that fails to compile is logged and
     dropped rather than raising, since malformed data reaching this far
-    (past API-layer validation) must degrade the rule's matching to "this
-    one condition never fires," not take the whole routing pass down.
+    (past API-layer validation) must degrade that one condition to "never
+    fires," not take the whole routing/sharing pass down. `context` is
+    folded into the warning so the log line still says which rule/share
+    (and matcher position) misbehaved.
     """
-    severities = frozenset(s.lower() for s in rule.severities) if rule.severities else None
-
     include_matchers: list[CompiledMatcher] = []
     exclude_matchers: list[CompiledMatcher] = []
     for matcher in sorted(matchers, key=lambda m: m.position):
@@ -117,9 +140,8 @@ def compile_rule(rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> Compi
             regex = re.compile(matcher.pattern)
         except re.error:
             logger.warning(
-                "routing_rule matcher (rule_id=%s, position=%s) has invalid pattern %r "
-                "-- skipping",
-                rule.id,
+                "%s (position=%s) has invalid pattern %r -- skipping",
+                context,
                 matcher.position,
                 matcher.pattern,
             )
@@ -132,6 +154,23 @@ def compile_rule(rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> Compi
             regex=regex,
         )
         (include_matchers if matcher.kind == "include" else exclude_matchers).append(compiled)
+
+    return tuple(include_matchers), tuple(exclude_matchers)
+
+
+def compile_rule(rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> CompiledRule:
+    """Pre-compile a rule's regex-bearing fields.
+
+    Defensive by design: a pattern that fails to compile is logged and
+    dropped rather than raising, since malformed data reaching this far
+    (past API-layer validation) must degrade the rule's matching to "this
+    one condition never fires," not take the whole routing pass down.
+    """
+    severities = frozenset(s.lower() for s in rule.severities) if rule.severities else None
+
+    include_matchers, exclude_matchers = compile_matchers(
+        matchers, context=f"routing_rule matcher (rule_id={rule.id})"
+    )
 
     return CompiledRule(
         action=rule.action,
@@ -146,24 +185,35 @@ def compile_rule(rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> Compi
         namespaces_exclude=tuple(
             _compile_patterns(rule.namespaces_exclude, context="namespaces_exclude")
         ),
-        include_matchers=tuple(include_matchers),
-        exclude_matchers=tuple(exclude_matchers),
+        include_matchers=include_matchers,
+        exclude_matchers=exclude_matchers,
     )
 
 
-def _matcher_value(event: AlertEvent, matcher: CompiledMatcher) -> str | None:
+def _matcher_value(matchable: Matchable, matcher: CompiledMatcher) -> str | None:
     if matcher.target == "alertname":
-        return event.alertname
+        return matchable.alertname
     if matcher.key is None:
         # label/annotation matcher with no key configured never matches --
         # API-layer validation requires a key for these targets, so this is
         # only reachable via a row that predates that validation.
         return None
     if matcher.target == "label":
-        return event.labels.get(matcher.key)
+        return matchable.labels.get(matcher.key)
     if matcher.target == "annotation":
-        return event.annotations.get(matcher.key)
+        return matchable.annotations.get(matcher.key)
     return None
+
+
+def matcher_matches(matchable: Matchable, matcher: CompiledMatcher) -> bool:
+    """True if `matcher`'s pattern `re.search`-matches `matchable`'s value
+    for its target (alertname/label/annotation) -- the single-matcher
+    primitive both `evaluate_compiled`'s include/exclude loop and
+    `app.services.sharing.share_matches` build on, so a routing rule
+    matcher and an `AlertShare` matcher behave identically.
+    """
+    value = _matcher_value(matchable, matcher)
+    return value is not None and bool(matcher.regex.search(value))
 
 
 def evaluate_compiled(
@@ -228,14 +278,12 @@ def evaluate_compiled(
 
     # 5. include matchers: AND, re.search.
     for matcher in compiled.include_matchers:
-        value = _matcher_value(event, matcher)
-        if value is None or not matcher.regex.search(value):
+        if not matcher_matches(event, matcher):
             return Verdict(VerdictKind.NOT_INCLUDED, blocking_matcher_position=matcher.position)
 
     # 6. exclude matchers: OR, re.search.
     for matcher in compiled.exclude_matchers:
-        value = _matcher_value(event, matcher)
-        if value is not None and matcher.regex.search(value):
+        if matcher_matches(event, matcher):
             return Verdict(VerdictKind.EXCLUDED, blocking_matcher_position=matcher.position)
 
     return Verdict(VerdictKind.MATCHED)
@@ -315,8 +363,139 @@ async def build_notification_for_event(
     )
 
 
+async def _load_team_rules(
+    session: AsyncSession, team_id: int, *, require_include_shared: bool
+) -> tuple[list[RoutingRule], list[RoutingRule]]:
+    """Load one team's enabled routing rules, split into (suppress, notify).
+
+    `require_include_shared=True` narrows to rules with `include_shared=True`
+    -- this is the Phase 14 gate: it's how a team's routing rules opt in to
+    reacting to alerts *shared into* it (see `route_event`'s view_notify
+    fan-out below). A team's own routing pass over its own events never sets
+    this -- `include_shared` only matters for someone else's event reaching
+    this team via an `AlertShare`, not for the team's own alert stream.
+    """
+    conditions = [RoutingRule.team_id == team_id, RoutingRule.enabled.is_(True)]
+    if require_include_shared:
+        conditions.append(RoutingRule.include_shared.is_(True))
+
+    result = await session.execute(
+        select(RoutingRule)
+        .where(*conditions)
+        .options(selectinload(RoutingRule.matchers), selectinload(RoutingRule.channels))
+    )
+    rules = result.scalars().all()
+    return (
+        [r for r in rules if r.action == "suppress"],
+        [r for r in rules if r.action == "notify"],
+    )
+
+
+def _matched_notify_channels(
+    event: AlertEvent, notify_rules: Sequence[RoutingRule], trigger: str
+) -> dict[int, tuple[Channel, RoutingRule]]:
+    """Every channel matched by any of `notify_rules`, deduped by channel id
+    (a channel reachable via two matching rules gets exactly one outbox row
+    per trigger, via the outbox UQ). A soft-deleted channel is skipped here
+    -- staging a notification for it would just be delivered-to-dead-letter
+    work for the worker to do instead of never creating it at all. Notify
+    rules are NOT first-match-wins: every matching rule contributes its
+    channels to this one union.
+    """
+    matched_channels: dict[int, tuple[Channel, RoutingRule]] = {}
+    for rule in notify_rules:
+        if evaluate(event, rule, rule.matchers, trigger=trigger).matched:
+            for channel in rule.channels:
+                if channel.deleted_at is not None:
+                    continue
+                matched_channels.setdefault(channel.id, (channel, rule))
+    return matched_channels
+
+
+async def _stage_outbox(
+    session: AsyncSession,
+    event: AlertEvent,
+    trigger: str,
+    team_id: int,
+    matched_channels: dict[int, tuple[Channel, RoutingRule]],
+    notification_payload: dict[str, Any],
+) -> int:
+    """Insert one outbox row per (channel, rule) in `matched_channels`,
+    attributed to `team_id` -- the owning team for its own routing pass, or
+    a share's target team for the Phase 14 view_notify fan-out. Shared by
+    both call sites so the dedup-via-UQ handling (a repeated webhook
+    delivery re-running the same transition) isn't duplicated.
+    """
+    created = 0
+    for channel, rule in matched_channels.values():
+        outbox = NotificationOutbox(
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel_id=channel.id,
+            team_id=team_id,
+            trigger=trigger,
+            payload=dict(notification_payload),
+        )
+        try:
+            async with session.begin_nested():
+                session.add(outbox)
+                await session.flush()
+        except IntegrityError:
+            # (alert_event_id, channel_id, trigger) UQ -- this transition
+            # was already routed to this channel (e.g. a repeated webhook
+            # delivery re-running the same transition, or -- for the shared
+            # fan-out -- a channel reachable both directly and via a share).
+            # Not an error.
+            logger.info(
+                "outbox dedup skip: event=%s channel=%s trigger=%s team=%s",
+                event.id,
+                channel.id,
+                trigger,
+                team_id,
+            )
+            continue
+        created += 1
+    return created
+
+
+async def _route_shared_view(
+    session: AsyncSession,
+    event: AlertEvent,
+    trigger: str,
+    share: AlertShare,
+    notification_payload: dict[str, Any],
+) -> None:
+    """Evaluate one `view_notify` share's target team against `event`,
+    scoped to that team's own `include_shared=true` rules -- entirely
+    independent of the owning team's own routing outcome (see
+    `route_event`): a target's own suppress rule blocks only that target's
+    notifications (no outbox rows staged for it), and never touches
+    `event.suppressed_by_rule_id` -- that field records the *owning* team's
+    suppression history, not a target's.
+    """
+    suppress_rules, notify_rules = await _load_team_rules(
+        session, share.target_team_id, require_include_shared=True
+    )
+    if any(evaluate(event, rule, rule.matchers, trigger=trigger).matched for rule in suppress_rules):
+        return
+
+    matched_channels = _matched_notify_channels(event, notify_rules, trigger)
+    if matched_channels:
+        await _stage_outbox(
+            session, event, trigger, share.target_team_id, matched_channels, notification_payload
+        )
+
+
 async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) -> RoutingOutcome:
-    """Stage outbox rows (or record a suppression) for one event transition.
+    """Stage outbox rows (or record a suppression) for one event transition,
+    for the event's own (owning) team -- then, independently, fan the event
+    out to every team its owner has shared it with in `view_notify` mode
+    (Phase 14): each such target team's own `include_shared=true` rules get
+    evaluated against the event too, gated by that share's optional matcher
+    scope (`app.services.sharing.share_matches`). The owning team's outcome
+    (including a suppress match) never blocks this fan-out -- suppression
+    is a per-team decision, and a target's own routing (including its own
+    suppress rules) is what decides whether *it* gets notified.
 
     Called inside the ingest transaction -- see this module's docstring and
     `app.services.ingest.on_event_transition`'s contract. Never commits;
@@ -325,42 +504,52 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     """
     if event.team_id is None:
         # No admin catch-all in this phase (post-MVP, see brief) -- an
-        # event with no `kam_team` match just isn't routed.
+        # event with no `kam_team` match just isn't routed (and can't be
+        # shared -- a share's owner_team_id is always a real team).
         return RoutingOutcome(routed=False, reason="unassigned_team")
 
-    result = await session.execute(
-        select(RoutingRule)
-        .where(RoutingRule.team_id == event.team_id, RoutingRule.enabled.is_(True))
-        .options(selectinload(RoutingRule.matchers), selectinload(RoutingRule.channels))
+    suppress_rules, notify_rules = await _load_team_rules(
+        session, event.team_id, require_include_shared=False
     )
-    rules = result.scalars().all()
-
-    suppress_rules = [r for r in rules if r.action == "suppress"]
-    notify_rules = [r for r in rules if r.action == "notify"]
 
     # Suppress rules are evaluated first, and exclusively: any match means
-    # no notification at all, regardless of what any notify rule would have
-    # matched.
+    # no notification at all for the owning team, regardless of what any
+    # notify rule would have matched.
+    suppressing_rule: RoutingRule | None = None
     for rule in suppress_rules:
         if evaluate(event, rule, rule.matchers, trigger=trigger).matched:
-            event.suppressed_by_rule_id = rule.id
-            return RoutingOutcome(routed=False, reason="suppressed", suppressed_by_rule_id=rule.id)
+            suppressing_rule = rule
+            break
+    if suppressing_rule is not None:
+        event.suppressed_by_rule_id = suppressing_rule.id
 
-    # Notify rules are NOT first-match-wins: every matching rule contributes
-    # its channels to one union, deduped by channel id (a channel reachable
-    # via two matching rules gets exactly one outbox row per trigger, via
-    # the UQ below). A soft-deleted channel is skipped here -- staging a
-    # notification for it would just be delivered-to-dead-letter work for
-    # the worker to do instead of never creating it at all.
-    matched_channels: dict[int, tuple[Channel, RoutingRule]] = {}
-    for rule in notify_rules:
-        if evaluate(event, rule, rule.matchers, trigger=trigger).matched:
-            for channel in rule.channels:
-                if channel.deleted_at is not None:
-                    continue
-                matched_channels.setdefault(channel.id, (channel, rule))
+    matched_channels = (
+        {} if suppressing_rule is not None else _matched_notify_channels(event, notify_rules, trigger)
+    )
 
-    if not matched_channels:
+    # Deferred, local import: app.services.sharing imports matcher
+    # primitives from this module at import time, so importing it back at
+    # module scope here would create a cycle. Importing it lazily, only
+    # where it's actually used, breaks that without restructuring either
+    # module.
+    from app.services.sharing import share_matches
+
+    shares_result = await session.execute(
+        select(AlertShare).where(
+            AlertShare.owner_team_id == event.team_id, AlertShare.mode == "view_notify"
+        )
+    )
+    # Per-team share counts are expected to stay small (see the Phase 14
+    # brief), so a plain Python filter here -- rather than trying to push
+    # share_matches's matcher evaluation into the query -- is the right
+    # trade-off.
+    matching_shares = [s for s in shares_result.scalars().all() if share_matches(s, event)]
+
+    if not matched_channels and not matching_shares:
+        if suppressing_rule is not None:
+            return RoutingOutcome(
+                routed=False, reason="suppressed", suppressed_by_rule_id=suppressing_rule.id
+            )
         return RoutingOutcome(routed=False, reason="no_match")
 
     team = await session.get(Team, event.team_id)
@@ -373,40 +562,29 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     # only, no cluster fallback" rather than failing the whole routing pass.
     cluster = await session.get(Cluster, event.cluster_id)
 
-    # Built once -- identical for every channel this event routes to (only
-    # channel_id differs per outbox row), so there's no reason to
-    # re-validate/re-serialize an AlertNotification per channel.
+    # Built once -- identical for every channel this event routes to across
+    # both the owning team and every shared target (only channel_id/team_id
+    # differ per outbox row), so there's no reason to re-validate/
+    # re-serialize an AlertNotification per channel.
     notification_payload = _build_notification(event, trigger, team.slug, cluster).model_dump(
         mode="json"
     )
 
     created = 0
-    for channel, rule in matched_channels.values():
-        outbox = NotificationOutbox(
-            alert_event_id=event.id,
-            routing_rule_id=rule.id,
-            channel_id=channel.id,
-            team_id=event.team_id,
-            trigger=trigger,
-            payload=dict(notification_payload),
+    if matched_channels:
+        created = await _stage_outbox(
+            session, event, trigger, event.team_id, matched_channels, notification_payload
         )
-        try:
-            async with session.begin_nested():
-                session.add(outbox)
-                await session.flush()
-        except IntegrityError:
-            # (alert_event_id, channel_id, trigger) UQ -- this transition
-            # was already routed to this channel (e.g. a repeated webhook
-            # delivery re-running the same transition). Not an error.
-            logger.info(
-                "outbox dedup skip: event=%s channel=%s trigger=%s",
-                event.id,
-                channel.id,
-                trigger,
-            )
-            continue
-        created += 1
 
+    for share in matching_shares:
+        await _route_shared_view(session, event, trigger, share, notification_payload)
+
+    if suppressing_rule is not None:
+        return RoutingOutcome(
+            routed=False, reason="suppressed", suppressed_by_rule_id=suppressing_rule.id
+        )
+    if not matched_channels:
+        return RoutingOutcome(routed=False, reason="no_match")
     return RoutingOutcome(routed=created > 0, channels_notified=created)
 
 
