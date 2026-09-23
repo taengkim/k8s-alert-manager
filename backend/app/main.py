@@ -13,6 +13,7 @@ from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
 from app.api.rules import router as rules_router
 from app.api.rules import validate_router as rules_validate_router
+from app.api.silences import router as silences_router
 from app.api.teams import router as teams_router
 from app.api.users import router as users_router
 from app.config import get_settings
@@ -60,6 +61,7 @@ def create_app() -> FastAPI:
     app.include_router(rules_router)
     app.include_router(rules_validate_router)
     app.include_router(metrics_router)
+    app.include_router(silences_router)
     return app
 
 

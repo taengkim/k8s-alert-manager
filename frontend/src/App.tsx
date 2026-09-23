@@ -10,6 +10,7 @@ import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
 import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
+import Silences from "./pages/Silences";
 import TeamSettings from "./pages/TeamSettings";
 import Admin from "./pages/Admin";
 
@@ -102,8 +103,14 @@ export default function App() {
             <Route path="/rules" element={<Rules />} />
             <Route path="/rules/new" element={<RuleEditor />} />
             <Route path="/rules/:slug/edit" element={<RuleEditor />} />
+            <Route path="/silences" element={<Silences />} />
             {sections
-              .filter((section) => section.key !== "alerts" && section.key !== "rules")
+              .filter(
+                (section) =>
+                  section.key !== "alerts" &&
+                  section.key !== "rules" &&
+                  section.key !== "silences",
+              )
               .map((section) => (
                 <Route
                   key={section.key}
