@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.registry import ChannelRegistry
 from app.db import get_session
 from app.models.team import TeamMembership
 from app.models.user import User
@@ -17,6 +18,10 @@ COOKIE_NAME = "kam_token"
 
 def get_k8s_factory(request: Request) -> K8sClientFactory:
     return request.app.state.k8s_factory
+
+
+def get_channel_registry(request: Request) -> ChannelRegistry:
+    return request.app.state.channel_registry
 
 
 async def get_current_user(
