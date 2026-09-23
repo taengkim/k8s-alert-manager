@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base, UTCDateTime
+
+MAX_COMMENT_LENGTH = 4000
 
 
 class AlertComment(Base):
@@ -12,11 +14,19 @@ class AlertComment(Base):
     CASCADE on `alert_event_id`: a comment has no meaning once its alert
     event is gone (unlike e.g. `NotificationOutbox`, there's no delivery
     history reason to keep it around orphaned).
+
+    The API layer (`CommentCreate` in `app/api/alerts.py`) already rejects a
+    body over `MAX_COMMENT_LENGTH` -- this CHECK is defense in depth against
+    any writer that bypasses that layer (a script, a future endpoint, a
+    direct DB edit), not the primary enforcement point.
     """
 
     __tablename__ = "alert_comments"
     __table_args__ = (
         Index("ix_alert_comments_event_created", "alert_event_id", "created_at"),
+        CheckConstraint(
+            f"length(body) <= {MAX_COMMENT_LENGTH}", name="ck_alert_comments_body_length"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

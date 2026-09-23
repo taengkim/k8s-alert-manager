@@ -83,6 +83,23 @@ async def _create_notify_rule(
         return rule.id
 
 
+async def _create_suppress_rule(
+    team_id: int, *, name: str = "suppress-all", severities: list[str] | None = None
+) -> int:
+    async with db_module.async_session_factory() as session:
+        rule = RoutingRule(
+            team_id=team_id,
+            name=name,
+            action="suppress",
+            enabled=True,
+            severities=severities,
+        )
+        session.add(rule)
+        await session.commit()
+        await session.refresh(rule)
+        return rule.id
+
+
 async def _user_id(client: AsyncClient) -> int:
     return (await client.get("/api/v1/auth/me")).json()["id"]
 
@@ -217,6 +234,70 @@ async def test_test_alert_verdicts_and_outbox_delivery(client: AsyncClient) -> N
         assert len(outbox_rows) == 1
         assert outbox_rows[0].trigger == "firing"
         assert outbox_rows[0].status == "pending"
+
+
+async def test_test_alert_reports_suppressed_by_and_empty_delivered_channels(
+    client: AsyncClient,
+) -> None:
+    """route_event short-circuits entirely on the first matching suppress
+    rule -- a notify rule can still independently evaluate as "matched" in
+    the verdicts list (it has no visibility into that short-circuit), but
+    nothing actually gets staged. The response must say which rule did the
+    suppressing so the UI doesn't present a matched-but-undelivered notify
+    verdict as if it had gone out.
+    """
+    team_id = await _create_team("platform")
+    cluster_id = await _default_cluster_id()
+    channel_id = await _create_channel(team_id)
+
+    notify_rule_id = await _create_notify_rule(
+        team_id, channel_id, name="notify-warning", severities=["warning"]
+    )
+    suppress_rule_id = await _create_suppress_rule(
+        team_id, name="suppress-warning", severities=["warning"]
+    )
+
+    await login_as(client, username="alice")
+    await _add_membership(team_id, await _user_id(client))
+
+    response = await client.post(
+        f"/api/v1/teams/{team_id}/test-alert", json={"cluster_id": cluster_id}
+    )
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["suppressed_by"] == {"rule_id": suppress_rule_id, "rule_name": "suppress-warning"}
+    assert body["delivered_channels"] == []
+
+    verdicts_by_rule = {v["rule_id"]: v for v in body["verdicts"]}
+    # The notify rule's own evaluate() still independently reports
+    # "matched" -- it's route_event's staging that was actually
+    # short-circuited, which is exactly what suppressed_by communicates.
+    assert verdicts_by_rule[notify_rule_id]["verdict"] == "matched"
+    assert verdicts_by_rule[suppress_rule_id]["verdict"] == "matched"
+
+    async with db_module.async_session_factory() as session:
+        outbox_rows = (
+            await session.execute(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.alert_event_id == body["event_id"]
+                )
+            )
+        ).scalars().all()
+        assert outbox_rows == []
+
+
+async def test_test_alert_no_suppressed_by_when_nothing_suppresses(client: AsyncClient) -> None:
+    team_id = await _create_team("platform")
+    cluster_id = await _default_cluster_id()
+
+    await login_as(client, username="alice")
+    await _add_membership(team_id, await _user_id(client))
+
+    response = await client.post(
+        f"/api/v1/teams/{team_id}/test-alert", json={"cluster_id": cluster_id}
+    )
+    assert response.json()["suppressed_by"] is None
 
 
 async def test_test_alert_defaults_alertname_and_severity(client: AsyncClient) -> None:

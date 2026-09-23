@@ -266,6 +266,25 @@ async def test_comment_blank_body_is_422(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+async def test_comment_over_max_length_is_422(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    team_id = await _create_team("platform")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=team_id)
+
+    await login_as(client, username="alice")
+    await _add_membership(team_id, await _user_id(client))
+
+    response = await client.post(
+        f"/api/v1/alerts/history/{event_id}/comments", json={"body": "a" * 4001}
+    )
+    assert response.status_code == 422
+
+    ok = await client.post(
+        f"/api/v1/alerts/history/{event_id}/comments", json={"body": "a" * 4000}
+    )
+    assert ok.status_code == 201
+
+
 async def test_comment_create_and_list(client: AsyncClient) -> None:
     cluster_id = await _default_cluster_id()
     team_id = await _create_team("platform")

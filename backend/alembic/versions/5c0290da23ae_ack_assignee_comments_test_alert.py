@@ -31,7 +31,8 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['alert_event_id'], ['alert_events.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.CheckConstraint('length(body) <= 4000', name='ck_alert_comments_body_length')
     )
     op.create_index(
         'ix_alert_comments_event_created', 'alert_comments', ['alert_event_id', 'created_at'],

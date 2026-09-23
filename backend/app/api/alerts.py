@@ -20,7 +20,7 @@ from app.db import get_session
 from app.models.alert import AlertEvent
 from app.models.channel import Channel
 from app.models.cluster import Cluster
-from app.models.comment import AlertComment
+from app.models.comment import MAX_COMMENT_LENGTH, AlertComment
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
 from app.models.team import Team, TeamMembership
@@ -511,10 +511,12 @@ class CommentCreate(BaseModel):
 
     @field_validator("body")
     @classmethod
-    def _not_blank(cls, value: str) -> str:
+    def _validate_body(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
             raise ValueError("body must not be blank")
+        if len(stripped) > MAX_COMMENT_LENGTH:
+            raise ValueError(f"body must be {MAX_COMMENT_LENGTH} characters or fewer")
         return stripped
 
 
@@ -732,6 +734,20 @@ async def fire_test_alert(
     )
     delivered_channels = [name for (name,) in channels_result.all()]
 
+    # route_event (already run, inside ingest_webhook's transition hook)
+    # short-circuits entirely on the first matching suppress rule: zero
+    # outbox rows get staged for *any* notify rule, even ones this
+    # per-rule verdict loop above independently reports as "matched" (it
+    # has no visibility into route_event's suppress-wins-exclusively
+    # semantics). Surfacing which rule suppressed it lets the UI flag
+    # those matched-but-not-delivered verdicts instead of presenting them
+    # as if they'd actually notified.
+    suppressed_by = None
+    if event.suppressed_by_rule_id is not None:
+        suppressing_rule = await session.get(RoutingRule, event.suppressed_by_rule_id)
+        if suppressing_rule is not None:
+            suppressed_by = {"rule_id": suppressing_rule.id, "rule_name": suppressing_rule.name}
+
     await audit.log(
         session,
         user_id=actor.id,
@@ -743,7 +759,12 @@ async def fire_test_alert(
     )
     await session.commit()
 
-    return {"event_id": event.id, "verdicts": verdicts, "delivered_channels": delivered_channels}
+    return {
+        "event_id": event.id,
+        "verdicts": verdicts,
+        "delivered_channels": delivered_channels,
+        "suppressed_by": suppressed_by,
+    }
 
 
 @router.post("/history/{event_id}/resolve-test")
