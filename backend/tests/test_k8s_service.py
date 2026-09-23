@@ -304,6 +304,76 @@ async def test_get_rule_maps_other_4xx_to_bad_request() -> None:
         await factory.get_rule(_cluster(), "x")
 
 
+@pytest.mark.parametrize("status_code", [400, 405, 415, 422])
+async def test_get_rule_maps_bad_request_statuses(status_code: int) -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.side_effect = ApiException(status=status_code)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError):
+        await factory.get_rule(_cluster(), "x")
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 429, 418, 500, 502])
+async def test_get_rule_maps_everything_else_to_unavailable(status_code: int) -> None:
+    """401/403/429 (and anything else outside the narrow bad-request set)
+    reflect something wrong reaching/using the cluster, not a malformed
+    request of ours -- they must not be treated as our fault (422)."""
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.side_effect = ApiException(status=status_code)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sUnavailableError):
+        await factory.get_rule(_cluster(), "x")
+
+
+async def test_list_rules_treats_404_as_unavailable_not_bad_request() -> None:
+    """A 404 on the list call itself almost certainly means the
+    PrometheusRule CRD isn't installed on this cluster -- a cluster-level
+    problem, not something wrong with our request."""
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.side_effect = ApiException(status=404)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sUnavailableError, match="CRD"):
+        await factory.list_rules(_cluster(), team_id=1)
+
+
+async def test_mapped_error_never_embeds_raw_response_headers_or_body() -> None:
+    """The client-facing detail must come from exc.reason + the JSON body's
+    `message` field only -- never str(exc), which embeds the full HTTP
+    response (every header plus the raw body verbatim)."""
+    exc = ApiException(status=403, reason="Forbidden")
+    exc.body = '{"kind":"Status","message":"safe curated message"}'
+    exc.headers = {"Audit-Id": "super-secret-audit-trace-id"}
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.side_effect = exc
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sUnavailableError) as exc_info:
+        await factory.get_rule(_cluster(), "x")
+
+    detail = str(exc_info.value)
+    assert "Forbidden" in detail
+    assert "safe curated message" in detail
+    assert "Audit-Id" not in detail
+    assert "super-secret-audit-trace-id" not in detail
+    assert "HTTP response headers" not in detail
+
+
+async def test_mapped_error_detail_falls_back_to_reason_when_body_unparseable() -> None:
+    exc = ApiException(status=400, reason="Bad Request")
+    exc.body = "not json at all"
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.side_effect = exc
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError) as exc_info:
+        await factory.get_rule(_cluster(), "x")
+
+    assert str(exc_info.value) == "Bad Request"
+
+
 async def test_list_namespaces_uses_core_api() -> None:
     fake_core_api = MagicMock()
     ns_a = MagicMock()

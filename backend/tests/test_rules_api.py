@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 import respx
 from fastapi import FastAPI
 from httpx import AsyncClient
@@ -457,6 +458,41 @@ async def test_list_maps_other_4xx_to_422(client: AsyncClient, app: FastAPI) -> 
     team_id, cluster_id = await _member_client(client)
     response = await client.get(f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}")
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 429])
+async def test_list_maps_auth_and_rate_limit_statuses_to_503_not_422(
+    status_code: int, client: AsyncClient, app: FastAPI
+) -> None:
+    """401/403/429 are "the cluster is unreachable/rejecting us", not "our
+    request was malformed" -- they must not become a 422."""
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.side_effect = ApiException(status=status_code)
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.get(f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}")
+    assert response.status_code == 503
+
+
+async def test_list_error_detail_never_leaks_raw_response_headers(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    exc = ApiException(status=500, reason="Internal Server Error")
+    exc.body = '{"message": "etcd unavailable"}'
+    exc.headers = {"Audit-Id": "should-not-appear"}
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.side_effect = exc
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.get(f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}")
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "etcd unavailable" in detail
+    assert "should-not-appear" not in detail
+    assert "HTTP response headers" not in detail
 
 
 @respx.mock

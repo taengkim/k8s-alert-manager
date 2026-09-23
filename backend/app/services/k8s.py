@@ -41,10 +41,11 @@ class K8sUnavailableError(Exception):
 
 
 class K8sBadRequestError(Exception):
-    """Raised for any other 4xx from the k8s API server -- something about
-    *our own request* was malformed, as opposed to the cluster being down.
-    The API layer maps this to 422, surfacing the k8s message since it
-    describes the caller's own input."""
+    """Raised for a 400/405/415/422 from the k8s API server -- something
+    about *our own request* was malformed, as opposed to the cluster being
+    unreachable or rejecting us (401/403/429 and everything else are
+    K8sUnavailableError instead). The API layer maps this to 422,
+    surfacing the k8s message since it describes the caller's own input."""
 
 
 class RuleConflictError(Exception):
@@ -80,15 +81,49 @@ def _is_owned_by(obj: dict[str, Any] | None, team_id: int) -> bool:
     )
 
 
+# Only these statuses mean "our own request was malformed" -- everything
+# else (401/403/429 included) reflects something wrong with reaching or
+# using the cluster, not a bad request shape we control.
+_BAD_REQUEST_STATUSES = {400, 405, 415, 422}
+
+
+def _api_exception_detail(exc: ApiException) -> str:
+    """A safe, client-facing detail string for an ApiException.
+
+    Never use `str(exc)` for anything that reaches a log line or an API
+    response: the kubernetes client's ApiException.__str__ embeds the full
+    HTTP response -- every response header plus the raw body -- which can
+    include things we don't want to hand back to a caller (e.g. our own
+    ServiceAccount's identity showing up in a 403's body). This surfaces
+    only the HTTP reason phrase plus the k8s API server's own JSON body
+    `message` field, if present.
+    """
+    reason = exc.reason or "error"
+    message = None
+    if exc.body:
+        try:
+            data = json.loads(exc.body)
+        except (TypeError, ValueError):
+            data = None
+        if isinstance(data, dict):
+            candidate = data.get("message")
+            if isinstance(candidate, str):
+                message = candidate
+    return f"{reason}: {message}" if message else reason
+
+
 def _map_status(exc: ApiException) -> Exception:
     """Map an ApiException that has no caller-specific handling for its
     status code (404/409 are always handled by the caller first) to a typed
-    error: any other 4xx is our own bad request; anything else (5xx, or no
-    status at all) means the cluster itself is unavailable."""
+    error: 400/405/415/422 are our own bad request; anything else (401,
+    403, 429, 5xx, or no status at all) means the cluster itself is
+    unavailable -- including "unavailable to us" cases like an auth/rate-
+    limit rejection, not just connect failures."""
     status_code = exc.status or 0
-    if 400 <= status_code < 500:
-        return K8sBadRequestError(str(exc))
-    return K8sUnavailableError(str(exc))
+    detail = _api_exception_detail(exc)
+    if status_code in _BAD_REQUEST_STATUSES:
+        return K8sBadRequestError(detail)
+    return K8sUnavailableError(detail)
 
 
 class K8sClientFactory:
@@ -222,6 +257,15 @@ class K8sClientFactory:
                     label_selector=_label_selector(team_id),
                 )
             except ApiException as exc:
+                if exc.status == 404:
+                    # A 404 here means the *list endpoint itself* doesn't
+                    # exist -- almost always the PrometheusRule CRD isn't
+                    # installed on this cluster (no Prometheus Operator).
+                    # That's a cluster-level problem, not a bad request.
+                    raise K8sUnavailableError(
+                        f"PrometheusRule CRD not found on cluster '{cluster.name}' "
+                        "(is the Prometheus Operator installed?)"
+                    ) from exc
                 raise _map_status(exc) from exc
             except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
