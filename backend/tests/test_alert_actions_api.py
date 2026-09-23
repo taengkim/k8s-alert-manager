@@ -545,3 +545,165 @@ async def test_share_matcher_scope_gates_read_access_too(client: AsyncClient) ->
 
     response = await client.get(f"/api/v1/alerts/history/{event_id}")
     assert response.status_code == 403
+
+
+# -- I2 fix: /notifications team-filters share-derived access ----------------
+
+
+async def test_notifications_filters_to_viewers_own_team_for_shared_access(
+    client: AsyncClient,
+) -> None:
+    """A shared-only viewer (no membership in the event's own team) must see
+    only the NotificationOutbox rows attributed to a team they're actually a
+    member of -- never the owning team's own channel name/delivery errors,
+    nor another target team's. A genuine member of the event's own team (or
+    an admin) is unrestricted, same as before Phase 14.
+
+    Routed through the real API (channels/routes/shares/test-alert), so this
+    exercises route_event's actual view_notify fan-out rather than
+    hand-crafted outbox rows.
+    """
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    platform_channel = (
+        await client.post(
+            f"/api/v1/teams/{platform}/channels",
+            json={
+                "name": "platform-mail",
+                "type": "email",
+                "config": {"recipients": ["platform@example.org"]},
+            },
+        )
+    ).json()
+    payments_channel = (
+        await client.post(
+            f"/api/v1/teams/{payments}/channels",
+            json={
+                "name": "payments-mail",
+                "type": "email",
+                "config": {"recipients": ["payments@example.org"]},
+            },
+        )
+    ).json()
+    await client.post(
+        f"/api/v1/teams/{platform}/routes",
+        json={
+            "name": "platform-all",
+            "action": "notify",
+            "enabled": True,
+            "notify_on_firing": True,
+            "notify_on_resolved": False,
+            "include_shared": False,
+            "channel_ids": [platform_channel["id"]],
+            "matchers": [],
+        },
+    )
+    await client.post(
+        f"/api/v1/teams/{payments}/routes",
+        json={
+            "name": "payments-shared",
+            "action": "notify",
+            "enabled": True,
+            "notify_on_firing": True,
+            "notify_on_resolved": False,
+            "include_shared": True,
+            "channel_ids": [payments_channel["id"]],
+            "matchers": [],
+        },
+    )
+    await client.post(
+        f"/api/v1/teams/{platform}/shares",
+        json={"target_team_id": payments, "mode": "view_notify"},
+    )
+
+    fire = await client.post(
+        f"/api/v1/teams/{platform}/test-alert",
+        json={"cluster_id": cluster_id, "alertname": "SharedNotifTest", "severity": "critical"},
+    )
+    assert fire.status_code == 200
+    event_id = fire.json()["event_id"]
+
+    # A genuine platform member sees BOTH outbox rows -- unrestricted,
+    # exactly like before Phase 14.
+    await login_as(client, username="dave")
+    dave_id = await _user_id(client)
+    await _add_membership(platform, dave_id)
+    platform_view = await client.get(f"/api/v1/alerts/history/{event_id}/notifications")
+    assert platform_view.status_code == 200
+    assert {n["channel_id"] for n in platform_view.json()} == {
+        platform_channel["id"],
+        payments_channel["id"],
+    }
+
+    # carol is payments-only (no platform membership) -- her read access
+    # comes only from the share, so she must see ONLY payments' own row.
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+    shared_view = await client.get(f"/api/v1/alerts/history/{event_id}/notifications")
+    assert shared_view.status_code == 200
+    assert {n["channel_id"] for n in shared_view.json()} == {payments_channel["id"]}
+
+
+# -- M-b fix: /ack-status includes share-visible events -----------------------
+
+
+async def test_ack_status_includes_shared_event_for_target_member(client: AsyncClient) -> None:
+    """A shared-in event (matcher-scoped view/view_notify AlertShare) must
+    appear in the target team's ack-status batch lookup too -- otherwise
+    /live's shared rows would never show an ack badge. An event outside the
+    share's matcher scope stays invisible, same as an unshared one.
+    """
+    cluster_id = await _default_cluster_id()
+    platform = await _create_team("platform")
+    payments = await _create_team("payments")
+
+    shared_id = await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="fp-shared-visible",
+        alertname="SharedCritical",
+        team_id=platform,
+    )
+    hidden_id = await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="fp-not-shared",
+        alertname="PlatformOnly",
+        team_id=platform,
+    )
+    async with db_module.async_session_factory() as session:
+        cluster_name = (await session.get(Cluster, cluster_id)).name
+        event = await session.get(AlertEvent, shared_id)
+        event.acknowledged_at = datetime.now(UTC)
+        session.add(
+            AlertShare(
+                owner_team_id=platform,
+                target_team_id=payments,
+                mode="view",
+                matchers=[{"kind": "include", "target": "alertname", "pattern": "^SharedCritical$"}],
+            )
+        )
+        await session.commit()
+
+    await login_as(client, username="carol")
+    carol_id = await _user_id(client)
+    await _add_membership(payments, carol_id)
+
+    response = await client.post(
+        f"/api/v1/alerts/ack-status?team_id={payments}",
+        json={
+            "items": [
+                {"cluster": cluster_name, "fingerprint": "fp-shared-visible"},
+                {"cluster": cluster_name, "fingerprint": "fp-not-shared"},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    matched = {m["fingerprint"]: m for m in response.json()["matched"]}
+    assert set(matched) == {"fp-shared-visible"}
+    assert matched["fp-shared-visible"]["acknowledged"] is True
+    assert matched["fp-shared-visible"]["event_id"] == shared_id
+    assert hidden_id  # sanity: the hidden event really was created

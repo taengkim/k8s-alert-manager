@@ -38,7 +38,14 @@ from app.services.ingest import (
     ingest_webhook,
 )
 from app.services.routing import evaluate, route_event
-from app.services.sharing import MatchableAlert, share_matches, shared_source_team_ids
+from app.services.sharing import (
+    CompiledShareScope,
+    MatchableAlert,
+    compile_share_scope,
+    scope_matches,
+    share_matches,
+    shared_source_team_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +116,19 @@ def _flatten(cluster: Cluster, raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _load_shared_sources(session: AsyncSession, team_id: int) -> dict[str, AlertShare]:
-    """owner team slug -> the `AlertShare` that grants `team_id` (view or
-    view_notify -- both grant read visibility; view_notify's extra
-    notify-side effect is handled entirely by `route_event`) read access to
-    that owner's alerts. Keyed by slug rather than id since callers here
-    match against a `kam_team` label / denormalized team slug, not an id.
+async def _load_shared_scopes_by_slug(
+    session: AsyncSession, team_id: int
+) -> dict[str, CompiledShareScope]:
+    """owner team slug -> that owner's `AlertShare` scope, pre-compiled once
+    (view or view_notify -- both grant read visibility; view_notify's extra
+    notify-side effect is handled entirely by `route_event`). Keyed by slug
+    rather than id since callers here match against a `kam_team` label /
+    denormalized team slug, not an id.
+
+    Compiling here (once per request) rather than calling `share_matches`
+    per alert matters: `/live` can be checking this against every alert
+    across every enabled cluster, so recompiling the same share's patterns
+    on every single one would be pure waste.
     """
     pairs = await shared_source_team_ids(session, team_id)
     if not pairs:
@@ -123,7 +137,9 @@ async def _load_shared_sources(session: AsyncSession, team_id: int) -> dict[str,
     result = await session.execute(select(Team).where(Team.id.in_(owner_ids)))
     slug_by_id = {t.id: t.slug for t in result.scalars().all()}
     return {
-        slug_by_id[owner_id]: share for owner_id, share in pairs if owner_id in slug_by_id
+        slug_by_id[owner_id]: compile_share_scope(share)
+        for owner_id, share in pairs
+        if owner_id in slug_by_id
     }
 
 
@@ -191,19 +207,19 @@ async def get_live_alerts(
     if team is not None:
         # Phase 14: a non-owner alert is included only if some AlertShare
         # targeting this team covers it (owner slug matches a share, and
-        # that share's optional matcher scope -- see share_matches --
+        # that share's optional matcher scope -- see scope_matches --
         # accepts this alert). `shared_from` records which owner it came
         # through, for the "공유: {owner}" badge; own-team alerts keep the
         # `_flatten` default of None.
-        shared_sources = await _load_shared_sources(session, team.id)
+        shared_scopes = await _load_shared_scopes_by_slug(session, team.id)
         scoped: list[dict[str, Any]] = []
         for alert in alerts:
             owner_slug = alert["labels"].get("kam_team")
             if owner_slug == team.slug:
                 scoped.append(alert)
                 continue
-            share = shared_sources.get(owner_slug) if owner_slug else None
-            if share is not None and share_matches(share, MatchableAlert.from_live_alert(alert)):
+            scope = shared_scopes.get(owner_slug) if owner_slug else None
+            if scope is not None and scope_matches(scope, MatchableAlert.from_live_alert(alert)):
                 alert["shared_from"] = owner_slug
                 scoped.append(alert)
         alerts = scoped
@@ -436,14 +452,17 @@ async def get_alert_history(
     """
     team = await _resolve_team_scope(team_id, user, session)
 
-    shared_sources: dict[int, AlertShare] = {}
+    # Pre-compiled once per share here (not per event below) -- a page can
+    # hold up to 200 rows, and re-deriving the same share's compiled
+    # matchers for every one of them would be pure waste.
+    shared_scopes: dict[int, CompiledShareScope] = {}
     owner_slug_by_id: dict[int, str] = {}
     if team is not None:
         pairs = await shared_source_team_ids(session, team.id)
         if pairs:
-            shared_sources = dict(pairs)
+            shared_scopes = {owner_id: compile_share_scope(share) for owner_id, share in pairs}
             owners = (
-                await session.execute(select(Team).where(Team.id.in_(shared_sources)))
+                await session.execute(select(Team).where(Team.id.in_(shared_scopes)))
             ).scalars().all()
             owner_slug_by_id = {t.id: t.slug for t in owners}
 
@@ -457,7 +476,7 @@ async def get_alert_history(
         from_ts=from_ts,
         to_ts=to_ts,
         include_test=include_test,
-        shared_owner_team_ids=list(shared_sources) or None,
+        shared_owner_team_ids=list(shared_scopes) or None,
     )
 
     total = (
@@ -478,11 +497,11 @@ async def get_alert_history(
     )
     items = result.scalars().all()
 
-    if team is not None and shared_sources:
+    if team is not None and shared_scopes:
         items = [
             e
             for e in items
-            if e.team_id == team.id or share_matches(shared_sources[e.team_id], e)
+            if e.team_id == team.id or scope_matches(shared_scopes[e.team_id], e)
         ]
 
     usernames = await _resolve_usernames(
@@ -731,7 +750,9 @@ async def _authorize_event_access(session: AsyncSession, event: AlertEvent, user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
-async def _authorize_event_read_access(session: AsyncSession, event: AlertEvent, user: User) -> None:
+async def _authorize_event_read_access(
+    session: AsyncSession, event: AlertEvent, user: User
+) -> set[int] | None:
     """Read-only variant of `_authorize_event_access` (Phase 14): additionally
     allows a member of a team that `event`'s own team has shared this event
     into -- a `view`/`view_notify` `AlertShare` whose matcher scope covers
@@ -739,9 +760,19 @@ async def _authorize_event_read_access(session: AsyncSession, event: AlertEvent,
     notification history, comment list); every mutation endpoint keeps
     using `_authorize_event_access` unchanged, so ack/assignee/comment-
     create/comment-delete/resolve-test stay 403 for a shared-in viewer.
+
+    Returns `None` when access is unrestricted -- admin, or a genuine member
+    of the event's own team -- meaning the caller may show everything
+    belonging to this event, same as before Phase 14. Returns the viewer's
+    own team id set when access was granted *only* via a share:
+    `GET .../notifications` uses this to scope which `NotificationOutbox`
+    rows (and therefore which OTHER teams' channel names/delivery errors) a
+    shared-in viewer may see -- only rows attributed to a team they're
+    actually a member of, never the owning team's own or another target
+    team's.
     """
     if user.is_admin:
-        return
+        return None
     if event.team_id is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
@@ -750,7 +781,7 @@ async def _authorize_event_read_access(session: AsyncSession, event: AlertEvent,
     )
     member_team_ids = {team_id for (team_id,) in result.all()}
     if event.team_id in member_team_ids:
-        return
+        return None
 
     if member_team_ids:
         shares_result = await session.execute(
@@ -760,7 +791,7 @@ async def _authorize_event_read_access(session: AsyncSession, event: AlertEvent,
             )
         )
         if any(share_matches(share, event) for share in shares_result.scalars().all()):
-            return
+            return member_team_ids
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
@@ -785,14 +816,27 @@ async def get_alert_history_notifications(
     """Delivery history for one alert event: the outbox row per channel it
     was routed to (or would-be-routed to before delivery), for the alert
     history detail drawer's "notification history" section.
+
+    Phase 14: `route_event`'s view_notify fan-out can stage outbox rows for
+    OTHER teams too (a share's target, notified through its own channels).
+    A viewer whose access came only from a share (not their own team's
+    membership, per `_authorize_event_read_access`'s return value) sees
+    only the rows attributed to a team they're actually a member of --
+    never the owning team's own channel names/delivery errors, nor another
+    target team's. A genuine member of the event's own team (or an admin)
+    sees every row for this event, unrestricted, same as before Phase 14.
     """
     event = await _get_event_or_404(session, event_id)
-    await _authorize_event_read_access(session, event, user)
+    restrict_to_team_ids = await _authorize_event_read_access(session, event, user)
+
+    conditions: list[ColumnElement[bool]] = [NotificationOutbox.alert_event_id == event_id]
+    if restrict_to_team_ids is not None:
+        conditions.append(NotificationOutbox.team_id.in_(restrict_to_team_ids))
 
     result = await session.execute(
         select(NotificationOutbox, Channel.name)
         .join(Channel, Channel.id == NotificationOutbox.channel_id)
-        .where(NotificationOutbox.alert_event_id == event_id)
+        .where(*conditions)
         .order_by(NotificationOutbox.created_at)
     )
     return [
@@ -1155,19 +1199,33 @@ async def fire_test_alert(
         select(Channel.name)
         .join(NotificationOutbox, NotificationOutbox.channel_id == Channel.id)
         .where(
-            NotificationOutbox.alert_event_id == event.id, NotificationOutbox.trigger == "firing"
+            NotificationOutbox.alert_event_id == event.id,
+            NotificationOutbox.trigger == "firing",
+            # Phase 14: route_event's view_notify fan-out can stage outbox
+            # rows for OTHER teams too (a share's target, notified through
+            # its own channels). This response is specifically "what did
+            # MY team's own routing rules deliver" -- scoped back to this
+            # team's own rows, same as `rules_result`/`verdicts` above.
+            NotificationOutbox.team_id == team_id,
         )
     )
     delivered_channels = [name for (name,) in channels_result.all()]
 
-    # route_event (already run, inside ingest_webhook's transition hook)
-    # short-circuits entirely on the first matching suppress rule: zero
-    # outbox rows get staged for *any* notify rule, even ones this
-    # per-rule verdict loop above independently reports as "matched" (it
-    # has no visibility into route_event's suppress-wins-exclusively
-    # semantics). Surfacing which rule suppressed it lets the UI flag
-    # those matched-but-not-delivered verdicts instead of presenting them
-    # as if they'd actually notified.
+    # route_event's suppress rules short-circuit exclusively for THIS
+    # (owning) team: a matching suppress rule blocks every notify rule's
+    # channels for this team, even ones this per-rule verdict loop above
+    # independently reports as "matched" (it has no visibility into
+    # route_event's suppress-wins-exclusively semantics). Surfacing which
+    # rule suppressed it lets the UI flag those matched-but-not-delivered
+    # verdicts instead of presenting them as if they'd actually notified.
+    #
+    # This -- and `delivered_channels` above -- is deliberately scoped to
+    # the owning team only: `suppressed_by` can coexist with a completely
+    # independent view_notify delivery to a target team this team shares
+    # with (see route_event's docstring -- a target's own routing, and the
+    # owner's own suppress, never affect each other). That cross-team
+    # delivery is invisible in this response by design, since every field
+    # here answers "what happened from THIS team's own point of view".
     suppressed_by = None
     if event.suppressed_by_rule_id is not None:
         suppressing_rule = await session.get(RoutingRule, event.suppressed_by_rule_id)
@@ -1260,9 +1318,15 @@ async def get_ack_status(
     view to their currently-open alert_events row's ack/assignee state, so
     the Alerts page can show an ack badge without a per-row round trip.
 
-    Team-scoped exactly like /live and /history: a pair belonging to a
-    team other than the requested (or the caller's) scope is silently
-    absent from `matched`, not an error.
+    Team-scoped exactly like /live and /history -- including Phase 14's
+    same matcher-scoped widen to alerts shared into `team` by another
+    team's view/view_notify AlertShare, since /live's own listing now
+    includes those too (a shared row with no ack badge would otherwise look
+    broken). A pair belonging to a team outside that scope is silently
+    absent from `matched`, not an error; the response carries no team
+    attribution of its own (cluster/fingerprint/event_id/ack/assignee only)
+    since the caller already knows which row is whose from /live's
+    `shared_from`.
     """
     team = await _resolve_team_scope(team_id, user, session)
 
@@ -1272,14 +1336,29 @@ async def get_ack_status(
     wanted = {(item.cluster, item.fingerprint) for item in body.items}
     fingerprints = {item.fingerprint for item in body.items}
 
-    conditions = [AlertEvent.status == "firing", AlertEvent.fingerprint.in_(fingerprints)]
+    conditions: list[ColumnElement[bool]] = [
+        AlertEvent.status == "firing",
+        AlertEvent.fingerprint.in_(fingerprints),
+    ]
+    shared_scopes: dict[int, CompiledShareScope] = {}
     if team is not None:
-        conditions.append(AlertEvent.team_id == team.id)
+        pairs = await shared_source_team_ids(session, team.id)
+        if pairs:
+            shared_scopes = {owner_id: compile_share_scope(share) for owner_id, share in pairs}
+            conditions.append(AlertEvent.team_id.in_([team.id, *shared_scopes]))
+        else:
+            conditions.append(AlertEvent.team_id == team.id)
 
     result = await session.execute(
         select(AlertEvent).where(*conditions).order_by(AlertEvent.starts_at.desc())
     )
     events = result.scalars().all()
+    if team is not None and shared_scopes:
+        events = [
+            e
+            for e in events
+            if e.team_id == team.id or scope_matches(shared_scopes[e.team_id], e)
+        ]
 
     usernames = await _resolve_usernames(session, {e.assignee_user_id for e in events})
 
