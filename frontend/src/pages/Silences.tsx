@@ -216,7 +216,7 @@ export default function Silences() {
       />
 
       <Table<SilenceOut>
-        rowKey="id"
+        rowKey={(record) => `${record.cluster.id}-${record.id}`}
         loading={query.isLoading || clusterLoading}
         dataSource={filtered}
         columns={columns}
