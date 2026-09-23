@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Any, Literal
 
@@ -7,12 +8,26 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_admin, require_team_role
+from app.api.deps import (
+    get_current_user,
+    get_k8s_factory,
+    require_admin,
+    require_team_role,
+)
 from app.db import get_session
 from app.models.cluster import Cluster
 from app.models.team import Team, TeamLdapMapping, TeamMembership
 from app.models.user import User
 from app.services import audit
+from app.services.k8s import (
+    K8sBadRequestError,
+    K8sClientFactory,
+    K8sUnavailableError,
+    RuleForbiddenError,
+    RuleUpdateConflictError,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/teams", tags=["teams"])
 
@@ -81,7 +96,7 @@ async def create_team(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     if not SLUG_RE.match(body.slug):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid slug")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid slug")
 
     existing = await session.execute(select(Team).where(Team.slug == body.slug))
     if existing.scalar_one_or_none() is not None:
@@ -146,8 +161,108 @@ async def delete_team(
     team_id: int,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
+    k8s: K8sClientFactory = Depends(get_k8s_factory),
 ) -> None:
+    """Deleting a team must not orphan its PrometheusRules: they'd keep
+    firing/routing on `kam_team` labels for a team that no longer exists,
+    invisible to anyone (the rules list is always team-scoped). So every
+    enabled cluster's rules for this team are deleted first.
+
+    Reachability is checked up front (every enabled cluster's rules are
+    listed before any delete is attempted): if any cluster can't be
+    reached, nothing is deleted at all -- not the rules on other clusters,
+    not the team.
+
+    Once cleanup is underway, a per-rule failure that means "this
+    particular rule couldn't be deleted for a rule-specific reason"
+    (already foreign/unmanaged, a concurrent-modification conflict, a bad
+    request) is logged and skipped so it doesn't block the rest. But if the
+    *cluster itself* stops responding partway through (K8sUnavailableError)
+    or something unexpected happens, the whole operation aborts with 503
+    and the team row is left intact -- an admin should never end up with
+    the team gone but rules silently left behind because a cluster dropped
+    out mid-loop.
+    """
     team = await _get_team_or_404(session, team_id)
+
+    clusters = (
+        (await session.execute(select(Cluster).where(Cluster.enabled.is_(True))))
+        .scalars()
+        .all()
+    )
+
+    unreachable_detail = (
+        "클러스터 {name}에 접근할 수 없어 팀을 삭제할 수 없습니다 (규칙 정리 필요)"
+    )
+
+    rules_by_cluster: list[tuple[Cluster, list[dict[str, Any]]]] = []
+    for cluster in clusters:
+        try:
+            raw_rules = await k8s.list_rules(cluster, team.id)
+        except (K8sUnavailableError, K8sBadRequestError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=unreachable_detail.format(name=cluster.name),
+            ) from exc
+        rules_by_cluster.append((cluster, raw_rules))
+
+    for cluster, raw_rules in rules_by_cluster:
+        for raw_rule in raw_rules:
+            name = (raw_rule.get("metadata") or {}).get("name", "")
+            if not name:
+                continue
+            try:
+                await k8s.delete_rule(cluster, name, team.id)
+            except (RuleForbiddenError, RuleUpdateConflictError, K8sBadRequestError):
+                # Rule-specific: this one couldn't be deleted, but it says
+                # nothing about the cluster's health, so don't let it block
+                # cleanup of the rest.
+                logger.warning(
+                    "failed to delete rule '%s' on cluster '%s' during team "
+                    "'%s' deletion",
+                    name,
+                    cluster.name,
+                    team.slug,
+                )
+                continue
+            except K8sUnavailableError as exc:
+                # The cluster itself dropped out mid-loop. We never call
+                # session.commit() until every rule (and the team) is
+                # processed, so raising here rolls back every audit row
+                # staged so far along with it -- the team row itself is
+                # untouched. (Any rules whose k8s-side delete already
+                # succeeded in earlier loop iterations stay deleted; only
+                # their audit trail is lost. That asymmetry is accepted:
+                # k8s and this DB aren't in one transaction.)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=unreachable_detail.format(name=cluster.name),
+                ) from exc
+            except Exception as exc:
+                # Genuinely unexpected -- fail safe the same way as a
+                # cluster outage rather than continuing with the team
+                # half-cleaned-up.
+                logger.exception(
+                    "unexpected error deleting rule '%s' on cluster '%s' "
+                    "during team '%s' deletion",
+                    name,
+                    cluster.name,
+                    team.slug,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=unreachable_detail.format(name=cluster.name),
+                ) from exc
+
+            await audit.log(
+                session,
+                user_id=user.id,
+                team_id=team.id,
+                action="rule.delete",
+                object_type="prometheus_rule",
+                object_ref=name,
+                detail={"cluster_id": cluster.id, "reason": "team_delete"},
+            )
 
     await audit.log(
         session,

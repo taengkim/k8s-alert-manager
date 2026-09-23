@@ -1,14 +1,26 @@
 # Seed PrometheusRules for local dev — always-firing demo alerts so the
 # Alertmanager -> webhook pipeline can be exercised without waiting on a
 # real incident. Applied into the `kam-rules` namespace by dev/setup.sh.
+#
+# Object names and the kam/team-id label are keyed to team id "1" to match
+# the app's kam-t{team.id}-{slug} naming scheme (see
+# app/services/rules.py:rule_object_name) -- this is a placeholder id for
+# dev fixtures. If your local dev DB's `platform` team doesn't have id 1
+# (e.g. you've created/deleted teams before it), the app's Rules page won't
+# be able to look these up by slug (list/health still work either way,
+# since those are label-based, not name-based); re-run
+# `kubectl delete -f dev/seed/always-firing-rule.yaml` and re-apply with
+# the ids below adjusted to match, or just re-run dev/setup.sh against a
+# fresh cluster.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: kam-platform-always-firing
+  name: kam-t1-always-firing
   namespace: kam-rules
   labels:
     app.kubernetes.io/managed-by: kam
     kam/team-id: "1"
+    kam/team-slug: platform
 spec:
   groups:
     - name: kam-platform-always-firing
@@ -25,11 +37,12 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: kam-platform-critical-demo
+  name: kam-t1-critical-demo
   namespace: kam-rules
   labels:
     app.kubernetes.io/managed-by: kam
     kam/team-id: "1"
+    kam/team-slug: platform
 spec:
   groups:
     - name: kam-platform-critical-demo
