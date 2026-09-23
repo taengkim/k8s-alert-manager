@@ -160,7 +160,7 @@ post-MVP 의존성: 16→15, 17→15(스케줄러 루프), 20→{13 템플릿, 1
 - **차트: ECharts**(echarts-for-react) — 밀집 시계열, threshold markLine, dataZoom, 통계 대시보드와 공용
 - 백엔드 `/api/v1/metrics/*` 프록시 (인증 + 가드레일: 범위≤7d, step 자동 보정 ≤500pt/series, ≤50 series, 15s 타임아웃): `names`(60s 캐시+검색), `metadata`, `labels`, `label-values`, `query`(즉시 — "지금 발생?" 표시), `query_range`(미리보기 차트)
 - 편집기 모드: **임계값 빌더 | PromQL** 토글. 빌더 = 메트릭 자동완성(이름+타입+help) → 라벨 필터 행 → 비교 연산자 → 임계값 → for 지속시간 → 생성된 PromQL 읽기전용 표시. 서버는 생성 PromQL 재검증
-- **빌더 상태 왕복**: 빌더 JSON을 CRD annotation `kam.io/builder-v1`에 저장. 재열기 시 빌더 모드 복원; 밖에서 expr 수정되면 PromQL 모드로 폴백
+- **빌더 상태 왕복**: 빌더 JSON을 CRD annotation `kam.io/builder-v1`(k8s 오브젝트 metadata.annotations에 저장 — 룰 레벨 annotation은 점 포함 이름 거부됨)에 저장. 재열기 시 빌더 모드 복원; 밖에서 expr 수정되면 PromQL 모드로 폴백
 
 ## 운영 기능 설계 (B1–B9)
 
@@ -227,7 +227,7 @@ post-MVP 의존성: 16→15, 17→15(스케줄러 루프), 20→{13 템플릿, 1
 - UI: `/admin/clusters`에 상태 dot + "마지막 수신 X분 전", 클러스터 missing 시 Alerts 페이지 전역 경고 배너
 - **개발 환경 주의**: kube-prometheus-stack 기본 AM 설정은 Watchdog을 null receiver로 보냄 — values에서 kam webhook receiver로도 라우팅 필수
 
-**Grafana 딥링크** — `services/grafana.py` 우선순위: ① 룰 annotation `kam.io/grafana-url`(룰 편집기 필드) → ② `clusters.grafana_url` 설정 시 알럿 라벨 기반 Explore URL 구성 → ③ 없음. `AlertNotification.grafana_url` 변수로 템플릿/이메일에 자동 노출. generator_url(Prometheus)은 항상 별도 표시
+**Grafana 딥링크** — `services/grafana.py` 우선순위: ① 룰 annotation `kam_grafana_url`(룰 편집기 필드; Operator admission webhook이 점 포함 이름을 거부하므로 kam.io/grafana-url에서 개명됨) → ② `clusters.grafana_url` 설정 시 알럿 라벨 기반 Explore URL 구성 → ③ 없음. `AlertNotification.grafana_url` 변수로 템플릿/이메일에 자동 노출. generator_url(Prometheus)은 항상 별도 표시
 
 **주간 리포트** — 리포트는 "또 하나의 알림 타입":
 - `report_schedules`(team_id, cadence weekly|daily|monthly, weekday, hour, timezone, template_id NULL=내장 리포트 템플릿, next_run_at, last_run_at, last_status) + `report_schedule_channels` 조인
