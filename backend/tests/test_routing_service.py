@@ -367,6 +367,10 @@ async def test_view_notify_share_fans_out_to_targets_include_shared_rule(app) ->
         # The owning team has no rules of its own -- its own outcome is
         # "no_match" regardless of the shared fan-out succeeding.
         assert outcome.reason == "no_match"
+        # ... but shared_channels_notified still surfaces the cross-team
+        # delivery -- reason="no_match" describes the OWNER's own outcome
+        # only, not "nothing was staged anywhere".
+        assert outcome.shared_channels_notified == 1
 
         rows = (await session.execute(select(NotificationOutbox))).scalars().all()
         assert len(rows) == 1
@@ -513,6 +517,9 @@ async def test_view_notify_targets_own_suppress_blocks_only_target(app) -> None:
         assert outcome.routed is True
         assert outcome.channels_notified == 1
         assert event.suppressed_by_rule_id is None
+        # The target's suppress rule blocked its own delivery -- nothing
+        # cross-team was staged.
+        assert outcome.shared_channels_notified == 0
 
         rows = (await session.execute(select(NotificationOutbox))).scalars().all()
         assert len(rows) == 1
@@ -545,6 +552,10 @@ async def test_owners_own_suppress_does_not_block_shared_fan_out(app) -> None:
 
         assert outcome.reason == "suppressed"
         assert event.suppressed_by_rule_id is not None
+        # This is the case M-c guards: reason="suppressed" must not be read
+        # as "nothing was delivered anywhere" -- the target's independent
+        # fan-out still notified.
+        assert outcome.shared_channels_notified == 1
 
         rows = (await session.execute(select(NotificationOutbox))).scalars().all()
         assert len(rows) == 1

@@ -12,7 +12,13 @@ import app.db as db_module
 from app.models.alert import AlertEvent
 from app.models.share import AlertShare
 from app.models.team import Team
-from app.services.sharing import MatchableAlert, share_matches, shared_source_team_ids
+from app.services.sharing import (
+    MatchableAlert,
+    compile_share_scope,
+    scope_matches,
+    share_matches,
+    shared_source_team_ids,
+)
 
 
 def _event(
@@ -82,17 +88,27 @@ def test_share_matches_exclude_matcher_is_or_and_wins() -> None:
     assert share_matches(share, _event(severity="info")) is False
 
 
-def test_share_matches_invalid_matcher_pattern_is_skipped_not_raised() -> None:
-    """Mirrors compile_rule's defensiveness: a malformed pattern degrades
-    that one matcher to never-firing rather than raising out of the whole
-    evaluation.
+def test_share_matches_invalid_matcher_pattern_fails_closed() -> None:
+    """Unlike compile_rule (a routing rule fails *open* -- an uncompilable
+    pattern just degrades that one condition to never-firing), a share's
+    matchers gate a security boundary: if one fails to compile, the whole
+    share must deny rather than silently drop the only restriction the
+    owner configured and fall back to "matches everything".
     """
     share = _share(
         [{"kind": "include", "target": "alertname", "key": None, "pattern": "(unterminated"}]
     )
-    # An include matcher that can't compile is dropped -- with no surviving
-    # include matchers, everything passes (same as no matchers at all).
-    assert share_matches(share, _event()) is True
+    assert share_matches(share, _event()) is False
+
+
+def test_share_matches_malformed_matcher_dict_fails_closed() -> None:
+    """A matcher dict missing a required key (kind/target/pattern) is
+    dropped by build_transient_matchers with a warning rather than raising
+    -- but, same as an uncompilable pattern, that must still deny the share
+    rather than silently narrow its scope.
+    """
+    share = _share([{"kind": "include", "pattern": "x"}])  # missing "target"
+    assert share_matches(share, _event()) is False
 
 
 def test_share_matches_works_on_live_alert_dict_via_matchable_alert() -> None:
@@ -117,6 +133,36 @@ def test_share_matches_works_on_live_alert_dict_via_matchable_alert() -> None:
 def test_share_matches_live_alert_missing_keys_degrades_gracefully() -> None:
     share = _share(None)
     assert share_matches(share, MatchableAlert.from_live_alert({})) is True
+
+
+def test_compile_share_scope_reused_across_many_scope_matches_calls() -> None:
+    """The compile-once/check-many pattern app/api/alerts.py's live/history
+    paths use: one compile_share_scope call, many scope_matches calls
+    against it -- must agree with share_matches's one-shot equivalent for
+    each alert.
+    """
+    share = _share(
+        [{"kind": "include", "target": "label", "key": "severity", "pattern": "^critical$"}]
+    )
+    scope = compile_share_scope(share)
+
+    critical = _event(severity="critical")
+    warning = _event(severity="warning")
+    assert scope_matches(scope, critical) is True
+    assert scope_matches(scope, warning) is False
+    # Same scope object reused for a second round -- no hidden per-call state.
+    assert scope_matches(scope, critical) is True
+    assert scope_matches(scope, warning) is False
+
+    assert share_matches(share, critical) is True
+    assert share_matches(share, warning) is False
+
+
+def test_compile_share_scope_fail_closed_flag_is_precomputed() -> None:
+    share = _share([{"kind": "include", "target": "alertname", "pattern": "(unterminated"}])
+    scope = compile_share_scope(share)
+    assert scope.always_denies is True
+    assert scope_matches(scope, _event()) is False
 
 
 async def _create_team(session: AsyncSession, slug: str) -> Team:

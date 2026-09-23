@@ -315,7 +315,17 @@ class RoutingOutcome:
     routed: bool
     reason: str | None = None  # 'unassigned_team' | 'suppressed' | 'no_match' | None
     suppressed_by_rule_id: int | None = None
+    # Both fields below are scoped to the OWNING team's own routing pass --
+    # `routed`/`channels_notified` say nothing about whether any
+    # `view_notify` share's target team was also notified (a target's own
+    # routing, including its own suppress rules, is independent of the
+    # owner's outcome -- see route_event's docstring). `reason="suppressed"`
+    # in particular must never be read as "nothing was delivered anywhere":
+    # `shared_channels_notified` surfaces the cross-team count so a caller
+    # inspecting this outcome can't mistake owner-side suppression for a
+    # total staging no-op.
     channels_notified: int = 0
+    shared_channels_notified: int = 0
 
 
 def _build_notification(
@@ -464,7 +474,7 @@ async def _route_shared_view(
     trigger: str,
     share: AlertShare,
     notification_payload: dict[str, Any],
-) -> None:
+) -> int:
     """Evaluate one `view_notify` share's target team against `event`,
     scoped to that team's own `include_shared=true` rules -- entirely
     independent of the owning team's own routing outcome (see
@@ -472,18 +482,24 @@ async def _route_shared_view(
     notifications (no outbox rows staged for it), and never touches
     `event.suppressed_by_rule_id` -- that field records the *owning* team's
     suppression history, not a target's.
+
+    Returns the number of outbox rows staged for this share's target team
+    (0 if its own suppress rule blocked it, or no notify rule matched) --
+    `route_event` sums this across every matching share into
+    `RoutingOutcome.shared_channels_notified`.
     """
     suppress_rules, notify_rules = await _load_team_rules(
         session, share.target_team_id, require_include_shared=True
     )
     if any(evaluate(event, rule, rule.matchers, trigger=trigger).matched for rule in suppress_rules):
-        return
+        return 0
 
     matched_channels = _matched_notify_channels(event, notify_rules, trigger)
-    if matched_channels:
-        await _stage_outbox(
-            session, event, trigger, share.target_team_id, matched_channels, notification_payload
-        )
+    if not matched_channels:
+        return 0
+    return await _stage_outbox(
+        session, event, trigger, share.target_team_id, matched_channels, notification_payload
+    )
 
 
 async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) -> RoutingOutcome:
@@ -576,16 +592,28 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
             session, event, trigger, event.team_id, matched_channels, notification_payload
         )
 
+    shared_channels_notified = 0
     for share in matching_shares:
-        await _route_shared_view(session, event, trigger, share, notification_payload)
+        shared_channels_notified += await _route_shared_view(
+            session, event, trigger, share, notification_payload
+        )
 
     if suppressing_rule is not None:
         return RoutingOutcome(
-            routed=False, reason="suppressed", suppressed_by_rule_id=suppressing_rule.id
+            routed=False,
+            reason="suppressed",
+            suppressed_by_rule_id=suppressing_rule.id,
+            shared_channels_notified=shared_channels_notified,
         )
     if not matched_channels:
-        return RoutingOutcome(routed=False, reason="no_match")
-    return RoutingOutcome(routed=created > 0, channels_notified=created)
+        return RoutingOutcome(
+            routed=False, reason="no_match", shared_channels_notified=shared_channels_notified
+        )
+    return RoutingOutcome(
+        routed=created > 0,
+        channels_notified=created,
+        shared_channels_notified=shared_channels_notified,
+    )
 
 
 @dataclass(frozen=True)
@@ -655,13 +683,38 @@ def build_transient_rule(*, team_id: int, **fields: Any) -> RoutingRule:
 
 
 def build_transient_matchers(matchers: Sequence[dict[str, Any]]) -> list[RoutingMatcher]:
-    return [
-        RoutingMatcher(
-            kind=m["kind"],
-            target=m["target"],
-            key=m.get("key"),
-            pattern=m["pattern"],
-            position=position,
+    """Adapt a plain matcher dict list -- a draft rule preview body
+    (already validated by `app.api.routes`'s `MatcherInput`/
+    `_validate_matchers` before it ever reaches here) or an `AlertShare`'s
+    stored `matchers` JSON (not re-validated on every read) -- into
+    transient (never session-added) `RoutingMatcher` rows for
+    `compile_matchers`/`evaluate` to consume.
+
+    A dict missing `kind`/`target`/`pattern` is skipped with a warning
+    rather than raising `KeyError` -- the same fail-soft convention
+    `compile_matchers` uses for a pattern that won't compile. A live
+    create/update body can't produce one (API-layer validation already
+    requires all three); this only guards a stored row that predates that
+    validation, or a direct DB edit to `AlertShare.matchers`. Callers that
+    treat "some matcher didn't survive" as security-relevant (e.g.
+    `app.services.sharing.share_matches`, which must fail *closed* rather
+    than silently widening a share's scope) compare their output count
+    against the input `matchers` length themselves -- this function only
+    logs and skips, it never signals "something was dropped" on its own.
+    """
+    result: list[RoutingMatcher] = []
+    for position, m in enumerate(matchers):
+        kind = m.get("kind")
+        target = m.get("target")
+        pattern = m.get("pattern")
+        if kind is None or target is None or pattern is None:
+            logger.warning(
+                "matcher dict (position=%s) missing kind/target/pattern -- skipping: %r",
+                position,
+                m,
+            )
+            continue
+        result.append(
+            RoutingMatcher(kind=kind, target=target, key=m.get("key"), pattern=pattern, position=position)
         )
-        for position, m in enumerate(matchers)
-    ]
+    return result
