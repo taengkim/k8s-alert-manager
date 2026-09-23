@@ -3,6 +3,7 @@ cluster's Alertmanager, with team-attribution history kept in
 `silence_audit` (Alertmanager itself has no notion of teams).
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -92,7 +93,9 @@ def _compute_state(starts_at: datetime, ends_at: datetime) -> str:
     return "active"
 
 
-def _serialize(raw: dict[str, Any], team: dict[str, Any] | None) -> dict[str, Any]:
+def _serialize(
+    raw: dict[str, Any], team: dict[str, Any] | None, cluster: dict[str, Any]
+) -> dict[str, Any]:
     status_obj = raw.get("status") or {}
     return {
         "id": raw.get("id"),
@@ -103,18 +106,48 @@ def _serialize(raw: dict[str, Any], team: dict[str, Any] | None) -> dict[str, An
         "comment": raw.get("comment"),
         "status": status_obj.get("state"),
         "team": team,
+        "cluster": cluster,
     }
+
+
+async def _fetch_cluster_silences(
+    cluster: Cluster, http_client: httpx.AsyncClient
+) -> tuple[Cluster, list[dict[str, Any]]]:
+    raw_silences = await AlertmanagerClient(cluster, http_client).get_silences()
+    return cluster, raw_silences
 
 
 @router.get("")
 async def list_silences(
-    cluster_id: int = Query(...),
+    cluster_id: list[int] = Query(default=[]),
     team_id: int | None = Query(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     http_client: httpx.AsyncClient = Depends(get_http_client),
 ) -> dict[str, Any]:
-    cluster = await _get_cluster_or_404(session, cluster_id)
+    """Fan out across one or more clusters' Alertmanagers -- `cluster_id`
+    repeats as a query param (`?cluster_id=1&cluster_id=2`); a single value
+    behaves exactly as it did before this endpoint supported multiple, and
+    an id that doesn't resolve to a real cluster still 404s the whole
+    request (matches the old single-cluster behavior exactly). Omitting
+    `cluster_id` entirely defaults to every *enabled* cluster, mirroring
+    `GET /alerts/live`'s fan-out default.
+
+    Unlike `/alerts/live`, one cluster's Alertmanager being unreachable here
+    still 503s the whole request rather than degrading to a per-cluster
+    `errors[]` entry: silences are a lower-traffic, more deliberate view (an
+    operator explicitly checking/managing suppressions) where a silently
+    incomplete list is worse than a clear failure -- and it's what every
+    existing single-cluster caller already depends on.
+    """
+    if cluster_id:
+        clusters = [await _get_cluster_or_404(session, cid) for cid in cluster_id]
+    else:
+        clusters = (
+            (await session.execute(select(Cluster).where(Cluster.enabled.is_(True))))
+            .scalars()
+            .all()
+        )
 
     if team_id is not None:
         await _get_team_or_404(session, team_id)
@@ -122,22 +155,30 @@ async def list_silences(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
     try:
-        raw_silences = await AlertmanagerClient(cluster, http_client).get_silences()
+        fetch_results = await asyncio.gather(
+            *(_fetch_cluster_silences(cluster, http_client) for cluster in clusters)
+        )
     except AlertmanagerUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    am_ids = [raw.get("id") for raw in raw_silences if raw.get("id")]
-    audit_by_id: dict[str, SilenceAudit] = {}
+    cluster_ids = [c.id for c in clusters]
+    am_ids = [raw.get("id") for _, raws in fetch_results for raw in raws if raw.get("id")]
+    # Keyed by (cluster_id, am_silence_id), not am_silence_id alone: two
+    # different clusters' Alertmanagers mint their own silence UUIDs
+    # independently, so a bare am_silence_id isn't unique once more than one
+    # cluster is in play.
+    audit_by_id: dict[tuple[int, str], SilenceAudit] = {}
     if am_ids:
         result = await session.execute(
             select(SilenceAudit).where(
-                SilenceAudit.cluster_id == cluster.id,
+                SilenceAudit.cluster_id.in_(cluster_ids),
                 SilenceAudit.am_silence_id.in_(am_ids),
             )
         )
-        audit_by_id = {row.am_silence_id: row for row in result.scalars().all()}
+        for row in result.scalars().all():
+            audit_by_id[(row.cluster_id, row.am_silence_id)] = row
 
     team_ids_needed = {row.team_id for row in audit_by_id.values() if row.team_id is not None}
     teams_by_id: dict[int, Team] = {}
@@ -158,27 +199,30 @@ async def list_silences(
         member_team_ids = set(result.scalars().all())
 
     items = []
-    for raw in raw_silences:
-        row = audit_by_id.get(raw.get("id"))
-        row_team_id = row.team_id if row else None
+    for cluster, raw_silences in fetch_results:
+        for raw in raw_silences:
+            row = audit_by_id.get((cluster.id, raw.get("id")))
+            row_team_id = row.team_id if row else None
 
-        if team_id is not None:
-            if row_team_id != team_id:
+            if team_id is not None:
+                if row_team_id != team_id:
+                    continue
+            elif (
+                member_team_ids is not None
+                and row_team_id is not None
+                and row_team_id not in member_team_ids
+            ):
                 continue
-        elif (
-            member_team_ids is not None
-            and row_team_id is not None
-            and row_team_id not in member_team_ids
-        ):
-            continue
 
-        team_out = None
-        if row_team_id is not None:
-            team = teams_by_id.get(row_team_id)
-            if team is not None:
-                team_out = {"id": team.id, "slug": team.slug}
+            team_out = None
+            if row_team_id is not None:
+                team = teams_by_id.get(row_team_id)
+                if team is not None:
+                    team_out = {"id": team.id, "slug": team.slug}
 
-        items.append(_serialize(raw, team_out))
+            items.append(
+                _serialize(raw, team_out, {"id": cluster.id, "name": cluster.name})
+            )
 
     return {"silences": items}
 
