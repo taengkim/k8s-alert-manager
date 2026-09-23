@@ -7,6 +7,7 @@ import { TeamProvider } from "./auth/TeamContext";
 import TeamSwitcher from "./components/TeamSwitcher";
 import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
+import Channels from "./pages/Channels";
 import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
 import RuleEditor from "./pages/RuleEditor";
@@ -110,12 +111,14 @@ export default function App() {
             <Route path="/rules/new" element={<RuleEditor />} />
             <Route path="/rules/:slug/edit" element={<RuleEditor />} />
             <Route path="/silences" element={<Silences />} />
+            <Route path="/channels" element={<Channels />} />
             {sections
               .filter(
                 (section) =>
                   section.key !== "alerts" &&
                   section.key !== "rules" &&
-                  section.key !== "silences",
+                  section.key !== "silences" &&
+                  section.key !== "channels",
               )
               .map((section) => (
                 <Route

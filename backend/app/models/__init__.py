@@ -6,6 +6,7 @@ Import every model module here so `Base.metadata` is fully populated for
 
 from app.models.alert import AlertEvent
 from app.models.audit import AuditLog
+from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.silence import SilenceAudit
 from app.models.team import Team, TeamLdapMapping, TeamMembership
@@ -14,6 +15,7 @@ from app.models.user import User
 __all__ = [
     "AlertEvent",
     "AuditLog",
+    "Channel",
     "Cluster",
     "SilenceAudit",
     "Team",

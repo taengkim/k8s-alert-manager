@@ -7,6 +7,8 @@ from fastapi import FastAPI
 import app.db as db_module
 from app.api.alerts import router as alerts_router
 from app.api.auth import router as auth_router
+from app.api.channels import router as channels_router
+from app.api.channels import types_router as channel_types_router
 from app.api.clusters import namespaces_router
 from app.api.clusters import router as clusters_router
 from app.api.metrics import router as metrics_router
@@ -17,6 +19,7 @@ from app.api.silences import router as silences_router
 from app.api.teams import router as teams_router
 from app.api.users import router as users_router
 from app.api.webhook import router as webhook_router
+from app.channels.registry import ChannelRegistry
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
 from app.services.k8s import K8sClientFactory
@@ -36,6 +39,18 @@ async def lifespan(app: FastAPI):
     # Caches per-cluster kubernetes ApiClients (see K8sClientFactory docstring
     # for the cache-invalidation rule).
     app.state.k8s_factory = K8sClientFactory()
+
+    # Discovered once at startup: built-in channels + entry-point/plugins-dir
+    # third-party channels (see app/channels/registry.py). discover() already
+    # isolates a single broken plugin file/class -- this try/except is a
+    # second line of defense so an unanticipated failure there still can't
+    # take the whole app down, the same posture as ensure_default_cluster
+    # below.
+    app.state.channel_registry = ChannelRegistry()
+    try:
+        app.state.channel_registry.discover()
+    except Exception:
+        logger.exception("failed to discover notification channels")
 
     try:
         async with db_module.async_session_factory() as session:
@@ -64,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(silences_router)
     app.include_router(webhook_router)
+    app.include_router(channel_types_router)
+    app.include_router(channels_router)
     return app
 
 

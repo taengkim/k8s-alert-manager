@@ -1,0 +1,75 @@
+import { apiFetch } from "./client";
+
+/** A JSON Schema (draft 2020-12-ish) property description, as returned by
+ * a channel type's `config_schema.model_json_schema()`. Only the subset
+ * `JsonSchemaForm` actually renders is typed here -- see that file's
+ * top-of-file note for the supported subset.
+ */
+export interface JsonSchemaProperty {
+  type?: string | string[];
+  format?: string;
+  enum?: (string | number)[];
+  items?: JsonSchemaProperty;
+  default?: unknown;
+  title?: string;
+  description?: string;
+  minItems?: number;
+}
+
+export interface JsonSchemaObject {
+  type?: string;
+  title?: string;
+  properties: Record<string, JsonSchemaProperty>;
+  required?: string[];
+}
+
+export interface ChannelType {
+  type_name: string;
+  display_name: string;
+  json_schema: JsonSchemaObject;
+}
+
+export interface Channel {
+  id: number;
+  team_id: number;
+  name: string;
+  type: string;
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+export interface ChannelCreateInput {
+  name: string;
+  type: string;
+  config: Record<string, unknown>;
+}
+
+export interface ChannelUpdateInput {
+  name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+export function listChannelTypes(): Promise<ChannelType[]> {
+  return apiFetch<ChannelType[]>("/channel-types");
+}
+
+export function listChannels(teamId: number): Promise<Channel[]> {
+  return apiFetch<Channel[]>(`/teams/${teamId}/channels`);
+}
+
+export function createChannel(teamId: number, body: ChannelCreateInput): Promise<Channel> {
+  return apiFetch<Channel>(`/teams/${teamId}/channels`, { method: "POST", body });
+}
+
+export function patchChannel(channelId: number, body: ChannelUpdateInput): Promise<Channel> {
+  return apiFetch<Channel>(`/channels/${channelId}`, { method: "PATCH", body });
+}
+
+export function deleteChannel(channelId: number): Promise<void> {
+  return apiFetch<void>(`/channels/${channelId}`, { method: "DELETE" });
+}
+
+export function testChannel(channelId: number): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>(`/channels/${channelId}/test`, { method: "POST" });
+}

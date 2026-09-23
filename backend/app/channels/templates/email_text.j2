@@ -1,0 +1,28 @@
+{{ subject }}
+
+Cluster:    {{ n.cluster }}
+Namespace:  {{ n.namespace or "-" }}
+Team:       {{ n.team_slug }}
+Starts At:  {{ n.starts_at }}
+{% if n.ends_at %}
+Ends At:    {{ n.ends_at }}
+{% endif %}
+
+Labels:
+{% for key, value in n.labels.items() %}
+  {{ key }}: {{ value }}
+{% endfor %}
+
+Annotations:
+{% for key, value in n.annotations.items() %}
+  {{ key }}: {{ value }}
+{% endfor %}
+{% if n.runbook_url %}
+Runbook: {{ n.runbook_url }}
+{% endif %}
+{% if n.grafana_url %}
+Grafana: {{ n.grafana_url }}
+{% endif %}
+{% if n.app_url %}
+View in app: {{ n.app_url }}
+{% endif %}
