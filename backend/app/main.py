@@ -41,9 +41,16 @@ async def lifespan(app: FastAPI):
     app.state.k8s_factory = K8sClientFactory()
 
     # Discovered once at startup: built-in channels + entry-point/plugins-dir
-    # third-party channels (see app/channels/registry.py).
+    # third-party channels (see app/channels/registry.py). discover() already
+    # isolates a single broken plugin file/class -- this try/except is a
+    # second line of defense so an unanticipated failure there still can't
+    # take the whole app down, the same posture as ensure_default_cluster
+    # below.
     app.state.channel_registry = ChannelRegistry()
-    app.state.channel_registry.discover()
+    try:
+        app.state.channel_registry.discover()
+    except Exception:
+        logger.exception("failed to discover notification channels")
 
     try:
         async with db_module.async_session_factory() as session:

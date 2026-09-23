@@ -15,9 +15,13 @@ wins -- see `_register`):
    Every `NotificationChannel` subclass defined directly in such a file is
    registered.
 
-A single broken plugin (syntax error, import error, whatever) is logged and
-skipped rather than blocking startup -- one bad file must not take the whole
-app down.
+A single broken plugin -- a file that fails to import (syntax error, import
+error, ...), or a class that imports fine but is itself malformed (e.g.
+missing `type_name`) -- is logged and skipped rather than blocking startup.
+Isolation is per-class, not just per-file: one bad class in an otherwise
+valid plugin file doesn't stop its siblings (or any other source) from
+registering. `app/main.py`'s lifespan wraps `discover()` itself the same
+way, as a second line of defense.
 """
 
 import importlib.metadata
@@ -90,7 +94,23 @@ class ChannelRegistry:
                     entry_point.value,
                 )
                 continue
-            self._register(cls, source=f"entry point '{entry_point.name}'")
+
+            # Deliberately broad: an untrusted class can fail registration in
+            # ways we can't enumerate (missing type_name -> AttributeError, a
+            # misbehaving classmethod/property, ...). A class that imports
+            # fine but is itself malformed must not take the whole app down
+            # -- same reasoning as the plugins-dir per-class guard below.
+            source = f"entry point '{entry_point.name}'"
+            try:
+                self._register(cls, source=source)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "failed to register channel class '%s' from %s: %s: %s",
+                    getattr(cls, "__name__", cls),
+                    source,
+                    type(exc).__name__,
+                    exc,
+                )
 
     def _discover_plugins_dir(self) -> None:
         plugins_dir = get_settings().plugins_dir
@@ -119,7 +139,22 @@ class ChannelRegistry:
                     and obj.__module__ == module.__name__
                 ):
                     found_any = True
-                    self._register(obj, source=f"plugin file '{path.name}'")
+                    # Deliberately broad: same reasoning as the entry-point
+                    # guard above -- the file imported fine, but this
+                    # particular class is malformed (e.g. missing
+                    # `type_name`); log and move on rather than letting it
+                    # crash discover() (and, via the app lifespan, startup).
+                    source = f"plugin file '{path.name}'"
+                    try:
+                        self._register(obj, source=source)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "failed to register channel class '%s' from %s: %s: %s",
+                            obj.__name__,
+                            source,
+                            type(exc).__name__,
+                            exc,
+                        )
 
             if not found_any:
                 logger.warning(
