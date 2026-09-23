@@ -73,10 +73,23 @@ def _parse_am_timestamp(value: str | None) -> datetime | None:
     precision AM timestamps parse fine as-is. The one thing that needs
     handling explicitly is AM's Go zero-value ("no end time"), which is a
     literal timestamp string rather than null.
+
+    The result is always normalized to a UTC-aware datetime: AM sends an
+    explicit offset (`Z` or `+HH:MM`), so `.astimezone(UTC)` here is a
+    pure timezone conversion, not a "treat naive-as-local" guess. This is
+    the one place identity- and display-relevant timestamps enter the
+    system, so it's also the one place that needs to normalize them --
+    without it, the same instant delivered as `...Z` on one webhook call
+    and `...+09:00` on a retry would compare unequal and mint two rows for
+    what's really the same alert (see `_get_existing`'s identity lookup).
+
+    Raises `ValueError` (propagated from `fromisoformat`) if `value` is a
+    non-empty string that isn't valid RFC3339 -- callers must handle a
+    malformed timestamp explicitly rather than let it degrade to `None`.
     """
     if value is None or value == _AM_ZERO_TIME:
         return None
-    return datetime.fromisoformat(value)
+    return datetime.fromisoformat(value).astimezone(UTC)
 
 
 async def _resolve_team_id(session: AsyncSession, slug: str | None) -> int | None:

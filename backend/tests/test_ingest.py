@@ -259,6 +259,59 @@ def test_none_ends_at_parses_to_none() -> None:
     assert _parse_am_timestamp(None) is None
 
 
+def test_offset_timestamp_normalizes_to_utc() -> None:
+    """A non-Z offset must convert to the equivalent UTC instant, not just
+    keep its own offset -- otherwise the same instant delivered with two
+    different offsets would compare unequal and defeat identity dedup.
+    """
+    parsed = _parse_am_timestamp("2026-09-22T09:00:00+09:00")
+    assert parsed == datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC)
+    assert parsed.tzinfo == UTC
+
+
+# -- C1: UTC normalization / identity dedup across offsets ----------------
+
+
+async def test_same_instant_different_offset_strings_dedup_to_one_row(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+
+        payload_z = AlertmanagerWebhookPayload(
+            alerts=[_alert(starts_at="2026-09-22T00:00:00Z")]
+        )
+        # Same instant as above, expressed with a +09:00 offset instead.
+        payload_offset = AlertmanagerWebhookPayload(
+            alerts=[_alert(starts_at="2026-09-22T09:00:00+09:00")]
+        )
+
+        r1 = await ingest_webhook(session, cluster, payload_z)
+        await session.commit()
+        r2 = await ingest_webhook(session, cluster, payload_offset)
+        await session.commit()
+
+        assert r1.created == 1
+        assert r2.created == 0
+        assert r2.repeats == 1
+
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].receive_count == 2
+
+
+async def test_starts_at_stored_as_utc_aware(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(
+            alerts=[_alert(starts_at="2026-09-22T09:00:00+09:00")]
+        )
+        await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        row = (await session.execute(select(AlertEvent))).scalar_one()
+        assert row.starts_at.tzinfo is not None
+        assert row.starts_at == datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC)
+
+
 async def test_integrity_error_fallback_updates_existing_row(app) -> None:
     """Simulates a concurrent webhook delivery that already won the race for
     this identity: a conflicting row is pre-inserted directly, and

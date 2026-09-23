@@ -277,6 +277,23 @@ async def test_page_size_over_max_is_rejected(client: AsyncClient) -> None:
     assert response.status_code == 422
 
 
+async def test_history_item_timestamps_are_offset_aware(client: AsyncClient) -> None:
+    """C1 regression: on SQLite, a plain DateTime(timezone=True) drops the
+    UTC offset on read, so the JSON response would carry an offset-less
+    string that the frontend's dayjs(...) parses as *local* time. Every
+    timestamp field must serialize with an explicit UTC offset.
+    """
+    cluster_id = await _default_cluster_id()
+    await _create_event(cluster_id=cluster_id, fingerprint="f1", alertname="A", team_id=None)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/history")
+    item = response.json()["items"][0]
+    for field in ("starts_at", "first_received_at", "last_received_at"):
+        value = item[field]
+        assert value.endswith(("+00:00", "Z")), f"{field}={value!r} has no UTC offset"
+
+
 # -- detail ---------------------------------------------------------------
 
 

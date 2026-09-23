@@ -1,7 +1,10 @@
 from collections.abc import AsyncGenerator
+from datetime import UTC
 
+from sqlalchemy import DateTime
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.types import TypeDecorator
 
 from app.config import get_settings
 
@@ -13,6 +16,31 @@ async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator):
+    """A `DateTime(timezone=True)` that always round-trips as UTC-aware.
+
+    SQLite has no native tz-aware timestamp type: regardless of the
+    column's `timezone=True`, its DATETIME storage format drops the UTC
+    offset on write and the driver hands back a naive `datetime` on read.
+    Every value this app stores in a `UTCDateTime` column is normalized to
+    UTC before it reaches the ORM (see `_parse_am_timestamp` and the
+    `datetime.now(UTC)` column defaults), so a naive value coming back is
+    always UTC in fact -- this re-attaches that tzinfo instead of leaving
+    callers to a bare naive datetime that's easy to mishandle as local
+    time (e.g. by a frontend `Date`/dayjs parse). On drivers that do
+    preserve the offset (e.g. Postgres' timestamptz), the value already
+    comes back aware and this is a no-op.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_result_value(self, value, dialect):
+        if value is not None and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

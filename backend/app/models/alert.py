@@ -1,11 +1,11 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
-from app.db import Base
+from app.db import Base, UTCDateTime
 
 
 class AlertEvent(Base):
@@ -47,13 +47,13 @@ class AlertEvent(Base):
     team_id: Mapped[int | None] = mapped_column(
         ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
     )
-    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    starts_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
+    ends_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     generator_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     first_received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+        UTCDateTime, default=lambda: datetime.now(UTC)
     )
     last_received_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+        UTCDateTime, default=lambda: datetime.now(UTC)
     )
     receive_count: Mapped[int] = mapped_column(default=1)
