@@ -1,4 +1,4 @@
-.PHONY: dev-deps dev-deps-down dev-up dev-down backend frontend migrate test test-backend
+.PHONY: dev-deps dev-deps-down dev-up dev-down backend frontend migrate seed-dev test test-backend
 
 dev-deps:
 	docker compose -f docker-compose.dev.yml up -d
@@ -20,6 +20,9 @@ frontend:
 
 migrate:
 	cd backend && uv run alembic upgrade head
+
+seed-dev:
+	cd backend && uv run python -m scripts.seed_dev
 
 test: test-backend
 	cd frontend && npm run build

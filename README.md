@@ -27,3 +27,9 @@ DB 마이그레이션 적용:
 ```bash
 make migrate
 ```
+
+개발용 admin 계정(alice)과 platform 팀을 시드(멱등, 마이그레이션 포함):
+
+```bash
+make seed-dev
+```

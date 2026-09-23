@@ -17,6 +17,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
+import { Link } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { getLiveAlerts } from "../api/alerts";
@@ -177,9 +178,14 @@ export default function Alerts() {
             ({alerts.length}건)
           </Text>
         </h2>
-        <Button onClick={() => query.refetch()} loading={query.isFetching}>
-          새로고침
-        </Button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link to="/alerts/history">
+            <Button>이력 보기</Button>
+          </Link>
+          <Button onClick={() => query.refetch()} loading={query.isFetching}>
+            새로고침
+          </Button>
+        </div>
       </div>
 
       {errors.map((err) => (
