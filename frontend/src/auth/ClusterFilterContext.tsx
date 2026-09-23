@@ -73,19 +73,22 @@ export function ClusterFilterProvider({ children }: { children: ReactNode }) {
   // already honors for an explicit pick) would otherwise silently persist
   // in the URL/localStorage forever, sending every read view a dead
   // cluster_id (empty results, no error) and showing a bare numeric tag in
-  // the header select. Runs whenever the fetched cluster list itself
-  // changes (first load, or a later refetch after an admin deletes a
-  // cluster elsewhere) -- not on every selectedIds change, so this can't
-  // fight a user's own in-progress selection.
+  // the header select. Gated on `isSuccess`, not merely "not loading": a
+  // failed *first* fetch also has isLoading=false but clusters=[] (nothing
+  // to prune against yet), which would otherwise wipe the selection outright
+  // on a transient network error. A later refetch failure is harmless either
+  // way -- React Query keeps the last successful `data` (and isSuccess
+  // stays true) until a new fetch actually succeeds, so `clusters` here
+  // doesn't regress to empty out from under an established selection.
   useEffect(() => {
-    if (clustersQuery.isLoading || selectedIds.length === 0) return;
+    if (!clustersQuery.isSuccess || selectedIds.length === 0) return;
     const existingIds = new Set(clusters.map((c) => c.id));
     const pruned = selectedIds.filter((id) => existingIds.has(id));
     if (pruned.length !== selectedIds.length) {
       setSelectedIds(pruned);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clusters, clustersQuery.isLoading]);
+  }, [clusters, clustersQuery.isSuccess]);
 
   const activeClusters = useMemo(() => {
     if (selectedIds.length === 0) return clusters.filter((c) => c.enabled);
