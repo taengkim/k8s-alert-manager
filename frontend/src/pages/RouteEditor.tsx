@@ -63,6 +63,21 @@ const MATCHER_TARGET_OPTIONS: { value: MatcherTarget; label: string }[] = [
   { value: "annotation", label: "어노테이션" },
 ];
 
+// Preview only cares about what feeds evaluate() -- not channel_ids (which
+// preview never uses), so clicking "최근 알럿에 테스트" shouldn't be blocked
+// by "채널을 하나 이상 선택하세요" while a draft's filters are still being
+// worked out. "name" stays in this list because the backend's RouteWrite
+// schema requires it even for a preview-only draft.
+const PREVIEW_VALIDATE_FIELDS = [
+  "name",
+  "action",
+  "severities",
+  "namespaces_include",
+  "namespaces_exclude",
+  "clusters",
+  "matchers",
+];
+
 const VERDICT_LABEL: Record<RouteVerdict, string> = {
   matched: "일치",
   cluster_filtered: "클러스터 필터링됨",
@@ -223,7 +238,12 @@ export default function RouteEditor() {
     setPreviewError(null);
     setPreviewLoading(true);
     try {
-      const values = await form.validateFields();
+      // Only the fields evaluate() actually reads are validated -- e.g. an
+      // incomplete channel_ids selection shouldn't block trying a draft's
+      // filters out. validateFields(subset) only returns that subset, so
+      // the full current form state is read separately via getFieldsValue.
+      await form.validateFields(PREVIEW_VALIDATE_FIELDS);
+      const values = form.getFieldsValue(true) as FormValues;
       const results = await previewRoute(teamId, toBody(values));
       setPreviewResults(results);
     } catch (err) {
@@ -276,6 +296,12 @@ export default function RouteEditor() {
       render: (v: string | null) => v ?? "-",
     },
     { title: "클러스터", dataIndex: "cluster", key: "cluster" },
+    {
+      title: "현재 상태",
+      dataIndex: "status",
+      key: "status",
+      render: (v: string) => (v === "firing" ? "firing" : "resolved"),
+    },
     {
       title: "판정",
       dataIndex: "verdict",
@@ -422,11 +448,17 @@ export default function RouteEditor() {
       <Title level={5} style={{ marginTop: 32 }}>
         미리보기
       </Title>
-      <Space style={{ marginBottom: 16 }}>
-        <Button onClick={() => void handlePreview()} loading={previewLoading}>
-          최근 알럿에 테스트
-        </Button>
-        <Text type="secondary">최근 알럿 이력 최대 200건에 이 규칙을 평가합니다.</Text>
+      <Space direction="vertical" style={{ marginBottom: 16 }}>
+        <Space>
+          <Button onClick={() => void handlePreview()} loading={previewLoading}>
+            최근 알럿에 테스트
+          </Button>
+          <Text type="secondary">최근 알럿 이력 최대 200건에 이 규칙을 평가합니다.</Text>
+        </Space>
+        <Text type="secondary">
+          "현재 상태"는 이력에 기록된 실제 상태이며, 판정은 항상 이 알럿이 firing으로
+          들어왔을 때를 기준으로 평가합니다.
+        </Text>
       </Space>
       {previewError && (
         <Alert type="error" showIcon message={previewError} style={{ marginBottom: 16 }} />

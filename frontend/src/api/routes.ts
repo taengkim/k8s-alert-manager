@@ -63,6 +63,10 @@ export interface RoutePreviewItem {
   severity: string | null;
   namespace: string | null;
   cluster: string;
+  /** The event's actual stored status ("firing" | "resolved") -- the
+   * verdict itself is always computed as if the alert had just fired
+   * (trigger="firing"), regardless of this. */
+  status: string;
   verdict: RouteVerdict;
   blocking_matcher_position: number | null;
 }
