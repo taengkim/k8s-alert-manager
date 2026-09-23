@@ -23,6 +23,9 @@ export interface RouteOut {
   enabled: boolean;
   notify_on_firing: boolean;
   notify_on_resolved: boolean;
+  /** Phase 14: when true, this rule also evaluates against alerts shared
+   * into this team via a 'view_notify' AlertShare. */
+  include_shared: boolean;
   severities: string[] | null;
   namespaces_include: string[] | null;
   namespaces_exclude: string[] | null;
@@ -41,6 +44,7 @@ export interface RouteWriteInput {
   enabled: boolean;
   notify_on_firing: boolean;
   notify_on_resolved: boolean;
+  include_shared: boolean;
   severities?: string[];
   namespaces_include?: string[];
   namespaces_exclude?: string[];
