@@ -70,16 +70,35 @@ async def test_sandbox_blocks_self_globals_gadget() -> None:
     assert "{'" not in outcome.message.body  # no dict repr of real globals leaked
 
 
-async def test_sandbox_blocks_dunder_class_access_in_preview() -> None:
-    """Unlike render()'s lenient delivery-time environment, preview() uses a
-    StrictUndefined pass specifically so a sandbox violation is surfaced as
-    an actual error to the template author, not silently swallowed.
+async def test_sandbox_blocks_active_gadget_chain_in_preview() -> None:
+    """preview() runs through the same lenient (ChainableUndefined)
+    environment as render() (see templating.py's module docstring for why
+    it dropped a separate StrictUndefined pass) -- a *passive* dunder access
+    that's merely printed (e.g. `{{ ''.__class__ }}`) safely resolves to an
+    empty string either way (see the sibling test below) and isn't reported
+    as an error. What still must be caught here is any construct that
+    actually *does* something with the blocked value -- calling, iterating,
+    etc. -- which raises regardless of which Undefined subclass is in play.
     """
     n = _notification()
-    result = await preview({"title": "{{ ''.__class__ }}", "body": "ok"}, n)
+    result = await preview(
+        {"title": "{{ ().__class__.__bases__[0].__subclasses__() }}", "body": "ok"}, n
+    )
     assert result["rendered"] is None
     assert result["errors"]
     assert "SecurityError" in result["errors"][0]["message"]
+
+
+async def test_passive_dunder_access_in_preview_is_not_an_error() -> None:
+    """A merely-printed unsafe attribute access (no call/iterate to
+    weaponize it) leaks nothing -- it resolves to an empty string under the
+    lenient environment, same as any other undefined value, rather than
+    being flagged as a sandbox error.
+    """
+    n = _notification()
+    result = await preview({"title": "{{ ''.__class__ }}", "body": "ok"}, n)
+    assert result["errors"] == []
+    assert result["rendered"]["title"] == ""
 
 
 async def test_sandbox_allows_cycler_and_joiner() -> None:

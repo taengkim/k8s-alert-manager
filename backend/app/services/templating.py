@@ -1,13 +1,18 @@
 """Sandboxed message-template rendering (Phase 13).
 
-Two `jinja2.sandbox.SandboxedEnvironment` instances back everything here:
-one for delivery (`ChainableUndefined` -- a missing variable just renders as
-empty, so a template referencing a field this notification happens not to
-carry never blows up a live send) and one for preview
-(`StrictUndefined` -- surfaces exactly where the template *would* break, for
-the editor's live-preview panel). `SandboxedEnvironment` itself is what
-blocks a template from reaching unsafe attributes (`''.__class__`, `self`,
-etc.) -- see the "sandbox escape" tests in tests/test_templating.py.
+One `jinja2.sandbox.SandboxedEnvironment` (`ChainableUndefined` -- a missing
+variable just renders as empty, so a template referencing a field this
+notification happens not to carry never blows up a live send) backs both
+delivery and preview rendering. `SandboxedEnvironment` itself is what blocks
+a template from reaching unsafe attributes (`''.__class__`, `self`, etc.) --
+see the "sandbox escape" tests in tests/test_templating.py. A prior revision
+also ran preview's render through a second, `StrictUndefined` pass on the
+theory that it would catch problems the lenient pass wouldn't; it didn't --
+anything a sandbox violation could actually *do* (call, iterate, ...) raises
+via `Undefined`'s own "active operation" guards regardless of which
+`Undefined` subclass is in play, so the strict pass was pure overhead (2x
+the render cost) with no coverage gain. Dropped; see git history if this
+needs revisiting.
 
 `render()` is the delivery-time entry point (called from
 `app/worker/outbox.py`'s `deliver()`): it never lets a broken template
@@ -17,24 +22,35 @@ error that slipped past validation, a timeout, whatever -- falls back to
 worker can record *why* on the outbox row without failing the delivery.
 
 `preview()` is the opposite: it's meant to show a template author exactly
-what's wrong, so it never falls back -- a sandbox violation or undefined
-variable there is reported, not hidden behind a default template.
+what's wrong, so it never falls back -- a sandbox violation there is
+reported, not hidden behind a default template.
+
+Every render (delivery and preview alike) runs on a small *dedicated*
+thread pool (`RENDER_EXECUTOR`), not the asyncio default executor that
+`asyncio.to_thread`/LDAP auth/every k8s client call share -- a render stuck
+past its timeout leaves its thread permanently occupied (Python has no safe
+way to force-kill a running thread), and that must never be able to starve
+unrelated request handling. `_RENDER_SEMAPHORE` (sized to match the pool)
+bounds how many renders can be in flight at once, so `RENDER_TIMEOUT_SECONDS`
+actually measures execution time for a caller that got a worker slot rather
+than time spent queued behind others -- without it, a burst of concurrent
+renders would each spend most of their timeout budget just waiting for a
+free thread, then report a spurious "timeout" instead of ever actually
+attempting to render. None of this can force a truly stuck render to stop:
+worst case, all `RENDER_MAX_WORKERS` threads end up permanently wedged on
+abandoned work, and further render calls queue behind the semaphore -- but
+that queue is isolated to this module's own pool, so it degrades template
+rendering, not authentication or cluster access.
 """
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from jinja2 import (
-    ChainableUndefined,
-    StrictUndefined,
-    TemplateSyntaxError,
-    Undefined,
-    UndefinedError,
-    meta,
-)
+from jinja2 import ChainableUndefined, TemplateSyntaxError, Undefined, meta
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,8 +61,15 @@ logger = logging.getLogger(__name__)
 
 RENDER_TIMEOUT_SECONDS = 2
 MAX_RENDERED_BYTES = 256 * 1024
+RENDER_MAX_WORKERS = 4
 
 TEMPLATE_SLOTS = ("title", "body", "body_html")
+
+# Dedicated pool + matching semaphore -- see module docstring.
+RENDER_EXECUTOR = ThreadPoolExecutor(
+    max_workers=RENDER_MAX_WORKERS, thread_name_prefix="kam-render"
+)
+_RENDER_SEMAPHORE = asyncio.Semaphore(RENDER_MAX_WORKERS)
 
 
 # -- filters -----------------------------------------------------------------
@@ -125,16 +148,11 @@ def _build_env(undefined_cls: type[Undefined], *, autoescape: bool) -> Sandboxed
     return env
 
 
-# Operational (delivery-time): missing variables render empty rather than
-# raising -- see module docstring.
+# The one rendering environment, shared by delivery and preview alike (see
+# module docstring for why preview no longer gets its own StrictUndefined
+# pass). Missing variables render empty rather than raising.
 _OPERATIONAL_ENV = _build_env(ChainableUndefined, autoescape=False)
 _OPERATIONAL_HTML_ENV = _build_env(ChainableUndefined, autoescape=True)
-
-# Preview: StrictUndefined so an actual render attempt surfaces exactly
-# where a template touches something undefined, instead of silently
-# swallowing it -- see preview()'s use of it below.
-_PREVIEW_ENV = _build_env(StrictUndefined, autoescape=False)
-_PREVIEW_HTML_ENV = _build_env(StrictUndefined, autoescape=True)
 
 
 # -- app-wide default template (used when a channel type declares none) -----
@@ -194,8 +212,17 @@ def _compile_and_render(env: SandboxedEnvironment, source: str, context: dict[st
 
 
 async def _render_one(env: SandboxedEnvironment, source: str, context: dict[str, Any]) -> str:
-    async with asyncio.timeout(RENDER_TIMEOUT_SECONDS):
-        rendered = await asyncio.to_thread(_compile_and_render, env, source, context)
+    # Semaphore first, timeout second: acquiring blocks (asynchronously, off
+    # any timeout clock) until a pool slot is actually available, so the 2s
+    # budget that follows measures this render's own execution time -- not
+    # queueing delay behind other renders sharing the pool. See module
+    # docstring.
+    async with _RENDER_SEMAPHORE:
+        loop = asyncio.get_running_loop()
+        async with asyncio.timeout(RENDER_TIMEOUT_SECONDS):
+            rendered = await loop.run_in_executor(
+                RENDER_EXECUTOR, _compile_and_render, env, source, context
+            )
 
     encoded = rendered.encode("utf-8")
     if len(encoded) > MAX_RENDERED_BYTES:
@@ -302,6 +329,10 @@ def validate_template_strings(template_strs: dict[str, str | None]) -> list[dict
     violations or undefined variables -- those are only detectable by
     actually attempting a render (see `preview()`), which needs a concrete
     `AlertNotification` context this function deliberately doesn't require.
+
+    `.parse()` doesn't touch the `Undefined` class at all (it only compiles
+    to an AST) -- `_OPERATIONAL_ENV` is used here purely as "a" sandboxed
+    environment, not for its lenient-undefined behavior specifically.
     """
     errors: list[dict[str, Any]] = []
     for slot in TEMPLATE_SLOTS:
@@ -309,7 +340,7 @@ def validate_template_strings(template_strs: dict[str, str | None]) -> list[dict
         if not source:
             continue
         try:
-            _PREVIEW_ENV.parse(source)
+            _OPERATIONAL_ENV.parse(source)
         except TemplateSyntaxError as exc:
             errors.append(
                 {"slot": slot, "lineno": exc.lineno, "message": exc.message or str(exc)}
@@ -337,7 +368,7 @@ _CONTEXT_VARIABLE_NAMES = {
 
 def _undeclared_variables(slot: str, source: str) -> set[str]:
     try:
-        ast = _PREVIEW_ENV.parse(source)
+        ast = _OPERATIONAL_ENV.parse(source)
     except TemplateSyntaxError:
         return set()
     return meta.find_undeclared_variables(ast) - _CONTEXT_VARIABLE_NAMES
@@ -357,20 +388,19 @@ async def preview(
       necessarily a broken template -- it could be a typo, or a slot that's
       fine rendering empty for this particular sample).
     - `errors`: syntax errors (with line numbers) if any slot fails to
-      parse, or -- if parsing succeeds but rendering raises for a reason
-      *other* than an undefined variable (a sandbox violation, a timeout,
-      ...) -- a single entry describing that failure. `rendered` is `None`
-      whenever `errors` is non-empty.
+      parse, or -- if parsing succeeds but the actual render raises (a
+      sandbox violation, a timeout, ...) -- a single entry describing that
+      failure. `rendered` is `None` whenever `errors` is non-empty.
 
-    A `_PREVIEW_ENV` (`StrictUndefined`) pass runs first specifically to
-    surface those non-undefined problems -- sandbox violations in
-    particular must be reported as real errors here, not silently
-    tolerated the way `render()`'s fallback does at delivery time. Its
-    `UndefinedError`s are expected and swallowed (undefined variables are
-    already fully enumerated via the static analysis above); the actual
-    `rendered` output for display always comes from a second, lenient pass
-    (`_OPERATIONAL_ENV`/`ChainableUndefined`) so a merely-undefined variable
-    never leaves the preview panel blank.
+    One render pass, through the same lenient (`ChainableUndefined`)
+    environment `render()` uses -- see the module docstring for why preview
+    doesn't also run a separate `StrictUndefined` pass: anything a sandbox
+    violation could actually *do* still raises regardless of which
+    `Undefined` subclass is in play, so a second strict-only pass added
+    render cost without adding coverage. A merely undefined variable (no
+    "active" operation on it) renders empty rather than raising -- already
+    fully captured by the static `warnings` above, not something this pass
+    needs to catch too.
     """
     errors = validate_template_strings(template_strs)
     warnings = sorted(
@@ -384,21 +414,10 @@ async def preview(
         return {"rendered": None, "errors": errors, "warnings": warnings}
 
     try:
-        await _render_slots(template_strs, n, env=_PREVIEW_ENV, html_env=_PREVIEW_HTML_ENV)
-    except UndefinedError:
-        pass  # Expected -- already reflected in `warnings` above.
-    except Exception as exc:  # noqa: BLE001 -- sandbox SecurityError, TimeoutError, etc.
-        return {
-            "rendered": None,
-            "errors": [{"slot": None, "lineno": None, "message": f"{type(exc).__name__}: {exc}"}],
-            "warnings": warnings,
-        }
-
-    try:
         message = await _render_slots(
             template_strs, n, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 -- sandbox SecurityError, TimeoutError, etc.
         return {
             "rendered": None,
             "errors": [{"slot": None, "lineno": None, "message": f"{type(exc).__name__}: {exc}"}],

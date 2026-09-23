@@ -309,7 +309,7 @@ async def test_delete_template_nulls_channel_and_route_references(client: AsyncC
 
 
 async def test_preview_uses_sample_when_no_event_given(client: AsyncClient) -> None:
-    await login_as(client, username="alice")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
 
     resp = await client.post(
         "/api/v1/templates/preview",
@@ -326,7 +326,7 @@ async def test_preview_uses_sample_when_no_event_given(client: AsyncClient) -> N
 
 
 async def test_preview_syntax_error_reports_position(client: AsyncClient) -> None:
-    await login_as(client, username="alice")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
 
     resp = await client.post(
         "/api/v1/templates/preview",
@@ -340,7 +340,7 @@ async def test_preview_syntax_error_reports_position(client: AsyncClient) -> Non
 
 
 async def test_preview_undefined_variable_is_a_warning_not_an_error(client: AsyncClient) -> None:
-    await login_as(client, username="alice")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
 
     resp = await client.post(
         "/api/v1/templates/preview",
@@ -391,6 +391,21 @@ async def test_preview_with_other_team_event_403(app) -> None:
             },
         )
         assert resp.status_code == 403
+
+
+async def test_preview_by_zero_team_user_403(client: AsyncClient) -> None:
+    """A user belonging to no team at all has no legitimate reason to drive
+    template compilation (each call queues onto the shared, capacity-limited
+    render pool -- see templating.py's module docstring) -- gated even for
+    the sample-alert path, which has no team_id of its own to check.
+    """
+    await login_as(client, username="ghost")  # no team, no membership, not admin
+
+    resp = await client.post(
+        "/api/v1/templates/preview",
+        json={"title_template": "{{ alertname }}", "body_template": "ok", "use_sample": True},
+    )
+    assert resp.status_code == 403
 
 
 async def test_template_variables_endpoint(client: AsyncClient) -> None:

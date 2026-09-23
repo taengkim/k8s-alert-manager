@@ -112,6 +112,26 @@ async def _authorize_event_access(session: AsyncSession, event: AlertEvent, user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
+async def _require_any_team_membership(session: AsyncSession, user: User) -> None:
+    """Gate for `POST /templates/preview`: an admin, or a member of *some*
+    team -- not scoped to any specific team_id (preview has no team_id path
+    param; a real event's own team is separately checked by
+    `_authorize_event_access` when `alert_event_id` is given). A user
+    belonging to zero teams has no legitimate reason to drive template
+    compilation (each preview call queues onto `templating.RENDER_EXECUTOR`,
+    a shared, capacity-limited resource -- see that module's docstring), so
+    this is a coarse pre-filter against exactly that, not a substitute for
+    the per-event check.
+    """
+    if user.is_admin:
+        return
+    result = await session.execute(
+        select(TeamMembership.id).where(TeamMembership.user_id == user.id).limit(1)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+
 def _validate_body(body: TemplateWrite) -> None:
     if body.kind not in SUPPORTED_KINDS:
         raise HTTPException(
@@ -255,6 +275,8 @@ async def preview_template(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    await _require_any_team_membership(session, user)
+
     if body.alert_event_id is not None:
         event = await session.get(AlertEvent, body.alert_event_id)
         if event is None:
