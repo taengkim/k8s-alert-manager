@@ -13,6 +13,7 @@ export interface LiveAlert {
   annotations: Record<string, string>;
   starts_at: string;
   generator_url: string | null;
+  grafana_url: string | null;
   silenced_by: string[];
 }
 
@@ -28,6 +29,7 @@ export interface LiveAlertsResponse {
 
 export interface LiveAlertsFilters {
   teamId?: number;
+  clusterIds?: number[];
   /** "none" matches alerts with no severity label. */
   severity?: string[];
   namespace?: string;
@@ -38,6 +40,7 @@ export interface LiveAlertsFilters {
 export function getLiveAlerts(filters: LiveAlertsFilters): Promise<LiveAlertsResponse> {
   const params = new URLSearchParams();
   if (filters.teamId !== undefined) params.set("team_id", String(filters.teamId));
+  for (const id of filters.clusterIds ?? []) params.append("cluster_id", String(id));
   if (filters.severity && filters.severity.length > 0) {
     params.set("severity", filters.severity.join(","));
   }

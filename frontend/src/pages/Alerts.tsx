@@ -21,9 +21,9 @@ import {
 import { Link } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
+import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { getAckStatus, getLiveAlerts } from "../api/alerts";
 import type { AckStatusMatch, LiveAlert } from "../api/alerts";
-import { listClusters } from "../api/admin";
 import type { MatcherInput } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
 
@@ -53,6 +53,7 @@ function severityColor(severity: string): string {
 export default function Alerts() {
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
+  const { clusters, selectedIds: clusterIds } = useClusterFilter();
   const isAdmin = !!user?.is_admin;
 
   const [severity, setSeverity] = useState<string[]>([]);
@@ -69,12 +70,11 @@ export default function Alerts() {
   // fan-out only carries the cluster's name (it spans every enabled
   // cluster) -- so the selected alert's cluster name is cross-referenced
   // against the full cluster list here. Shares the ["clusters"] query key
-  // with useDefaultCluster, so this doesn't add an extra round trip beyond
-  // what the app already fetches elsewhere.
-  const clustersQuery = useQuery({ queryKey: ["clusters"], queryFn: listClusters });
+  // with ClusterFilterContext, so this doesn't add an extra round trip
+  // beyond what the app already fetches elsewhere.
   const selectedClusterId = useMemo(
-    () => clustersQuery.data?.find((c) => c.name === selected?.cluster)?.id,
-    [clustersQuery.data, selected],
+    () => clusters.find((c) => c.name === selected?.cluster)?.id,
+    [clusters, selected],
   );
   const silenceMatchers: MatcherInput[] = useMemo(
     () =>
@@ -89,10 +89,11 @@ export default function Alerts() {
   );
 
   const query = useQuery({
-    queryKey: ["alerts-live", teamId, severity, namespace, stateFilter, search],
+    queryKey: ["alerts-live", teamId, clusterIds, severity, namespace, stateFilter, search],
     queryFn: () =>
       getLiveAlerts({
         teamId,
+        clusterIds: clusterIds.length > 0 ? clusterIds : undefined,
         severity: severity.length > 0 ? severity : undefined,
         namespace,
         state: stateFilter === "all" ? undefined : stateFilter,
@@ -293,10 +294,7 @@ export default function Alerts() {
               <Link to={`/alerts/history?highlight=${selectedAck.event_id}`}>이력에서 보기</Link>
             )}
             <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
-              <Button
-                disabled={!currentTeam || !selectedClusterId}
-                onClick={() => setSilenceModalOpen(true)}
-              >
+              <Button disabled={!currentTeam} onClick={() => setSilenceModalOpen(true)}>
                 이 알럿 사일런스
               </Button>
             </Tooltip>
@@ -358,20 +356,28 @@ export default function Alerts() {
               )}
             </div>
 
-            {selected.generator_url && (
-              <a href={selected.generator_url} target="_blank" rel="noreferrer">
-                Prometheus에서 보기
-              </a>
-            )}
+            <Space size="middle">
+              {selected.generator_url && (
+                <a href={selected.generator_url} target="_blank" rel="noreferrer">
+                  Prometheus에서 보기
+                </a>
+              )}
+              {selected.grafana_url && (
+                <a href={selected.grafana_url} target="_blank" rel="noreferrer">
+                  Grafana에서 보기
+                </a>
+              )}
+            </Space>
           </>
         )}
       </Drawer>
 
-      {selected && currentTeam && selectedClusterId && (
+      {selected && currentTeam && (
         <SilenceModal
           open={silenceModalOpen}
           onClose={() => setSilenceModalOpen(false)}
-          clusterId={selectedClusterId}
+          clusters={clusters}
+          initialClusterId={selectedClusterId}
           team={currentTeam}
           initialMatchers={silenceMatchers}
         />
