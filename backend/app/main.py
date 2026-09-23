@@ -22,6 +22,9 @@ from app.api.routes import router as routes_router
 from app.api.routes import team_router as routes_team_router
 from app.api.rules import router as rules_router
 from app.api.rules import validate_router as rules_validate_router
+from app.api.shares import router as shares_router
+from app.api.shares import shared_with_me_router
+from app.api.shares import team_router as shares_team_router
 from app.api.silences import router as silences_router
 from app.api.teams import router as teams_router
 from app.api.templates import router as templates_router
@@ -127,6 +130,9 @@ def create_app() -> FastAPI:
     app.include_router(routes_team_router)
     app.include_router(routes_router)
     app.include_router(templates_router)
+    app.include_router(shares_team_router)
+    app.include_router(shares_router)
+    app.include_router(shared_with_me_router)
     return app
 
 
