@@ -34,6 +34,10 @@ function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {})
     namespaces_exclude: route.namespaces_exclude ?? undefined,
     clusters: route.clusters ?? undefined,
     channel_ids: route.channel_ids,
+    escalation_enabled: route.escalation_enabled,
+    escalation_after_minutes: route.escalation_after_minutes ?? undefined,
+    escalation_channel_ids: route.escalation_channel_ids,
+    renotify_interval_minutes: route.renotify_interval_minutes ?? undefined,
     matchers: route.matchers.map((m) => ({
       kind: m.kind,
       target: m.target,

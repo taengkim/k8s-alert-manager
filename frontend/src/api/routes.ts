@@ -32,6 +32,15 @@ export interface RouteOut {
   clusters: number[] | null;
   template_id: number | null;
   channel_ids: number[];
+  /** Phase 15: escalation -- schedules a follow-up notification through
+   * escalation_channel_ids if the event this rule matched is still firing
+   * and unacknowledged escalation_after_minutes later. */
+  escalation_enabled: boolean;
+  escalation_after_minutes: number | null;
+  escalation_channel_ids: number[];
+  /** Phase 15: re-delivers to this rule's own channel_ids every N minutes
+   * while the event stays firing and unacknowledged. null disables it. */
+  renotify_interval_minutes: number | null;
   matchers: RouteMatcher[];
   created_at: string;
   updated_at: string;
@@ -53,6 +62,10 @@ export interface RouteWriteInput {
    * the channel's template_id. `undefined`/omitted means none. */
   template_id?: number | null;
   channel_ids: number[];
+  escalation_enabled: boolean;
+  escalation_after_minutes?: number;
+  escalation_channel_ids: number[];
+  renotify_interval_minutes?: number;
   matchers: RouteMatcher[];
 }
 

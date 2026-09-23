@@ -140,7 +140,10 @@ export interface AlertNotificationRecord {
   id: number;
   channel_id: number;
   channel_name: string;
-  trigger: "firing" | "resolved";
+  /** 'firing' | 'resolved' | 'escalation' (Phase 15, single-fire) |
+   * `renotify:{scheduled_action_id}` (Phase 15 -- each renotify cycle gets
+   * its own value; see AlertHistory.tsx's rendering of this field). */
+  trigger: string;
   status: NotificationStatus;
   attempts: number;
   last_error: string | null;

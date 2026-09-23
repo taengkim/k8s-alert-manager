@@ -1,12 +1,37 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, App, Button, Form, Input, Modal, Popconfirm, Switch, Table, Tabs } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Descriptions,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Space,
+  Switch,
+  Table,
+  Tabs,
+  Typography,
+} from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../api/client";
 import { createTeam, deleteTeam, listTeams, patchTeam } from "../api/teams";
-import { listUsers, patchUser } from "../api/admin";
+import {
+  getRetentionSettings,
+  listUsers,
+  patchUser,
+  runRetentionPurge,
+  updateRetentionSettings,
+} from "../api/admin";
+import type { RetentionPurgeSummary } from "../api/admin";
 import type { AdminUser, Team } from "../api/types";
 import AdminClusters from "./AdminClusters";
+
+const { Title, Text } = Typography;
 
 export default function Admin() {
   const { user } = useAuth();
@@ -28,6 +53,7 @@ export default function Admin() {
           { key: "teams", label: "팀", children: <TeamsTab /> },
           { key: "users", label: "사용자", children: <UsersTab /> },
           { key: "clusters", label: "클러스터", children: <AdminClusters /> },
+          { key: "settings", label: "설정", children: <SettingsTab /> },
         ]}
       />
     </div>
@@ -287,5 +313,138 @@ function UsersTab() {
       columns={columns}
       pagination={false}
     />
+  );
+}
+
+// -- Phase 15: retention settings ----------------------------------------
+
+const RETENTION_FIELD_LABEL: Record<string, string> = {
+  "retention.alert_events_days": "해소된 알럿 보관 기간 (일)",
+  "retention.test_alert_events_days": "테스트 알럿 보관 기간 (일)",
+  "retention.notification_outbox_days": "발송 이력 보관 기간 (일)",
+  "retention.audit_log_days": "감사 로그 보관 기간 (일)",
+  "retention.scheduled_actions_days": "예약 작업 이력 보관 기간 (일)",
+};
+
+const RETENTION_FIELD_HELP: Record<string, string> = {
+  "retention.alert_events_days": "resolved 상태 알럿만 대상이며 firing 상태는 삭제되지 않습니다 (last_received_at 기준).",
+  "retention.test_alert_events_days": "테스트 알럿(is_test)은 firing/resolved 상태와 무관하게 이 기간이 지나면 삭제됩니다.",
+  "retention.notification_outbox_days": "발송 완료(delivered) 또는 포기(dead) 상태인 발송 이력만 대상입니다.",
+  "retention.audit_log_days": "",
+  "retention.scheduled_actions_days": "완료(done) 또는 취소(cancelled)된 에스컬레이션/재알림 예약만 대상입니다.",
+};
+
+const RETENTION_SUMMARY_LABEL: Record<keyof RetentionPurgeSummary, string> = {
+  alert_events: "알럿 이벤트",
+  notification_outbox: "발송 이력",
+  scheduled_actions: "예약 작업",
+  audit_logs: "감사 로그",
+};
+
+function SettingsTab() {
+  const { message } = App.useApp();
+  const queryClient = useQueryClient();
+  const [form] = Form.useForm<Record<string, number>>();
+  const [formError, setFormError] = useState<string | null>(null);
+  const [purgeSummary, setPurgeSummary] = useState<RetentionPurgeSummary | null>(null);
+
+  const settingsQuery = useQuery({
+    queryKey: ["admin-retention-settings"],
+    queryFn: getRetentionSettings,
+  });
+
+  useEffect(() => {
+    if (settingsQuery.data) {
+      form.setFieldsValue(settingsQuery.data);
+    }
+  }, [settingsQuery.data, form]);
+
+  const saveMutation = useMutation({
+    mutationFn: (values: Record<string, number>) => updateRetentionSettings(values),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["admin-retention-settings"], data);
+      setFormError(null);
+      message.success("설정이 저장되었습니다");
+    },
+    onError: (err) => {
+      setFormError(err instanceof ApiError ? err.detail : "설정 저장에 실패했습니다");
+    },
+  });
+
+  const purgeMutation = useMutation({
+    mutationFn: runRetentionPurge,
+    onSuccess: ({ summary }) => {
+      setPurgeSummary(summary);
+      message.success("정리가 완료되었습니다");
+    },
+    onError: (err) => {
+      message.error(
+        err instanceof ApiError ? `정리 실행에 실패했습니다: ${err.detail}` : "정리 실행에 실패했습니다",
+      );
+    },
+  });
+
+  const keys = Object.keys(settingsQuery.data ?? RETENTION_FIELD_LABEL);
+
+  return (
+    <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 600 }}>
+      <Card title="데이터 보관 정책 (Retention)">
+        {formError && (
+          <Alert type="error" message={formError} showIcon style={{ marginBottom: 16 }} />
+        )}
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(values) => saveMutation.mutate(values)}
+        >
+          {keys.map((key) => (
+            <Form.Item
+              key={key}
+              name={key}
+              label={RETENTION_FIELD_LABEL[key] ?? key}
+              help={RETENTION_FIELD_HELP[key] || undefined}
+              rules={[{ required: true, type: "number", min: 1, message: "1 이상의 정수를 입력하세요" }]}
+            >
+              <InputNumber min={1} style={{ width: 200 }} />
+            </Form.Item>
+          ))}
+          <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
+            저장
+          </Button>
+        </Form>
+      </Card>
+
+      <Card title="지금 정리 실행">
+        <Space direction="vertical">
+          <Text type="secondary">
+            위 보관 기간을 기준으로 즉시 오래된 데이터를 삭제합니다. 평소에는 매일 자동으로
+            실행됩니다.
+          </Text>
+          <Popconfirm
+            title="지금 데이터 정리를 실행하시겠습니까?"
+            onConfirm={() => purgeMutation.mutate()}
+          >
+            <Button danger loading={purgeMutation.isPending}>
+              지금 정리 실행
+            </Button>
+          </Popconfirm>
+        </Space>
+
+        {purgeSummary && (
+          <>
+            <Title level={5} style={{ marginTop: 16 }}>
+              마지막 실행 결과
+            </Title>
+            <Descriptions column={1} size="small" bordered>
+              {(Object.keys(purgeSummary) as (keyof RetentionPurgeSummary)[]).map((key) => (
+                <Descriptions.Item key={key} label={RETENTION_SUMMARY_LABEL[key]}>
+                  {purgeSummary[key]}건 삭제
+                </Descriptions.Item>
+              ))}
+            </Descriptions>
+          </>
+        )}
+      </Card>
+    </Space>
   );
 }
