@@ -80,7 +80,7 @@ function renderYamlPreview(
   const labels = toRecord(values.labels);
   const annotations = toRecord(values.annotations);
   if (values.runbook_url) annotations.runbook_url = values.runbook_url;
-  if (values.grafana_url) annotations["kam.io/grafana-url"] = values.grafana_url;
+  if (values.grafana_url) annotations["kam_grafana_url"] = values.grafana_url;
   if (mode === "builder") {
     annotations["kam.io/builder-v1"] = JSON.stringify(cleanBuilderState(builderState));
   }

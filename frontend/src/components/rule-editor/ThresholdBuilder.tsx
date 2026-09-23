@@ -99,6 +99,10 @@ export default function ThresholdBuilder({ clusterId, value, onChange }: Thresho
         layout="vertical"
         initialValues={value}
         onValuesChange={(_, all) => onChange(all)}
+        // This form lives inside RuleEditor's own <Form>; component={false}
+        // keeps the antd FormInstance context (validation, Form.List, etc.)
+        // without rendering a second, nested <form> DOM element.
+        component={false}
       >
         <Form.Item label="메트릭" name="metric" rules={[{ required: true, message: "메트릭을 선택하세요" }]}>
           <AutoComplete
