@@ -8,6 +8,10 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite+aiosqlite:///./kam.db"
     app_name: str = "kam"
+    # Stamped into a rule export envelope's `source.app_version` -- purely
+    # informational provenance for whoever later inspects/imports the file,
+    # not read back by parse_envelope/plan_import.
+    app_version: str = "dev"
 
     secret_key: str = "dev-secret-change-me"
     jwt_ttl_hours: int = 12
