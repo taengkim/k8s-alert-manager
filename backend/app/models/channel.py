@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -15,10 +15,26 @@ class Channel(Base):
     JSON and Fernet-encrypted (see `app/security.py`) before storage, since
     it may hold secrets a third-party plugin's config schema declares
     (SMTP credentials for email live in app settings instead, not here).
+
+    Soft-deleted via `deleted_at`, not a hard `DELETE`: `notification_outbox`
+    holds a NOT NULL, non-cascading FK to a channel's id (delivery history
+    must survive the channel it was sent through going away), so the
+    channel row itself has to keep existing. The team_id+name uniqueness
+    constraint only applies among non-deleted rows (see the partial index
+    below), so a name is free to reuse once its old channel is deleted.
     """
 
     __tablename__ = "channels"
-    __table_args__ = (UniqueConstraint("team_id", "name", name="uq_channel_team_name"),)
+    __table_args__ = (
+        Index(
+            "uq_channel_team_name_active",
+            "team_id",
+            "name",
+            unique=True,
+            sqlite_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
@@ -26,6 +42,7 @@ class Channel(Base):
     type: Mapped[str] = mapped_column(String(64))
     config_encrypted: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ON DELETE SET NULL: deleting the creating user must not delete (or
     # block deleting) the channel itself -- it just loses its "created by"
     # attribution, same pattern as SilenceAudit.created_by.
