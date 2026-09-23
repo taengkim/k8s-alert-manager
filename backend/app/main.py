@@ -16,6 +16,7 @@ from app.api.rules import validate_router as rules_validate_router
 from app.api.silences import router as silences_router
 from app.api.teams import router as teams_router
 from app.api.users import router as users_router
+from app.api.webhook import router as webhook_router
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
 from app.services.k8s import K8sClientFactory
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
     app.include_router(rules_validate_router)
     app.include_router(metrics_router)
     app.include_router(silences_router)
+    app.include_router(webhook_router)
     return app
 
 
