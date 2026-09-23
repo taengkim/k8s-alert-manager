@@ -13,10 +13,12 @@ from kubernetes.client.exceptions import ApiException
 
 from app.models.cluster import Cluster
 from app.services.k8s import (
+    K8sBadRequestError,
     K8sClientFactory,
     K8sUnavailableError,
     RuleConflictError,
     RuleForbiddenError,
+    RuleUpdateConflictError,
 )
 
 
@@ -107,6 +109,61 @@ async def test_replace_rule_succeeds_when_labels_match_team() -> None:
     assert kwargs["body"]["metadata"]["resourceVersion"] == "42"
 
 
+async def test_replace_rule_does_not_mutate_callers_body_dict() -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.replace_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    factory = _factory_with_fake_co_api(fake_api)
+
+    original_body = {"metadata": {"name": "kam-platform-x"}, "spec": {}}
+    await factory.replace_rule(_cluster(), "kam-platform-x", team_id=1, body=original_body)
+
+    # The resourceVersion pin must land on a copy, not the caller's dict.
+    assert "resourceVersion" not in original_body["metadata"]
+
+
+async def test_replace_rule_raises_unavailable_when_existing_rule_has_no_resource_version() -> None:
+    fake_api = MagicMock()
+    rule_without_rv = _owned_rule(team_id="1")
+    del rule_without_rv["metadata"]["resourceVersion"]
+    fake_api.get_namespaced_custom_object.return_value = rule_without_rv
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sUnavailableError):
+        await factory.replace_rule(
+            _cluster(), "kam-platform-x", team_id=1, body={"metadata": {}}
+        )
+    fake_api.replace_namespaced_custom_object.assert_not_called()
+
+
+async def test_replace_rule_maps_409_on_write_to_update_conflict() -> None:
+    """A 409 from the actual replace call (as opposed to the initial
+    ownership-check fetch) means someone else wrote this rule between our
+    read and write -- a different situation from RuleConflictError (which is
+    about *creating* a name that already exists)."""
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.replace_namespaced_custom_object.side_effect = ApiException(status=409)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(RuleUpdateConflictError):
+        await factory.replace_rule(
+            _cluster(), "kam-platform-x", team_id=1, body={"metadata": {}}
+        )
+
+
+async def test_replace_rule_maps_other_4xx_to_bad_request() -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.replace_namespaced_custom_object.side_effect = ApiException(status=400)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError):
+        await factory.replace_rule(
+            _cluster(), "kam-platform-x", team_id=1, body={"metadata": {}}
+        )
+
+
 async def test_replace_rule_rejects_foreign_team_id() -> None:
     """The core security guard: a rule owned by a different team must never
     be mutated, even if the caller somehow got past API-layer RBAC."""
@@ -166,6 +223,85 @@ async def test_delete_rule_succeeds_when_owned() -> None:
 
     await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
     fake_api.delete_namespaced_custom_object.assert_called_once()
+
+
+async def test_delete_rule_sends_resource_version_precondition() -> None:
+    """TOCTOU guard: the delete call must be conditioned on the
+    resourceVersion we just read, so a rule that changed between our
+    ownership-check read and the delete itself fails instead of silently
+    deleting whatever it became."""
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    factory = _factory_with_fake_co_api(fake_api)
+
+    await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
+
+    _, kwargs = fake_api.delete_namespaced_custom_object.call_args
+    delete_options = kwargs["body"]
+    assert delete_options.preconditions.resource_version == "42"
+
+
+async def test_delete_rule_raises_unavailable_when_existing_rule_has_no_resource_version() -> None:
+    fake_api = MagicMock()
+    rule_without_rv = _owned_rule(team_id="1")
+    del rule_without_rv["metadata"]["resourceVersion"]
+    fake_api.get_namespaced_custom_object.return_value = rule_without_rv
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sUnavailableError):
+        await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
+    fake_api.delete_namespaced_custom_object.assert_not_called()
+
+
+async def test_delete_rule_maps_409_to_update_conflict() -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.delete_namespaced_custom_object.side_effect = ApiException(status=409)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(RuleUpdateConflictError):
+        await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
+
+
+async def test_delete_rule_treats_404_on_the_delete_call_as_already_done() -> None:
+    """A 404 on the delete call itself (as opposed to the initial
+    ownership-check fetch, which already confirmed the rule existed) means
+    something else deleted it a moment ago -- the desired end state (rule
+    absent) is already achieved, so this should not raise."""
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.delete_namespaced_custom_object.side_effect = ApiException(status=404)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
+
+
+async def test_delete_rule_maps_other_4xx_to_bad_request() -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule(team_id="1")
+    fake_api.delete_namespaced_custom_object.side_effect = ApiException(status=400)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError):
+        await factory.delete_rule(_cluster(), "kam-platform-x", team_id=1)
+
+
+async def test_list_rules_maps_other_4xx_to_bad_request() -> None:
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.side_effect = ApiException(status=400)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError):
+        await factory.list_rules(_cluster(), team_id=1)
+
+
+async def test_get_rule_maps_other_4xx_to_bad_request() -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.side_effect = ApiException(status=400)
+    factory = _factory_with_fake_co_api(fake_api)
+
+    with pytest.raises(K8sBadRequestError):
+        await factory.get_rule(_cluster(), "x")
 
 
 async def test_list_namespaces_uses_core_api() -> None:

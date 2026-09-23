@@ -191,8 +191,9 @@ async def test_create_success_returns_parsed_rule_and_writes_audit_row(
     assert body["slug"] == "e2e-test"
     assert body["alert_name"] == "KamE2ETest"
 
+    expected_name = f"kam-t{team_id}-e2e-test"
     _, kwargs = fake_api.create_namespaced_custom_object.call_args
-    assert kwargs["body"]["metadata"]["name"] == "kam-platform-e2e-test"
+    assert kwargs["body"]["metadata"]["name"] == expected_name
     assert kwargs["body"]["metadata"]["labels"]["kam/team-id"] == str(team_id)
 
     async with db_module.async_session_factory() as session:
@@ -200,7 +201,7 @@ async def test_create_success_returns_parsed_rule_and_writes_audit_row(
             await session.execute(select(AuditLog).where(AuditLog.action == "rule.create"))
         ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].object_ref == "kam-platform-e2e-test"
+    assert rows[0].object_ref == expected_name
     assert rows[0].team_id == team_id
 
 
@@ -443,3 +444,110 @@ async def test_delete_returns_404_when_absent(client: AsyncClient, app: FastAPI)
     team_id, cluster_id = await _member_client(client)
     response = await client.delete(f"/api/v1/teams/{team_id}/rules/ghost?cluster_id={cluster_id}")
     assert response.status_code == 404
+
+
+# -- error mapping: bad request vs. unavailable vs. update conflict -----
+
+
+async def test_list_maps_other_4xx_to_422(client: AsyncClient, app: FastAPI) -> None:
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.side_effect = ApiException(status=400)
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.get(f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}")
+    assert response.status_code == 422
+
+
+@respx.mock
+async def test_put_resource_version_conflict_maps_to_409_korean_detail(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    respx.post(FORMAT_QUERY_URL).mock(return_value=VALID_QUERY_RESPONSE)
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule("kam-platform-x", "1")
+    fake_api.replace_namespaced_custom_object.side_effect = ApiException(status=409)
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.put(
+        f"/api/v1/teams/{team_id}/rules/x?cluster_id={cluster_id}", json=RULE_BODY
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "동시 수정 충돌"
+
+
+async def test_delete_resource_version_conflict_maps_to_409_korean_detail(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule("kam-platform-x", "1")
+    fake_api.delete_namespaced_custom_object.side_effect = ApiException(status=409)
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.delete(f"/api/v1/teams/{team_id}/rules/x?cluster_id={cluster_id}")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "동시 수정 충돌"
+
+
+@respx.mock
+async def test_put_other_4xx_maps_to_422_with_k8s_message(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    respx.post(FORMAT_QUERY_URL).mock(return_value=VALID_QUERY_RESPONSE)
+    fake_api = MagicMock()
+    fake_api.get_namespaced_custom_object.return_value = _owned_rule("kam-platform-x", "1")
+    fake_api.replace_namespaced_custom_object.side_effect = ApiException(status=400)
+    _patch_co_api(app, fake_api)
+
+    team_id, cluster_id = await _member_client(client)
+    response = await client.put(
+        f"/api/v1/teams/{team_id}/rules/x?cluster_id={cluster_id}", json=RULE_BODY
+    )
+    assert response.status_code == 422
+
+
+async def test_create_other_4xx_maps_to_422(client: AsyncClient, app: FastAPI) -> None:
+    fake_api = MagicMock()
+    fake_api.create_namespaced_custom_object.side_effect = ApiException(status=400)
+    _patch_co_api(app, fake_api)
+
+    with respx.mock:
+        respx.post(FORMAT_QUERY_URL).mock(return_value=VALID_QUERY_RESPONSE)
+        team_id, cluster_id = await _member_client(client)
+        response = await client.post(
+            f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}", json=RULE_BODY
+        )
+    assert response.status_code == 422
+
+
+# -- slug pattern validation ----------------------------------------------
+
+
+async def test_create_rejects_slug_with_trailing_hyphen(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    fake_api = MagicMock()
+    _patch_co_api(app, fake_api)
+
+    with respx.mock:
+        respx.post(FORMAT_QUERY_URL).mock(return_value=VALID_QUERY_RESPONSE)
+        team_id, cluster_id = await _member_client(client)
+        response = await client.post(
+            f"/api/v1/teams/{team_id}/rules?cluster_id={cluster_id}",
+            json={**RULE_BODY, "slug": "trailing-hyphen-"},
+        )
+
+    assert response.status_code == 422
+    fake_api.create_namespaced_custom_object.assert_not_called()
+
+
+async def test_get_rejects_invalid_slug_in_path(client: AsyncClient) -> None:
+    team_id, cluster_id = await _member_client(client)
+    response = await client.get(
+        f"/api/v1/teams/{team_id}/rules/Not_Valid?cluster_id={cluster_id}"
+    )
+    assert response.status_code == 422
