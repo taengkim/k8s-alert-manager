@@ -99,7 +99,7 @@ async def list_rules(
     try:
         raw_rules = await k8s.list_rules(cluster, team.id)
     except K8sBadRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -144,7 +144,7 @@ async def create_rule(
     validation = await _validate_expr(cluster, http_client, body.expr)
     if not validation["valid"]:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"invalid PromQL expression: {validation['error']}",
         )
 
@@ -154,7 +154,7 @@ async def create_rule(
     except RuleConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except K8sBadRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -214,7 +214,7 @@ async def update_rule(
     validation = await _validate_expr(cluster, http_client, body.expr)
     if not validation["valid"]:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"invalid PromQL expression: {validation['error']}",
         )
 
@@ -230,7 +230,7 @@ async def update_rule(
     except RuleUpdateConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="동시 수정 충돌") from exc
     except K8sBadRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -272,7 +272,7 @@ async def delete_rule(
     except RuleUpdateConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="동시 수정 충돌") from exc
     except K8sBadRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -309,7 +309,7 @@ async def _get_owned_rule_or_404(
     try:
         obj = await k8s.get_rule(cluster, name)
     except K8sBadRequestError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)

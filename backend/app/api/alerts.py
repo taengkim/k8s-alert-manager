@@ -39,7 +39,7 @@ async def _resolve_team_scope(
     if team_id is None:
         if not user.is_admin:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="team_id is required",
             )
         return None

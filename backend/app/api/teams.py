@@ -96,7 +96,7 @@ async def create_team(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     if not SLUG_RE.match(body.slug):
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid slug")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid slug")
 
     existing = await session.execute(select(Team).where(Team.slug == body.slug))
     if existing.scalar_one_or_none() is not None:
