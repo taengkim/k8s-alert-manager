@@ -19,8 +19,17 @@ import {
 } from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
-import { getAlertHistory, getAlertHistoryDetail } from "../api/history";
-import type { AlertEventStatus, AlertEventSummary } from "../api/history";
+import {
+  getAlertHistory,
+  getAlertHistoryDetail,
+  getAlertHistoryNotifications,
+} from "../api/history";
+import type {
+  AlertEventStatus,
+  AlertEventSummary,
+  AlertNotificationRecord,
+  NotificationStatus,
+} from "../api/history";
 
 dayjs.extend(relativeTime);
 
@@ -45,6 +54,22 @@ const SEVERITY_TAG_COLOR: Record<string, string> = {
 function severityColor(severity: string | null): string {
   return (severity && SEVERITY_TAG_COLOR[severity]) ?? "default";
 }
+
+const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
+  pending: "default",
+  in_progress: "processing",
+  delivered: "green",
+  failed: "orange",
+  dead: "red",
+};
+
+const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
+  pending: "대기",
+  in_progress: "발송 중",
+  delivered: "발송 완료",
+  failed: "실패",
+  dead: "포기됨",
+};
 
 export default function AlertHistory() {
   const { user } = useAuth();
@@ -96,6 +121,12 @@ export default function AlertHistory() {
   const detailQuery = useQuery({
     queryKey: ["alert-history-detail", selectedId],
     queryFn: () => getAlertHistoryDetail(selectedId as number),
+    enabled: selectedId !== null,
+  });
+
+  const notificationsQuery = useQuery({
+    queryKey: ["alert-history-notifications", selectedId],
+    queryFn: () => getAlertHistoryNotifications(selectedId as number),
     enabled: selectedId !== null,
   });
 
@@ -314,6 +345,55 @@ export default function AlertHistory() {
                 Prometheus에서 보기
               </a>
             )}
+
+            <Title level={5} style={{ marginTop: 24 }}>
+              알림 전송 이력
+            </Title>
+            <Table<AlertNotificationRecord>
+              rowKey="id"
+              size="small"
+              loading={notificationsQuery.isLoading}
+              dataSource={notificationsQuery.data ?? []}
+              pagination={false}
+              locale={{ emptyText: <Empty description="발송된 알림이 없습니다" /> }}
+              columns={[
+                { title: "채널", dataIndex: "channel_name", key: "channel_name" },
+                { title: "트리거", dataIndex: "trigger", key: "trigger" },
+                {
+                  title: "상태",
+                  dataIndex: "status",
+                  key: "status",
+                  render: (value: NotificationStatus) => (
+                    <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
+                      {NOTIFICATION_STATUS_LABEL[value]}
+                    </Tag>
+                  ),
+                },
+                { title: "시도 횟수", dataIndex: "attempts", key: "attempts" },
+                {
+                  title: "발송 시각",
+                  dataIndex: "delivered_at",
+                  key: "delivered_at",
+                  render: (value: string | null) =>
+                    value ? dayjs(value).format("YYYY-MM-DD HH:mm:ss") : "-",
+                },
+                {
+                  title: "오류",
+                  dataIndex: "last_error",
+                  key: "last_error",
+                  render: (value: string | null) =>
+                    value ? (
+                      <Tooltip title={value}>
+                        <Text type="danger" ellipsis style={{ maxWidth: 200, display: "inline-block" }}>
+                          {value}
+                        </Text>
+                      </Tooltip>
+                    ) : (
+                      "-"
+                    ),
+                },
+              ]}
+            />
           </>
         )}
       </Drawer>

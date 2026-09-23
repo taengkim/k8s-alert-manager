@@ -67,3 +67,21 @@ export function getAlertHistory(filters: AlertHistoryFilters): Promise<AlertHist
 export function getAlertHistoryDetail(eventId: number): Promise<AlertEventDetail> {
   return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}`);
 }
+
+export type NotificationStatus = "pending" | "in_progress" | "delivered" | "failed" | "dead";
+
+export interface AlertNotificationRecord {
+  id: number;
+  channel_id: number;
+  channel_name: string;
+  trigger: "firing" | "resolved";
+  status: NotificationStatus;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  delivered_at: string | null;
+}
+
+export function getAlertHistoryNotifications(eventId: number): Promise<AlertNotificationRecord[]> {
+  return apiFetch<AlertNotificationRecord[]>(`/alerts/history/${eventId}/notifications`);
+}
