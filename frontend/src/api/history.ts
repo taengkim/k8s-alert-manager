@@ -30,6 +30,9 @@ export interface AlertEventSummary {
   acknowledged_at: string | null;
   acknowledged_by: UserRef | null;
   assignee: UserRef | null;
+  /** Phase 14: the owner team's slug when this event reached the viewer
+   * only via an AlertShare, null for the viewer's own team's events. */
+  shared_from: string | null;
 }
 
 export interface AlertEventDetail extends AlertEventSummary {

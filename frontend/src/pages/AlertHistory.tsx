@@ -298,6 +298,7 @@ export default function AlertHistory() {
         <Space size={4}>
           {value}
           {record.is_test && <Tag color="purple">테스트</Tag>}
+          {record.shared_from && <Tag color="blue">공유: {record.shared_from}</Tag>}
         </Space>
       ),
     },
@@ -468,6 +469,7 @@ export default function AlertHistory() {
           <Space>
             {selected?.alertname}
             {selected?.is_test && <Tag color="purple">테스트</Tag>}
+            {selected?.shared_from && <Tag color="blue">공유: {selected.shared_from}</Tag>}
           </Space>
         }
         open={selectedId !== null}
