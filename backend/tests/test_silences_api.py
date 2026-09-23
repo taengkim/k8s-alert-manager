@@ -452,3 +452,29 @@ async def test_list_defaults_to_all_enabled_clusters_when_cluster_id_omitted(
     response = await client.get("/api/v1/silences")
     assert response.status_code == 200
     assert {s["id"] for s in response.json()["silences"]} == {"sil-a", "sil-c"}
+
+
+@respx.mock
+async def test_list_explicit_disabled_cluster_id_is_silently_excluded_not_404(
+    client: AsyncClient,
+) -> None:
+    """An explicitly-requested cluster_id is still intersected with
+    `enabled` -- disabled means silently excluded (matching /alerts/live's
+    fan-out default), not a 404. Otherwise the same header ClusterFilter
+    selection would scope Silences differently from the live-alerts view.
+    """
+    respx.get(SILENCES_URL).mock(return_value=httpx.Response(200, json=[_raw_silence("sil-a")]))
+    disabled_id = await _create_cluster("disabled-sil")
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, disabled_id)
+        cluster.enabled = False
+        await session.commit()
+
+    default_id = await _default_cluster_id()
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(
+        f"/api/v1/silences?cluster_id={default_id}&cluster_id={disabled_id}"
+    )
+    assert response.status_code == 200
+    assert {s["id"] for s in response.json()["silences"]} == {"sil-a"}

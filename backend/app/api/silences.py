@@ -133,6 +133,11 @@ async def list_silences(
     `cluster_id` entirely defaults to every *enabled* cluster, mirroring
     `GET /alerts/live`'s fan-out default.
 
+    An explicit id is still intersected with `enabled` (silently excluded,
+    not 404'd, if the cluster exists but is disabled) -- otherwise the same
+    header ClusterFilter selection would scope this view differently from
+    `/alerts/live`'s, which always intersects enabled.
+
     Unlike `/alerts/live`, one cluster's Alertmanager being unreachable here
     still 503s the whole request rather than degrading to a per-cluster
     `errors[]` entry: silences are a lower-traffic, more deliberate view (an
@@ -141,7 +146,8 @@ async def list_silences(
     existing single-cluster caller already depends on.
     """
     if cluster_id:
-        clusters = [await _get_cluster_or_404(session, cid) for cid in cluster_id]
+        resolved = [await _get_cluster_or_404(session, cid) for cid in cluster_id]
+        clusters = [c for c in resolved if c.enabled]
     else:
         clusters = (
             (await session.execute(select(Cluster).where(Cluster.enabled.is_(True))))
