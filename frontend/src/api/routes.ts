@@ -27,6 +27,7 @@ export interface RouteOut {
   namespaces_include: string[] | null;
   namespaces_exclude: string[] | null;
   clusters: number[] | null;
+  template_id: number | null;
   channel_ids: number[];
   matchers: RouteMatcher[];
   created_at: string;
@@ -44,6 +45,9 @@ export interface RouteWriteInput {
   namespaces_include?: string[];
   namespaces_exclude?: string[];
   clusters?: number[];
+  /** This rule's own message template (Phase 13) -- takes priority over
+   * the channel's template_id. `undefined`/omitted means none. */
+  template_id?: number | null;
   channel_ids: number[];
   matchers: RouteMatcher[];
 }
