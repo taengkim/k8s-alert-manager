@@ -6,6 +6,7 @@ import { ApiError } from "../api/client";
 import { createTeam, deleteTeam, listTeams, patchTeam } from "../api/teams";
 import { listUsers, patchUser } from "../api/admin";
 import type { AdminUser, Team } from "../api/types";
+import AdminClusters from "./AdminClusters";
 
 export default function Admin() {
   const { user } = useAuth();
@@ -26,6 +27,7 @@ export default function Admin() {
         items={[
           { key: "teams", label: "팀", children: <TeamsTab /> },
           { key: "users", label: "사용자", children: <UsersTab /> },
+          { key: "clusters", label: "클러스터", children: <AdminClusters /> },
         ]}
       />
     </div>
