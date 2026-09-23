@@ -16,7 +16,8 @@ const SEVERITY_OPTIONS: { value: Severity; label: string }[] = [
   { value: "info", label: "info" },
 ];
 
-const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+// No leading or trailing hyphen, max 63 chars -- mirrors backend RULE_SLUG_RE.
+const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 const ALERT_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 interface KeyValue {
@@ -53,7 +54,7 @@ function fromRecord(record: Record<string, string>): KeyValue[] {
   return Object.entries(record).map(([key, value]) => ({ key, value }));
 }
 
-function renderYamlPreview(values: FormValues, teamSlug: string): string {
+function renderYamlPreview(values: FormValues, teamId: number, teamSlug: string): string {
   const labels = toRecord(values.labels);
   const annotations = toRecord(values.annotations);
   if (values.runbook_url) annotations.runbook_url = values.runbook_url;
@@ -65,9 +66,12 @@ function renderYamlPreview(values: FormValues, teamSlug: string): string {
     "apiVersion: monitoring.coreos.com/v1",
     "kind: PrometheusRule",
     "metadata:",
-    `  name: kam-${teamSlug}-${values.slug || "<slug>"}`,
+    // Keyed by team id, not slug -- two teams' slugs could otherwise
+    // collide at a hyphen boundary (see backend rule_object_name()).
+    `  name: kam-t${teamId}-${values.slug || "<slug>"}`,
     "  labels:",
     "    app.kubernetes.io/managed-by: kam",
+    `    kam/team-slug: ${teamSlug}`,
     "spec:",
     "  groups:",
     `    - name: kam-${teamSlug}`,
@@ -309,7 +313,7 @@ export default function RuleEditor() {
         width={480}
       >
         <pre style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 12 }}>
-          {previewValues ? renderYamlPreview(previewValues, currentTeam.slug) : ""}
+          {previewValues ? renderYamlPreview(previewValues, currentTeam.id, currentTeam.slug) : ""}
         </pre>
       </Drawer>
     </div>
