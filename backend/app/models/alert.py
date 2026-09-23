@@ -63,3 +63,16 @@ class AlertEvent(Base):
     suppressed_by_rule_id: Mapped[int | None] = mapped_column(
         ForeignKey("routing_rules.id", ondelete="SET NULL"), nullable=True
     )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # ON DELETE SET NULL: deleting the acknowledging user must not lose the
+    # historical fact that this event was acknowledged -- same pattern as
+    # Channel.created_by.
+    acknowledged_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    assignee_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Set (and left permanently true) for events created by POST
+    # .../test-alert -- excluded from history by default via `include_test`.
+    is_test: Mapped[bool] = mapped_column(default=False)
