@@ -8,7 +8,7 @@ import { getAlertHistoryNotifications } from "../api/history";
 import type { NotificationStatus } from "../api/history";
 import { fireTestAlert } from "../api/testAlert";
 import type { RouteVerdict } from "../api/routes";
-import type { TestAlertInput, TestAlertResult } from "../api/testAlert";
+import type { TestAlertInput, TestAlertResult, TestAlertVerdict } from "../api/testAlert";
 
 const { Text } = Typography;
 
@@ -75,10 +75,15 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
 
   // 5s-interval polling of the fired test event's delivery status, so the
   // operator can watch pending -> delivered without leaving the modal.
+  // Gated on `open` too, not just `result` -- this component stays mounted
+  // in Routes.tsx regardless of the Modal's own open state (`destroyOnClose`
+  // only unmounts its children), so without the `open` gate the interval
+  // would keep polling in the background indefinitely after the modal is
+  // closed.
   const notificationsQuery = useQuery({
     queryKey: ["alert-history-notifications", result?.event_id],
     queryFn: () => getAlertHistoryNotifications(result!.event_id),
-    enabled: result !== null,
+    enabled: open && result !== null,
     refetchInterval: 5000,
   });
 
@@ -109,6 +114,7 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
 
   const handleClose = () => {
     mutation.reset();
+    setResult(null);
     onClose();
   };
 
@@ -229,6 +235,16 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
             }
           />
 
+          {result.suppressed_by && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`차단 규칙 '${result.suppressed_by.rule_name}'에 의해 알림이 차단되었습니다`}
+              description="차단 규칙이 우선 적용되어, 아래에서 '일치'로 표시된 알림 규칙이 있어도 실제로는 아무 채널에도 전송되지 않았습니다."
+            />
+          )}
+
           <Text strong>규칙 평가 결과</Text>
           <Table
             size="small"
@@ -253,9 +269,19 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
                 title: "결과",
                 dataIndex: "verdict",
                 key: "verdict",
-                render: (verdict: RouteVerdict) => (
-                  <Tag color={VERDICT_COLOR[verdict]}>{VERDICT_LABEL[verdict]}</Tag>
-                ),
+                render: (verdict: RouteVerdict, row: TestAlertVerdict) => {
+                  // A notify rule's own evaluate() call has no visibility
+                  // into route_event's suppress-wins-exclusively
+                  // short-circuit -- so "matched" here can be true even
+                  // though nothing was actually delivered. Flag that case
+                  // instead of presenting it as if it had notified.
+                  const suppressedMatch =
+                    !!result.suppressed_by && row.action === "notify" && verdict === "matched";
+                  if (suppressedMatch) {
+                    return <Tag color="default">일치 (차단됨)</Tag>;
+                  }
+                  return <Tag color={VERDICT_COLOR[verdict]}>{VERDICT_LABEL[verdict]}</Tag>;
+                },
               },
             ]}
           />
