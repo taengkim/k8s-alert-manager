@@ -11,6 +11,7 @@ from app.db import get_session
 from app.models.team import TeamMembership
 from app.models.user import User
 from app.security import decode_jwt
+from app.services.cluster_health import ClusterHealthCache
 from app.services.k8s import K8sClientFactory
 
 COOKIE_NAME = "kam_token"
@@ -18,6 +19,10 @@ COOKIE_NAME = "kam_token"
 
 def get_k8s_factory(request: Request) -> K8sClientFactory:
     return request.app.state.k8s_factory
+
+
+def get_cluster_health_cache(request: Request) -> ClusterHealthCache:
+    return request.app.state.cluster_health_cache
 
 
 def get_channel_registry(request: Request) -> ChannelRegistry:
