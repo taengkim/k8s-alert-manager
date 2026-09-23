@@ -312,6 +312,77 @@ async def test_starts_at_stored_as_utc_aware(app) -> None:
         assert row.starts_at == datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC)
 
 
+async def test_resolved_then_firing_reopens_and_calls_hook_with_firing(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+
+        await ingest_webhook(
+            session, cluster, AlertmanagerWebhookPayload(alerts=[_alert(status="firing")])
+        )
+        await session.commit()
+
+        await ingest_webhook(
+            session,
+            cluster,
+            AlertmanagerWebhookPayload(
+                alerts=[_alert(status="resolved", ends_at="2026-09-22T00:10:00Z")]
+            ),
+        )
+        await session.commit()
+
+        with patch.object(ingest, "on_event_transition", new=AsyncMock()) as spy:
+            result = await ingest_webhook(
+                session, cluster, AlertmanagerWebhookPayload(alerts=[_alert(status="firing")])
+            )
+            await session.commit()
+
+        assert result.reopened == 1
+        assert result.created == 0
+        assert result.repeats == 0
+        spy.assert_awaited_once()
+        _, _, kind = spy.await_args.args
+        assert kind == "firing"
+
+        row = (await session.execute(select(AlertEvent))).scalar_one()
+        assert row.status == "firing"
+        assert row.ends_at is None
+        assert row.receive_count == 3
+
+
+async def test_batch_with_heartbeat_and_real_alert_handles_both(app) -> None:
+    """Pins that a batch mixing a Watchdog heartbeat with a real alert
+    processes both correctly instead of one interfering with the other.
+    """
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+
+        payload = AlertmanagerWebhookPayload(
+            alerts=[
+                _alert(
+                    fingerprint="fp-heartbeat",
+                    alertname="Watchdog",
+                    kam_team=None,
+                    severity=None,
+                    namespace=None,
+                ),
+                _alert(fingerprint="fp-real", alertname="RealAlert"),
+            ]
+        )
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.received == 2
+        assert result.heartbeats_seen == 1
+        assert result.created == 1
+
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].alertname == "RealAlert"
+
+        await session.refresh(cluster)
+        assert cluster.heartbeat_state == "ok"
+
+
 async def test_integrity_error_fallback_updates_existing_row(app) -> None:
     """Simulates a concurrent webhook delivery that already won the race for
     this identity: a conflicting row is pre-inserted directly, and

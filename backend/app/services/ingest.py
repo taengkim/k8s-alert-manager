@@ -61,6 +61,7 @@ class IngestResult:
     created: int = 0
     created_resolved: int = 0
     resolved: int = 0
+    reopened: int = 0
     repeats: int = 0
     heartbeats_seen: int = 0
 
@@ -113,9 +114,15 @@ async def _get_existing(
 
 
 async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: str) -> None:
-    """Called on a brand-new firing event and on a firing->resolved
-    transition (never on a resolved-first insert or a repeat with no
-    status change).
+    """Called on a brand-new firing event, a firing->resolved transition,
+    and a resolved->firing re-open (never on a resolved-first insert or a
+    repeat with no status change).
+
+    Contract: this is called INSIDE the ingest transaction, pre-commit.
+    Implementations must only stage DB work here (e.g. outbox inserts) --
+    never dispatch externally -- since the whole transaction (and this
+    call along with it) can still be rolled back by a later failure in the
+    same batch.
 
     Phase 9: 라우팅/outbox 연결점 -- notification dispatch will hang off
     this hook. No-op for now.
@@ -202,6 +209,22 @@ async def _ingest_one(
         existing.ends_at = ends_at
         result.resolved += 1
         await on_event_transition(session, existing, "resolved")
+    elif alert.status == "firing" and existing.status == "resolved":
+        # Same identity firing again after having been resolved. AM
+        # serializes per-group notifications, so a stale, out-of-order
+        # firing-after-resolved delivery for the same (cluster,
+        # fingerprint, starts_at) is rare in practice -- normally this
+        # means the alert genuinely re-fired (or this is a duplicate
+        # network retry of the firing webhook that raced the resolved one
+        # and lost). Firing wins: re-open the row so Phase 9 notifies on
+        # it, rather than leaving a resolved row that silently swallows a
+        # real re-fire. Accepted trade-off: in the rare stale-retry case,
+        # the row incorrectly reads "firing" until the next resolved
+        # delivery corrects it.
+        existing.status = "firing"
+        existing.ends_at = None
+        result.reopened += 1
+        await on_event_transition(session, existing, "firing")
     else:
         result.repeats += 1
 
