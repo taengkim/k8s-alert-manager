@@ -6,6 +6,7 @@ import RequireAuth from "./auth/RequireAuth";
 import { TeamProvider } from "./auth/TeamContext";
 import TeamSwitcher from "./components/TeamSwitcher";
 import Alerts from "./pages/Alerts";
+import AlertHistory from "./pages/AlertHistory";
 import Login from "./pages/Login";
 import Placeholder from "./pages/Placeholder";
 import RuleEditor from "./pages/RuleEditor";
@@ -34,6 +35,7 @@ function AppLayout() {
       key: section.path,
       label: <Link to={section.path}>{section.label}</Link>,
     }));
+    items.push({ key: "/alerts/history", label: <Link to="/alerts/history">알럿 이력</Link> });
     items.push({ key: "/team", label: <Link to="/team">팀 설정</Link> });
     if (user?.is_admin) {
       items.push({ key: "/admin", label: <Link to="/admin">관리자</Link> });
@@ -42,7 +44,10 @@ function AppLayout() {
   }, [user]);
 
   const selectedKeys = useMemo(() => {
-    const known = [...sections.map((s) => s.path), "/team", "/admin"];
+    // "/alerts/history" must be checked before "/alerts" -- both match a
+    // startsWith test against that pathname, so the more specific one has
+    // to come first or it never wins.
+    const known = ["/alerts/history", ...sections.map((s) => s.path), "/team", "/admin"];
     const match = known.find((path) => location.pathname.startsWith(path));
     return match ? [match] : [];
   }, [location.pathname]);
@@ -100,6 +105,7 @@ export default function App() {
           <Route element={<AuthenticatedShell />}>
             <Route path="/" element={<Navigate to="/alerts" replace />} />
             <Route path="/alerts" element={<Alerts />} />
+            <Route path="/alerts/history" element={<AlertHistory />} />
             <Route path="/rules" element={<Rules />} />
             <Route path="/rules/new" element={<RuleEditor />} />
             <Route path="/rules/:slug/edit" element={<RuleEditor />} />
