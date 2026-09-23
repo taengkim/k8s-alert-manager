@@ -12,7 +12,7 @@ from typing import Any, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, SecretStr, ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from app.channels.base import ChannelDeliveryError, NotificationChannel
 from app.channels.registry import ChannelRegistry
 from app.db import get_session
 from app.models.channel import Channel
+from app.models.routing import routing_rule_channels
 from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.security import decrypt_str, encrypt_str
@@ -273,11 +274,22 @@ async def delete_channel(
     can no longer be routed to (see route_event and the outbox worker),
     and its name becomes reusable by a new channel (the uniqueness
     constraint only applies among non-deleted rows).
+
+    Its `routing_rule_channels` join rows are hard-deleted, though --
+    unlike notification_outbox, that table holds no history (a rule's
+    channel *assignment* isn't a fact worth preserving once the channel
+    is gone), and leaving them dangling would make GET .../routes/{id}
+    keep reporting a channel_id every other endpoint now treats as
+    nonexistent -- which then makes PUT-ing that same rule back
+    (e.g. just toggling `enabled`) 422 on "unknown channel_ids".
     """
     channel = await _get_channel_or_404(session, channel_id)
     await _require_team_role(session, channel.team_id, actor, "owner")
 
     channel.deleted_at = datetime.now(UTC)
+    await session.execute(
+        delete(routing_rule_channels).where(routing_rule_channels.c.channel_id == channel_id)
+    )
 
     await audit.log(
         session,

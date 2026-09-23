@@ -105,6 +105,72 @@ async def test_delete_channel_with_delivery_history_returns_204(client: AsyncCli
     assert row["channel_name"] == "hist-ch"
 
 
+async def test_delete_channel_cleans_up_routing_rule_channels_join(client: AsyncClient) -> None:
+    """A deleted channel's routing_rule_channels join rows must be cleaned
+    up immediately, not just left dangling -- otherwise GET .../routes/{id}
+    keeps reporting a channel_id every other endpoint now treats as
+    nonexistent, and PUT-ing that same rule back (e.g. just toggling
+    `enabled`) 422s on "unknown channel_ids".
+    """
+    team_id = await _create_team("t-soft-join")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    survivor_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "survivor", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    survivor_id = survivor_resp.json()["id"]
+    doomed_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "doomed", "type": "email", "config": {"recipients": ["b@example.org"]}},
+    )
+    doomed_id = doomed_resp.json()["id"]
+
+    route_resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json={
+            "name": "r1",
+            "action": "notify",
+            "enabled": True,
+            "channel_ids": [survivor_id, doomed_id],
+            "matchers": [],
+        },
+    )
+    route_id = route_resp.json()["id"]
+
+    delete_resp = await client.delete(f"/api/v1/channels/{doomed_id}")
+    assert delete_resp.status_code == 204
+
+    get_resp = await client.get(f"/api/v1/routes/{route_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert body["channel_ids"] == [survivor_id]
+
+    # The enabled-toggle round trip (GET's current state, PUT back with
+    # just `enabled` flipped) must succeed -- it must not 422 on a
+    # channel_id GET is still reporting but PUT would reject as unknown.
+    put_resp = await client.put(
+        f"/api/v1/routes/{route_id}",
+        json={
+            "name": body["name"],
+            "description": body["description"],
+            "action": body["action"],
+            "enabled": False,
+            "notify_on_firing": body["notify_on_firing"],
+            "notify_on_resolved": body["notify_on_resolved"],
+            "severities": body["severities"],
+            "namespaces_include": body["namespaces_include"],
+            "namespaces_exclude": body["namespaces_exclude"],
+            "clusters": body["clusters"],
+            "channel_ids": body["channel_ids"],
+            "matchers": body["matchers"],
+        },
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["channel_ids"] == [survivor_id]
+    assert put_resp.json()["enabled"] is False
+
+
 async def test_deleted_channel_absent_from_list_and_get_404(client: AsyncClient) -> None:
     team_id = await _create_team("t-soft-list")
     await login_as(client, username="alice", group_dns=[ADMIN_DN])
