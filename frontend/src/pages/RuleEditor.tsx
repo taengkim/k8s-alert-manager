@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
-import { Alert, App, Button, Drawer, Form, Input, Select, Space, Typography } from "antd";
+import { Alert, App, Button, Drawer, Form, Input, Segmented, Select, Space, Typography } from "antd";
 import { useTeam } from "../auth/TeamContext";
 import { useDefaultCluster } from "../api/useDefaultCluster";
 import { ApiError } from "../api/client";
 import { createRule, getRule, updateRule, validateExpr } from "../api/rules";
-import type { RuleWriteInput, Severity } from "../api/rules";
+import type { RuleMode, RuleWriteInput, Severity } from "../api/rules";
+import ThresholdBuilder from "../components/rule-editor/ThresholdBuilder";
+import PreviewChart from "../components/rule-editor/PreviewChart";
+import { emptyBuilderState, generateBuilderExpr, generateSelector } from "../components/rule-editor/builderExpr";
+import type { BuilderState } from "../components/rule-editor/builderExpr";
 
 const { Text, Title } = Typography;
 
@@ -14,6 +18,11 @@ const SEVERITY_OPTIONS: { value: Severity; label: string }[] = [
   { value: "critical", label: "critical" },
   { value: "warning", label: "warning" },
   { value: "info", label: "info" },
+];
+
+const MODE_OPTIONS: { value: RuleMode; label: string }[] = [
+  { value: "builder", label: "임계값 빌더" },
+  { value: "promql", label: "PromQL" },
 ];
 
 // No leading or trailing hyphen, max 63 chars -- mirrors backend RULE_SLUG_RE.
@@ -33,7 +42,6 @@ interface ValidateStatus {
 interface FormValues {
   slug: string;
   alert_name: string;
-  expr: string;
   for?: string;
   severity: Severity;
   labels?: KeyValue[];
@@ -54,11 +62,28 @@ function fromRecord(record: Record<string, string>): KeyValue[] {
   return Object.entries(record).map(([key, value]) => ({ key, value }));
 }
 
-function renderYamlPreview(values: FormValues, teamId: number, teamSlug: string): string {
+/** Drops incomplete label-filter rows (no key chosen yet) before the
+ * builder state is either previewed or sent to the backend -- the backend
+ * rejects a label filter with an empty key outright. */
+function cleanBuilderState(state: BuilderState): BuilderState {
+  return { ...state, labels: state.labels.filter((l) => l.key) };
+}
+
+function renderYamlPreview(
+  values: FormValues,
+  expr: string,
+  mode: RuleMode,
+  builderState: BuilderState,
+  teamId: number,
+  teamSlug: string,
+): string {
   const labels = toRecord(values.labels);
   const annotations = toRecord(values.annotations);
   if (values.runbook_url) annotations.runbook_url = values.runbook_url;
   if (values.grafana_url) annotations["kam.io/grafana-url"] = values.grafana_url;
+  if (mode === "builder") {
+    annotations["kam.io/builder-v1"] = JSON.stringify(cleanBuilderState(builderState));
+  }
   labels.kam_team = teamSlug;
   labels.severity = values.severity ?? "";
 
@@ -77,7 +102,7 @@ function renderYamlPreview(values: FormValues, teamId: number, teamSlug: string)
     `    - name: kam-${teamSlug}`,
     "      rules:",
     `        - alert: ${values.alert_name || "<alert_name>"}`,
-    `          expr: ${values.expr || "<expr>"}`,
+    `          expr: ${expr || "<expr>"}`,
   ];
   if (values.for) lines.push(`          for: ${values.for}`);
   lines.push("          labels:");
@@ -106,10 +131,24 @@ export default function RuleEditor() {
   const [exprValidation, setExprValidation] = useState<ValidateStatus | null>(null);
   const [validating, setValidating] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewValues, setPreviewValues] = useState<FormValues | null>(null);
+  const [previewValues, setPreviewValues] = useState<
+    (FormValues & { expr: string; mode: RuleMode; builderState: BuilderState }) | null
+  >(null);
+
+  const [mode, setMode] = useState<RuleMode>("builder");
+  const [builderState, setBuilderState] = useState<BuilderState>(emptyBuilderState());
+  // The PromQL-mode textarea's own value. Kept around even while in
+  // builder mode so re-entering builder mode can detect a hand-edit that
+  // diverged from what the builder would generate (see `diverged` below).
+  const [promqlExpr, setPromqlExpr] = useState("");
 
   const teamId = currentTeam?.id;
   const clusterId = cluster?.id;
+
+  const builderGeneratedExpr = generateBuilderExpr(cleanBuilderState(builderState));
+  const currentExpr = mode === "builder" ? builderGeneratedExpr : promqlExpr;
+  const chartExpr = mode === "builder" ? generateSelector(cleanBuilderState(builderState)) : promqlExpr;
+  const diverged = mode === "builder" && promqlExpr !== "" && promqlExpr !== builderGeneratedExpr;
 
   const ruleQuery = useQuery({
     queryKey: ["rule", teamId, clusterId, slug],
@@ -118,31 +157,50 @@ export default function RuleEditor() {
   });
 
   useEffect(() => {
-    if (ruleQuery.data) {
-      form.setFieldsValue({
-        slug: ruleQuery.data.slug,
-        alert_name: ruleQuery.data.alert_name,
-        expr: ruleQuery.data.expr,
-        for: ruleQuery.data.for ?? undefined,
-        severity: ruleQuery.data.severity as Severity,
-        labels: fromRecord(ruleQuery.data.labels),
-        annotations: fromRecord(ruleQuery.data.annotations),
-        runbook_url: ruleQuery.data.runbook_url ?? undefined,
-        grafana_url: ruleQuery.data.grafana_url ?? undefined,
-      });
+    if (!ruleQuery.data) return;
+    const data = ruleQuery.data;
+    form.setFieldsValue({
+      slug: data.slug,
+      alert_name: data.alert_name,
+      for: data.for ?? undefined,
+      severity: data.severity as Severity,
+      labels: fromRecord(data.labels),
+      annotations: fromRecord(data.annotations),
+      runbook_url: data.runbook_url ?? undefined,
+      grafana_url: data.grafana_url ?? undefined,
+    });
+    setPromqlExpr(data.expr);
+    if (data.mode === "builder" && data.builder_state) {
+      setBuilderState(data.builder_state);
+      setMode("builder");
+    } else {
+      setBuilderState(emptyBuilderState());
+      setMode("promql");
     }
   }, [ruleQuery.data, form]);
+
+  const handleModeChange = (nextMode: RuleMode) => {
+    if (nextMode === "promql" && mode === "builder") {
+      // Carry the builder-generated expression into the textarea so
+      // switching modes doesn't silently discard what was just composed.
+      setPromqlExpr(builderGeneratedExpr);
+    }
+    setExprValidation(null);
+    setMode(nextMode);
+  };
 
   const buildBody = (values: FormValues): RuleWriteInput => ({
     slug: values.slug,
     alert_name: values.alert_name,
-    expr: values.expr,
+    expr: currentExpr,
     for: values.for || undefined,
     severity: values.severity,
     labels: toRecord(values.labels),
     annotations: toRecord(values.annotations),
     runbook_url: values.runbook_url || undefined,
     grafana_url: values.grafana_url || undefined,
+    mode,
+    builder_state: mode === "builder" ? cleanBuilderState(builderState) : undefined,
   });
 
   const saveMutation = useMutation({
@@ -159,7 +217,7 @@ export default function RuleEditor() {
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 422) {
-        form.setFields([{ name: "expr", errors: [err.detail] }]);
+        setServerError(err.detail);
         return;
       }
       setServerError(
@@ -169,12 +227,10 @@ export default function RuleEditor() {
   });
 
   const handleValidate = async () => {
-    if (!clusterId) return;
-    const expr = form.getFieldValue("expr") as string | undefined;
-    if (!expr) return;
+    if (!clusterId || !currentExpr) return;
     setValidating(true);
     try {
-      const result = await validateExpr(clusterId, expr);
+      const result = await validateExpr(clusterId, currentExpr);
       setExprValidation(result);
     } catch (err) {
       setExprValidation({
@@ -184,6 +240,19 @@ export default function RuleEditor() {
     } finally {
       setValidating(false);
     }
+  };
+
+  const handleFinish = (values: FormValues) => {
+    setServerError(null);
+    if (mode === "builder" && !builderState.metric) {
+      setServerError("메트릭을 선택하세요");
+      return;
+    }
+    if (mode === "promql" && !promqlExpr.trim()) {
+      setServerError("표현식을 입력하세요");
+      return;
+    }
+    saveMutation.mutate(values);
   };
 
   if (!currentTeam) {
@@ -196,7 +265,7 @@ export default function RuleEditor() {
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 800 }}>
       <div
         style={{
           display: "flex",
@@ -208,7 +277,12 @@ export default function RuleEditor() {
         <h2 style={{ margin: 0 }}>{isEdit ? `룰 수정 — ${slug}` : "룰 생성"}</h2>
         <Button
           onClick={() => {
-            setPreviewValues(form.getFieldsValue(true) as FormValues);
+            setPreviewValues({
+              ...(form.getFieldsValue(true) as FormValues),
+              expr: currentExpr,
+              mode,
+              builderState,
+            });
             setPreviewOpen(true);
           }}
         >
@@ -224,10 +298,7 @@ export default function RuleEditor() {
         form={form}
         layout="vertical"
         initialValues={{ severity: "warning", labels: [], annotations: [] }}
-        onFinish={(values) => {
-          setServerError(null);
-          saveMutation.mutate(values);
-        }}
+        onFinish={handleFinish}
       >
         <Form.Item
           name="slug"
@@ -258,19 +329,38 @@ export default function RuleEditor() {
           <Select options={SEVERITY_OPTIONS} />
         </Form.Item>
 
-        <Form.Item
-          name="expr"
-          label="PromQL 표현식"
-          rules={[{ required: true, message: "표현식을 입력하세요" }]}
-        >
-          <Input.TextArea
-            rows={3}
-            style={{ fontFamily: "monospace" }}
-            onChange={() => setExprValidation(null)}
-          />
+        <Form.Item label="표현식 작성 방식">
+          <Segmented value={mode} onChange={(v) => handleModeChange(v as RuleMode)} options={MODE_OPTIONS} />
         </Form.Item>
+
+        {mode === "builder" && diverged && (
+          <Alert
+            type="warning"
+            showIcon
+            message="직접 수정된 표현식 — 빌더 상태와 불일치"
+            description="PromQL 모드에서 표현식을 직접 수정했습니다. 저장 시 아래 빌더 상태로 생성된 표현식이 사용됩니다."
+            style={{ marginBottom: 16 }}
+          />
+        )}
+
+        {mode === "builder" ? (
+          <ThresholdBuilder clusterId={clusterId} value={builderState} onChange={setBuilderState} />
+        ) : (
+          <Form.Item label="PromQL 표현식" required>
+            <Input.TextArea
+              rows={3}
+              style={{ fontFamily: "monospace" }}
+              value={promqlExpr}
+              onChange={(e) => {
+                setPromqlExpr(e.target.value);
+                setExprValidation(null);
+              }}
+            />
+          </Form.Item>
+        )}
+
         <Space style={{ marginBottom: 16 }}>
-          <Button onClick={handleValidate} loading={validating}>
+          <Button onClick={handleValidate} loading={validating} disabled={!currentExpr}>
             검증
           </Button>
           {exprValidation &&
@@ -280,6 +370,16 @@ export default function RuleEditor() {
               <Text type="danger">{exprValidation.error}</Text>
             ))}
         </Space>
+
+        <Title level={5}>미리보기</Title>
+        <div style={{ marginBottom: 24 }}>
+          <PreviewChart
+            clusterId={clusterId}
+            chartExpr={chartExpr}
+            fullExpr={currentExpr}
+            threshold={mode === "builder" ? builderState.threshold : undefined}
+          />
+        </div>
 
         <Form.Item name="for" label="for" help='기간 형식, 예: "5m"'>
           <Input placeholder="5m" />
@@ -313,7 +413,16 @@ export default function RuleEditor() {
         width={480}
       >
         <pre style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 12 }}>
-          {previewValues ? renderYamlPreview(previewValues, currentTeam.id, currentTeam.slug) : ""}
+          {previewValues && currentTeam
+            ? renderYamlPreview(
+                previewValues,
+                previewValues.expr,
+                previewValues.mode,
+                previewValues.builderState,
+                currentTeam.id,
+                currentTeam.slug,
+              )
+            : ""}
         </pre>
       </Drawer>
     </div>
