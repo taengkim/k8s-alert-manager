@@ -24,6 +24,7 @@ from app.api.rules import router as rules_router
 from app.api.rules import validate_router as rules_validate_router
 from app.api.silences import router as silences_router
 from app.api.teams import router as teams_router
+from app.api.templates import router as templates_router
 from app.api.users import router as users_router
 from app.api.webhook import router as webhook_router
 from app.channels.registry import ChannelRegistry
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(channels_router)
     app.include_router(routes_team_router)
     app.include_router(routes_router)
+    app.include_router(templates_router)
     return app
 
 
