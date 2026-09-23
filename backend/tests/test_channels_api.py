@@ -318,3 +318,87 @@ async def test_test_endpoint_non_member_403(app) -> None:
         await login_as(outsider_client, username="dave")
         resp = await outsider_client.post(f"/api/v1/channels/{channel_id}/test")
         assert resp.status_code == 403
+
+
+# -- Phase 15: allow_cross_team_escalation + escalation-targets --------------
+
+
+async def test_create_channel_defaults_allow_cross_team_escalation_false(
+    client: AsyncClient,
+) -> None:
+    team_id = await _create_team("t-esc-default")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "c1", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["allow_cross_team_escalation"] is False
+
+
+async def test_patch_channel_toggles_allow_cross_team_escalation(client: AsyncClient) -> None:
+    team_id = await _create_team("t-esc-toggle")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    create_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "c1", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    channel_id = create_resp.json()["id"]
+
+    resp = await client.patch(
+        f"/api/v1/channels/{channel_id}", json={"allow_cross_team_escalation": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["allow_cross_team_escalation"] is True
+
+
+async def test_escalation_targets_includes_own_team_and_opted_in_other_teams(
+    client: AsyncClient,
+) -> None:
+    team_a = await _create_team("t-targets-a")
+    team_b = await _create_team("t-targets-b")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    own_resp = await client.post(
+        f"/api/v1/teams/{team_a}/channels",
+        json={"name": "own-channel", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    own_id = own_resp.json()["id"]
+
+    opted_in_resp = await client.post(
+        f"/api/v1/teams/{team_b}/channels",
+        json={
+            "name": "opted-in",
+            "type": "email",
+            "config": {"recipients": ["b@example.org"]},
+            "allow_cross_team_escalation": True,
+        },
+    )
+    opted_in_id = opted_in_resp.json()["id"]
+
+    not_opted_in_resp = await client.post(
+        f"/api/v1/teams/{team_b}/channels",
+        json={"name": "not-opted-in", "type": "email", "config": {"recipients": ["c@example.org"]}},
+    )
+    not_opted_in_id = not_opted_in_resp.json()["id"]
+
+    resp = await client.get(f"/api/v1/channels/escalation-targets?team_id={team_a}")
+    assert resp.status_code == 200
+    ids = {item["id"] for item in resp.json()}
+    assert own_id in ids
+    assert opted_in_id in ids
+    assert not_opted_in_id not in ids
+
+    by_id = {item["id"]: item for item in resp.json()}
+    assert by_id[opted_in_id]["team_slug"] == "t-targets-b"
+
+
+async def test_escalation_targets_requires_team_membership(app) -> None:
+    team_id = await _create_team("t-targets-forbidden")
+
+    async with await _fresh_client(app) as outsider_client:
+        await login_as(outsider_client, username="dave")
+        resp = await outsider_client.get(f"/api/v1/channels/escalation-targets?team_id={team_id}")
+        assert resp.status_code == 403

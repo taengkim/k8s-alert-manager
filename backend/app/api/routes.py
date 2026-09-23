@@ -36,7 +36,11 @@ VALID_SEVERITIES = {"critical", "warning", "info", "none"}
 team_router = APIRouter(prefix="/api/v1/teams/{team_id}/routes", tags=["routes"])
 router = APIRouter(prefix="/api/v1/routes", tags=["routes"])
 
-_RULE_OPTIONS = (selectinload(RoutingRule.matchers), selectinload(RoutingRule.channels))
+_RULE_OPTIONS = (
+    selectinload(RoutingRule.matchers),
+    selectinload(RoutingRule.channels),
+    selectinload(RoutingRule.escalation_channels),
+)
 
 
 class MatcherInput(BaseModel):
@@ -65,6 +69,21 @@ class RouteWrite(BaseModel):
     channel_ids: list[int] = []
     matchers: list[MatcherInput] = []
     template_id: int | None = None
+    # Phase 15: escalation -- schedules a follow-up notification through
+    # escalation_channel_ids if the event this rule matched is still firing
+    # and unacknowledged escalation_after_minutes later. Both
+    # escalation_after_minutes and at least one escalation_channel_id are
+    # required when escalation_enabled=True (see _validate_escalation);
+    # ignored (stored as unset) for a 'suppress' rule or when
+    # escalation_enabled=False.
+    escalation_enabled: bool = False
+    escalation_after_minutes: int | None = None
+    escalation_channel_ids: list[int] = []
+    # Phase 15: unresolved re-notification -- re-delivers to this rule's own
+    # channel_ids (not escalation_channel_ids) every renotify_interval_minutes
+    # while the event stays firing and unacknowledged. None disables it;
+    # ignored (stored as unset) for a 'suppress' rule.
+    renotify_interval_minutes: int | None = None
 
 
 async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
@@ -185,6 +204,82 @@ async def _resolve_channels(
     return [by_id[cid] for cid in unique_ids]
 
 
+def _validate_escalation(body: RouteWrite) -> None:
+    """Phase 15 field validation, independent of DB state (channel
+    ownership/cross-team allowance is `_resolve_escalation_channels`'s job,
+    since it needs a query). A 'suppress' rule can't escalate or renotify at
+    all -- these both only make sense for a notify rule's own channels.
+    """
+    if body.action == "suppress":
+        if body.escalation_enabled or body.escalation_channel_ids or body.escalation_after_minutes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="a suppress rule must not configure escalation",
+            )
+        if body.renotify_interval_minutes is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="a suppress rule must not configure renotify",
+            )
+        return
+
+    if body.escalation_enabled:
+        if not body.escalation_after_minutes or body.escalation_after_minutes < 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="escalation_after_minutes must be >= 1 when escalation is enabled",
+            )
+        if not body.escalation_channel_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="escalation requires at least one escalation_channel_id",
+            )
+
+    if body.renotify_interval_minutes is not None and body.renotify_interval_minutes < 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="renotify_interval_minutes must be >= 1",
+        )
+
+
+async def _resolve_escalation_channels(
+    session: AsyncSession, team_id: int, channel_ids: list[int]
+) -> list[Channel]:
+    """Like `_resolve_channels`, but an escalation channel may belong to
+    ANOTHER team too, as long as that channel opted in via
+    `allow_cross_team_escalation=True` -- see `Channel.allow_cross_team_escalation`
+    and `GET /channels/escalation-targets`, which is what the route editor's
+    picker is actually populated from (so a channel this rejects should
+    never even appear as a selectable option there in the first place).
+    """
+    if not channel_ids:
+        return []
+
+    unique_ids = list(dict.fromkeys(channel_ids))
+    result = await session.execute(
+        select(Channel).where(Channel.id.in_(unique_ids), Channel.deleted_at.is_(None))
+    )
+    by_id = {c.id: c for c in result.scalars().all()}
+
+    missing = [cid for cid in unique_ids if cid not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"unknown escalation_channel_ids: {missing}",
+        )
+    disallowed = [
+        cid
+        for cid in unique_ids
+        if by_id[cid].team_id != team_id and not by_id[cid].allow_cross_team_escalation
+    ]
+    if disallowed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"escalation_channel_ids not allowed for cross-team escalation: {disallowed}",
+        )
+    return [by_id[cid] for cid in unique_ids]
+
+
 async def _validate_template(session: AsyncSession, team_id: int, template_id: int | None) -> None:
     if template_id is None:
         return
@@ -216,6 +311,7 @@ def _validate_body(body: RouteWrite) -> None:
     _validate_namespace_patterns(body.namespaces_include, field="namespaces_include")
     _validate_namespace_patterns(body.namespaces_exclude, field="namespaces_exclude")
     _validate_matchers(body.matchers)
+    _validate_escalation(body)
 
 
 def _serialize(rule: RoutingRule) -> dict[str, Any]:
@@ -235,6 +331,10 @@ def _serialize(rule: RoutingRule) -> dict[str, Any]:
         "clusters": rule.clusters,
         "template_id": rule.template_id,
         "channel_ids": [c.id for c in rule.channels],
+        "escalation_enabled": rule.escalation_enabled,
+        "escalation_after_minutes": rule.escalation_after_minutes,
+        "escalation_channel_ids": [c.id for c in rule.escalation_channels],
+        "renotify_interval_minutes": rule.renotify_interval_minutes,
         "matchers": [
             {
                 "kind": m.kind,
@@ -275,6 +375,10 @@ async def create_route(
     await _validate_clusters_exist(session, body.clusters)
     await _validate_template(session, team_id, body.template_id)
     channels = await _resolve_channels(session, team_id, body.action, body.channel_ids)
+    escalation_enabled = body.action == "notify" and body.escalation_enabled
+    escalation_channels = await _resolve_escalation_channels(
+        session, team_id, body.escalation_channel_ids if escalation_enabled else []
+    )
 
     rule = RoutingRule(
         team_id=team_id,
@@ -291,6 +395,12 @@ async def create_route(
         clusters=body.clusters,
         template_id=body.template_id,
         channels=channels,
+        escalation_enabled=escalation_enabled,
+        escalation_after_minutes=body.escalation_after_minutes if escalation_enabled else None,
+        escalation_channels=escalation_channels,
+        renotify_interval_minutes=(
+            body.renotify_interval_minutes if body.action == "notify" else None
+        ),
         matchers=[
             RoutingMatcher(
                 kind=m.kind, target=m.target, key=m.key, pattern=m.pattern, position=position
@@ -311,7 +421,7 @@ async def create_route(
         detail={"action": rule.action},
     )
     await session.commit()
-    await session.refresh(rule, attribute_names=["matchers", "channels"])
+    await session.refresh(rule, attribute_names=["matchers", "channels", "escalation_channels"])
     return _serialize(rule)
 
 
@@ -381,6 +491,10 @@ async def update_route(
     await _validate_clusters_exist(session, body.clusters)
     await _validate_template(session, rule.team_id, body.template_id)
     channels = await _resolve_channels(session, rule.team_id, body.action, body.channel_ids)
+    escalation_enabled = body.action == "notify" and body.escalation_enabled
+    escalation_channels = await _resolve_escalation_channels(
+        session, rule.team_id, body.escalation_channel_ids if escalation_enabled else []
+    )
 
     rule.name = body.name
     rule.description = body.description
@@ -394,10 +508,16 @@ async def update_route(
     rule.namespaces_exclude = body.namespaces_exclude
     rule.clusters = body.clusters
     rule.template_id = body.template_id
+    rule.escalation_enabled = escalation_enabled
+    rule.escalation_after_minutes = body.escalation_after_minutes if escalation_enabled else None
+    rule.renotify_interval_minutes = (
+        body.renotify_interval_minutes if body.action == "notify" else None
+    )
     # Full replace, per the API contract -- both are already eagerly loaded
     # (via _get_rule_or_404's selectinload), so this diffs cleanly against
     # the in-memory collections rather than triggering a lazy load.
     rule.channels = channels
+    rule.escalation_channels = escalation_channels
     rule.matchers = [
         RoutingMatcher(kind=m.kind, target=m.target, key=m.key, pattern=m.pattern, position=position)
         for position, m in enumerate(body.matchers)
@@ -415,7 +535,7 @@ async def update_route(
         detail={"action": rule.action},
     )
     await session.commit()
-    await session.refresh(rule, attribute_names=["matchers", "channels"])
+    await session.refresh(rule, attribute_names=["matchers", "channels", "escalation_channels"])
     return _serialize(rule)
 
 

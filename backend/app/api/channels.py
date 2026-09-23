@@ -10,9 +10,9 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, get_args
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, SecretStr, ValidationError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +21,7 @@ from app.channels.base import ChannelDeliveryError, NotificationChannel
 from app.channels.registry import ChannelRegistry
 from app.db import get_session
 from app.models.channel import Channel
-from app.models.routing import routing_rule_channels
+from app.models.routing import routing_rule_channels, routing_rule_escalation_channels
 from app.models.team import Team, TeamMembership
 from app.models.template import MessageTemplate
 from app.models.user import User
@@ -39,6 +39,12 @@ class ChannelCreate(BaseModel):
     type: str
     config: dict[str, Any] = {}
     template_id: int | None = None
+    # Phase 15: opts this channel in to being selectable as an ESCALATION
+    # target by another team's routing rule (see
+    # GET /channels/escalation-targets and app/api/routes.py's
+    # _resolve_escalation_channels). Has no effect on this channel's own
+    # team's rules, which can always select it either way.
+    allow_cross_team_escalation: bool = False
 
 
 class ChannelUpdate(BaseModel):
@@ -50,6 +56,7 @@ class ChannelUpdate(BaseModel):
     # `body.model_fields_set` rather than the value itself, same as every
     # other Optional field on this model.
     template_id: int | None = None
+    allow_cross_team_escalation: bool | None = None
 
 
 async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
@@ -159,6 +166,7 @@ def _serialize(channel: Channel, registry: ChannelRegistry) -> dict[str, Any]:
         "enabled": channel.enabled,
         "config": _mask_secrets(config, schema_cls),
         "template_id": channel.template_id,
+        "allow_cross_team_escalation": channel.allow_cross_team_escalation,
     }
 
 
@@ -210,6 +218,7 @@ async def create_channel(
         config_encrypted=_encrypt_config(validated_config),
         created_by=actor.id,
         template_id=body.template_id,
+        allow_cross_team_escalation=body.allow_cross_team_escalation,
     )
     session.add(channel)
     try:
@@ -258,6 +267,8 @@ async def update_channel(
         channel.name = body.name
     if body.enabled is not None:
         channel.enabled = body.enabled
+    if body.allow_cross_team_escalation is not None:
+        channel.allow_cross_team_escalation = body.allow_cross_team_escalation
     if "template_id" in body.model_fields_set:
         if body.template_id is not None:
             await _validate_template_ownership(session, channel.team_id, body.template_id)
@@ -301,13 +312,14 @@ async def delete_channel(
     and its name becomes reusable by a new channel (the uniqueness
     constraint only applies among non-deleted rows).
 
-    Its `routing_rule_channels` join rows are hard-deleted, though --
-    unlike notification_outbox, that table holds no history (a rule's
-    channel *assignment* isn't a fact worth preserving once the channel
-    is gone), and leaving them dangling would make GET .../routes/{id}
-    keep reporting a channel_id every other endpoint now treats as
-    nonexistent -- which then makes PUT-ing that same rule back
-    (e.g. just toggling `enabled`) 422 on "unknown channel_ids".
+    Its `routing_rule_channels` AND `routing_rule_escalation_channels`
+    (Phase 15) join rows are both hard-deleted, though -- unlike
+    notification_outbox, neither table holds any history (a rule's channel
+    *assignment* isn't a fact worth preserving once the channel is gone),
+    and leaving them dangling would make GET .../routes/{id} keep reporting
+    a channel_id every other endpoint now treats as nonexistent -- which
+    then makes PUT-ing that same rule back (e.g. just toggling `enabled`)
+    422 on "unknown channel_ids"/"unknown escalation_channel_ids".
     """
     channel = await _get_channel_or_404(session, channel_id)
     await _require_team_role(session, channel.team_id, actor, "owner")
@@ -315,6 +327,11 @@ async def delete_channel(
     channel.deleted_at = datetime.now(UTC)
     await session.execute(
         delete(routing_rule_channels).where(routing_rule_channels.c.channel_id == channel_id)
+    )
+    await session.execute(
+        delete(routing_rule_escalation_channels).where(
+            routing_rule_escalation_channels.c.channel_id == channel_id
+        )
     )
 
     await audit.log(
@@ -326,6 +343,36 @@ async def delete_channel(
         object_ref=channel.name,
     )
     await session.commit()
+
+
+@router.get("/channels/escalation-targets")
+async def list_escalation_targets(
+    team_id: int = Query(...),
+    session: AsyncSession = Depends(get_session),
+    _member: User = Depends(require_team_role("member")),
+) -> list[dict[str, Any]]:
+    """Every channel selectable as an escalation target for `team_id`'s own
+    routing rules (Phase 15): all of `team_id`'s own channels, plus any
+    OTHER team's channel that has opted in via
+    `allow_cross_team_escalation=True` -- this is what
+    `app.api.routes._resolve_escalation_channels` actually enforces at
+    save time, so a channel this endpoint omits should never be pickable in
+    the route editor's escalation channel Select in the first place.
+    """
+    await _get_team_or_404(session, team_id)
+    result = await session.execute(
+        select(Channel, Team.slug)
+        .join(Team, Team.id == Channel.team_id)
+        .where(
+            Channel.deleted_at.is_(None),
+            or_(Channel.team_id == team_id, Channel.allow_cross_team_escalation.is_(True)),
+        )
+        .order_by(Team.slug, Channel.name)
+    )
+    return [
+        {"id": channel.id, "name": channel.name, "team_slug": team_slug}
+        for channel, team_slug in result.all()
+    ]
 
 
 @router.post("/channels/{channel_id}/test", status_code=status.HTTP_202_ACCEPTED)
