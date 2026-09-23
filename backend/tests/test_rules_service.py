@@ -1,12 +1,17 @@
 import re
 
 import pytest
+from pydantic import ValidationError
 
 from app.models.team import Team
 from app.services.rules import (
+    BUILDER_STATE_ANNOTATION,
     RULE_SLUG_RE,
+    BuilderLabelFilter,
+    BuilderState,
     RuleWrite,
     build_prometheus_rule,
+    generate_builder_expr,
     parse_prometheus_rule,
     rule_object_name,
 )
@@ -193,6 +198,8 @@ def test_parse_is_inverse_of_build_round_trip() -> None:
         "annotations": {"summary": "cpu is high"},
         "runbook_url": "https://runbooks.example.com/high-cpu",
         "grafana_url": "https://grafana.example.com/d/cpu",
+        "mode": "promql",
+        "builder_state": None,
     }
 
 
@@ -253,3 +260,193 @@ def test_parse_falls_back_to_full_name_when_no_kam_team_label() -> None:
     parsed = parse_prometheus_rule(obj)
     assert parsed["slug"] == "some-foreign-rule"
     assert parsed["severity"] == ""
+
+
+# -- threshold builder: canonical expr generation --------------------------
+#
+# This format is pinned deliberately: the frontend's ThresholdBuilder.tsx
+# generator must produce byte-for-byte the same string, since
+# parse_prometheus_rule's mode detection compares this function's output
+# against whatever expr the frontend actually stored.
+
+
+def test_generate_builder_expr_no_labels() -> None:
+    state = BuilderState(metric="node_load1", comparison=">", threshold=0)
+    assert generate_builder_expr(state) == "node_load1 > 0"
+
+
+def test_generate_builder_expr_with_labels_no_spaces_inside_braces() -> None:
+    state = BuilderState(
+        metric="node_load1",
+        labels=[
+            BuilderLabelFilter(key="job", op="=", value="node-exporter"),
+            BuilderLabelFilter(key="instance", op="!~", value="test.*"),
+        ],
+        comparison=">=",
+        threshold=1.5,
+    )
+    assert (
+        generate_builder_expr(state)
+        == 'node_load1{job="node-exporter",instance!~"test.*"} >= 1.5'
+    )
+
+
+def test_generate_builder_expr_integral_threshold_has_no_trailing_zero() -> None:
+    # 5.0 must render as "5", not "5.0" -- matching JS `${5}` === "5".
+    state = BuilderState(metric="up", comparison="==", threshold=5.0)
+    assert generate_builder_expr(state) == "up == 5"
+
+
+def test_generate_builder_expr_matches_brief_example() -> None:
+    state = BuilderState(
+        metric="metric",
+        labels=[
+            BuilderLabelFilter(key="k", op="=", value="v"),
+            BuilderLabelFilter(key="k2", op="!~", value="v2"),
+        ],
+        comparison=">",
+        threshold=5,
+    )
+    assert generate_builder_expr(state) == 'metric{k="v",k2!~"v2"} > 5'
+
+
+def test_generate_builder_expr_quotes_embedded_double_quotes() -> None:
+    state = BuilderState(
+        metric="up",
+        labels=[BuilderLabelFilter(key="job", op="=", value='has"quote')],
+        comparison=">",
+        threshold=0,
+    )
+    assert generate_builder_expr(state) == 'up{job="has\\"quote"} > 0'
+
+
+def test_rule_write_requires_builder_state_in_builder_mode() -> None:
+    with pytest.raises(ValidationError):
+        RuleWrite(
+            slug="x",
+            alert_name="X",
+            expr="up > 0",
+            severity="info",
+            mode="builder",
+        )
+
+
+# -- threshold builder: annotation round trip -------------------------------
+
+
+def test_build_stores_builder_state_as_annotation_in_builder_mode() -> None:
+    team = _team()
+    state = BuilderState(metric="node_load1", comparison=">", threshold=0)
+    rule_input = RuleWrite(
+        slug="high-load",
+        alert_name="HighLoad",
+        expr=generate_builder_expr(state),
+        severity="warning",
+        mode="builder",
+        builder_state=state,
+    )
+
+    manifest = build_prometheus_rule(team, rule_input)
+    rule = manifest["spec"]["groups"][0]["rules"][0]
+
+    assert BUILDER_STATE_ANNOTATION in rule["annotations"]
+    stored = BuilderState.model_validate_json(rule["annotations"][BUILDER_STATE_ANNOTATION])
+    assert stored == state
+
+
+def test_build_omits_builder_annotation_in_promql_mode() -> None:
+    team = _team()
+    rule_input = RuleWrite(
+        slug="hand-written",
+        alert_name="HandWritten",
+        expr="up == 0",
+        severity="info",
+        mode="promql",
+    )
+
+    manifest = build_prometheus_rule(team, rule_input)
+    rule = manifest["spec"]["groups"][0]["rules"][0]
+
+    assert BUILDER_STATE_ANNOTATION not in rule.get("annotations", {})
+
+
+def test_parse_reports_builder_mode_when_annotation_matches_stored_expr() -> None:
+    team = _team()
+    state = BuilderState(
+        metric="node_load1",
+        labels=[BuilderLabelFilter(key="job", op="=", value="node-exporter")],
+        comparison=">",
+        threshold=0,
+    )
+    rule_input = RuleWrite(
+        slug="high-load",
+        alert_name="HighLoad",
+        expr=generate_builder_expr(state),
+        for_="1m",
+        severity="warning",
+        mode="builder",
+        builder_state=state,
+    )
+
+    manifest = build_prometheus_rule(team, rule_input)
+    parsed = parse_prometheus_rule(manifest)
+
+    assert parsed["mode"] == "builder"
+    assert parsed["builder_state"] == state.model_dump()
+    # The internal annotation is never surfaced as a user-facing annotation.
+    assert BUILDER_STATE_ANNOTATION not in parsed["annotations"]
+
+
+def test_parse_falls_back_to_promql_mode_when_expr_diverges_from_annotation() -> None:
+    # Simulates: saved via the builder, then the user switched to PromQL
+    # mode and hand-edited the expression without the annotation being
+    # cleared out from under them (the stale-annotation-drop only happens
+    # on the *next* promql-mode save, per build_prometheus_rule).
+    team = _team()
+    state = BuilderState(metric="node_load1", comparison=">", threshold=0)
+    rule_input = RuleWrite(
+        slug="high-load",
+        alert_name="HighLoad",
+        expr=generate_builder_expr(state),
+        severity="warning",
+        mode="builder",
+        builder_state=state,
+    )
+    manifest = build_prometheus_rule(team, rule_input)
+    # Hand-edit the stored expr directly, as if a promql-mode PUT had
+    # changed it but (hypothetically) left the annotation behind.
+    manifest["spec"]["groups"][0]["rules"][0]["expr"] = "node_load1 > 999"
+
+    parsed = parse_prometheus_rule(manifest)
+
+    assert parsed["mode"] == "promql"
+    assert parsed["builder_state"] is None
+
+
+def test_parse_ignores_malformed_builder_annotation() -> None:
+    obj = {
+        "metadata": {
+            "name": "kam-t1-x",
+            "labels": {"app.kubernetes.io/managed-by": "kam", "kam/team-id": "1"},
+        },
+        "spec": {
+            "groups": [
+                {
+                    "name": "g",
+                    "rules": [
+                        {
+                            "alert": "X",
+                            "expr": "up > 0",
+                            "labels": {"kam_team": "platform", "severity": "info"},
+                            "annotations": {BUILDER_STATE_ANNOTATION: "not-json"},
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    parsed = parse_prometheus_rule(obj)
+    assert parsed["mode"] == "promql"
+    assert parsed["builder_state"] is None
+    assert BUILDER_STATE_ANNOTATION not in parsed["annotations"]
