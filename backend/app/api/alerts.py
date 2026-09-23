@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import ColumnElement, func, or_, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -411,21 +411,65 @@ def _export_row(event: AlertEvent) -> dict[str, Any]:
 async def _stream_history_ndjson(
     session: AsyncSession, conditions: list[ColumnElement[bool]]
 ) -> AsyncIterator[bytes]:
-    offset = 0
-    while True:
+    """Page through every matching row via keyset (not offset) pagination,
+    and never emit more than HISTORY_EXPORT_NDJSON_CAP rows.
+
+    Keyset, not offset: `last_received_at` mutates in place on a re-fire
+    (see AlertEvent's docstring), so under live ingestion a row can shift
+    across an *offset* boundary between two page queries -- silently
+    skipping or double-emitting rows depending on which way it moved.
+    Paging instead by "strictly before the last row we emitted" in the same
+    (last_received_at DESC, id DESC) order as the output is immune to that:
+    a row already emitted can't un-emit itself just because some other row's
+    timestamp changed, and a row not yet reached is simply wherever the next
+    query finds it.
+
+    Hard cap, not just the pre-flight COUNT(*) gate: that count and this
+    scan are two separate queries, so the live matching-row total can have
+    grown past HISTORY_EXPORT_NDJSON_CAP by the time this actually runs (or
+    simply differ from it for the same reason a row can move across an
+    offset boundary above). This loop refuses to yield past the cap
+    regardless of how many rows actually match, rather than trusting the
+    earlier count to still be accurate.
+    """
+    cursor: tuple[datetime, int] | None = None
+    emitted = 0
+    while emitted < HISTORY_EXPORT_NDJSON_CAP:
+        page_conditions = list(conditions)
+        if cursor is not None:
+            last_value, last_id = cursor
+            # Explicit OR/AND expansion of the (last_received_at, id) < (v, i)
+            # tuple comparison rather than SQLAlchemy's tuple_(...) < (...):
+            # row-value comparison is SQLite-version-dependent (3.15+) but
+            # this expansion is portable and reads identically on Postgres.
+            page_conditions.append(
+                or_(
+                    AlertEvent.last_received_at < last_value,
+                    and_(
+                        AlertEvent.last_received_at == last_value,
+                        AlertEvent.id < last_id,
+                    ),
+                )
+            )
+
+        page_limit = min(HISTORY_EXPORT_PAGE_SIZE, HISTORY_EXPORT_NDJSON_CAP - emitted)
         result = await session.execute(
             select(AlertEvent)
-            .where(*conditions)
+            .where(*page_conditions)
             .order_by(AlertEvent.last_received_at.desc(), AlertEvent.id.desc())
-            .offset(offset)
-            .limit(HISTORY_EXPORT_PAGE_SIZE)
+            .limit(page_limit)
         )
         rows = result.scalars().all()
+        if not rows:
+            return
+
         for row in rows:
             yield (json.dumps(_export_row(row), ensure_ascii=False) + "\n").encode("utf-8")
-        if len(rows) < HISTORY_EXPORT_PAGE_SIZE:
+        emitted += len(rows)
+        cursor = (rows[-1].last_received_at, rows[-1].id)
+
+        if len(rows) < page_limit:
             return
-        offset += HISTORY_EXPORT_PAGE_SIZE
 
 
 @router.get("/history/export")

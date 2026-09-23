@@ -222,6 +222,57 @@ async def test_ndjson_export_pages_via_cursor_not_one_giant_query(
     assert page_queries == 3
 
 
+async def test_ndjson_keyset_pagination_handles_duplicate_timestamps_across_page_boundary(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """All rows share the exact same last_received_at (as a single ingest
+    batch typically produces) -- with a page size that doesn't evenly divide
+    the row count, a tie-break split lands mid-page at least once. Keyset
+    pagination (ordered by last_received_at DESC, id DESC, paged strictly
+    "before" the last emitted row) must neither skip nor double-emit a row
+    across that boundary."""
+    monkeypatch.setattr(alerts_module, "HISTORY_EXPORT_PAGE_SIZE", 4)
+    cluster_id = await _default_cluster_id()
+    await _create_events(13, cluster_id=cluster_id)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/history/export", params={"format": "ndjson"})
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.split("\n") if line]
+    ids = [json.loads(line)["id"] for line in lines]
+    assert len(ids) == 13
+    assert len(set(ids)) == 13  # no row skipped or emitted twice
+
+
+async def test_stream_ndjson_enforces_cap_even_if_more_rows_match(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """Defense-in-depth: the pre-flight COUNT(*) and this streaming scan are
+    two separate queries, so more rows can match by the time the scan runs
+    than the count saw (e.g. concurrent ingestion, or the same kind of
+    in-place mutation that motivates keyset over offset pagination above).
+    _stream_history_ndjson itself -- not just the endpoint's upfront
+    check -- must never emit more than HISTORY_EXPORT_NDJSON_CAP rows, no
+    matter how many rows actually match `conditions`. Calling the generator
+    directly (bypassing the endpoint, and so its pre-flight cap check
+    entirely) is what isolates that guarantee as the generator's own, not
+    just an accident of the endpoint also gating on the same count.
+    """
+    monkeypatch.setattr(alerts_module, "HISTORY_EXPORT_NDJSON_CAP", 5)
+    monkeypatch.setattr(alerts_module, "HISTORY_EXPORT_PAGE_SIZE", 3)
+
+    cluster_id = await _default_cluster_id()
+    await _create_events(20, cluster_id=cluster_id)  # 4x the cap, all matching
+
+    async with db_module.async_session_factory() as session:
+        chunks = [
+            chunk async for chunk in alerts_module._stream_history_ndjson(session, [])
+        ]
+
+    assert len(chunks) == 5
+
+
 async def test_ndjson_export_over_cap_is_400(client: AsyncClient, monkeypatch) -> None:
     monkeypatch.setattr(alerts_module, "HISTORY_EXPORT_NDJSON_CAP", 2)
     cluster_id = await _default_cluster_id()
