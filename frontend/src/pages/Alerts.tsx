@@ -21,6 +21,9 @@ import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { getLiveAlerts } from "../api/alerts";
 import type { LiveAlert } from "../api/alerts";
+import { listClusters } from "../api/admin";
+import type { MatcherInput } from "../api/silences";
+import SilenceModal from "../components/SilenceModal";
 
 dayjs.extend(relativeTime);
 
@@ -55,9 +58,33 @@ export default function Alerts() {
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<LiveAlert | null>(null);
+  const [silenceModalOpen, setSilenceModalOpen] = useState(false);
 
   const teamId = currentTeam?.id;
   const noTeamSelected = !isAdmin && teams.length === 0;
+
+  // Silence creation needs a numeric cluster_id, but the live-alerts
+  // fan-out only carries the cluster's name (it spans every enabled
+  // cluster) -- so the selected alert's cluster name is cross-referenced
+  // against the full cluster list here. Shares the ["clusters"] query key
+  // with useDefaultCluster, so this doesn't add an extra round trip beyond
+  // what the app already fetches elsewhere.
+  const clustersQuery = useQuery({ queryKey: ["clusters"], queryFn: listClusters });
+  const selectedClusterId = useMemo(
+    () => clustersQuery.data?.find((c) => c.name === selected?.cluster)?.id,
+    [clustersQuery.data, selected],
+  );
+  const silenceMatchers: MatcherInput[] = useMemo(
+    () =>
+      selected
+        ? Object.entries(selected.labels).map(([name, value]) => ({
+            name,
+            value,
+            is_regex: false,
+          }))
+        : [],
+    [selected],
+  );
 
   const query = useQuery({
     queryKey: ["alerts-live", teamId, severity, namespace, stateFilter, search],
@@ -218,6 +245,16 @@ export default function Alerts() {
         open={!!selected}
         onClose={() => setSelected(null)}
         width={480}
+        extra={
+          <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
+            <Button
+              disabled={!currentTeam || !selectedClusterId}
+              onClick={() => setSilenceModalOpen(true)}
+            >
+              이 알럿 사일런스
+            </Button>
+          </Tooltip>
+        }
       >
         {selected && (
           <>
@@ -275,6 +312,16 @@ export default function Alerts() {
           </>
         )}
       </Drawer>
+
+      {selected && currentTeam && selectedClusterId && (
+        <SilenceModal
+          open={silenceModalOpen}
+          onClose={() => setSilenceModalOpen(false)}
+          clusterId={selectedClusterId}
+          team={currentTeam}
+          initialMatchers={silenceMatchers}
+        />
+      )}
     </div>
   );
 }
