@@ -121,7 +121,7 @@ def test_build_lifts_runbook_and_grafana_url_into_annotations() -> None:
 
     assert rule["annotations"]["summary"] == "disk almost full"
     assert rule["annotations"]["runbook_url"] == "https://runbooks.example.com/disk-full"
-    assert rule["annotations"]["kam.io/grafana-url"] == "https://grafana.example.com/d/disk"
+    assert rule["annotations"]["kam_grafana_url"] == "https://grafana.example.com/d/disk"
 
 
 def test_build_omits_for_and_annotations_when_absent() -> None:
@@ -318,6 +318,55 @@ def test_generate_builder_expr_quotes_embedded_double_quotes() -> None:
         threshold=0,
     )
     assert generate_builder_expr(state) == 'up{job="has\\"quote"} > 0'
+
+
+@pytest.mark.parametrize(
+    "threshold,expected",
+    [
+        (5, "5"),
+        (0.5, "0.5"),
+        (0.0001, "0.0001"),
+        (0.00001, "1e-5"),
+        (1e-7, "1e-7"),
+        (123.456, "123.456"),
+        (1e21, "1e+21"),
+    ],
+)
+def test_generate_builder_expr_number_format_matches_frontend_pinned_vectors(
+    threshold: float, expected: str
+) -> None:
+    # Pinned test vectors shared with the frontend's formatPromqlNumber
+    # (builderExpr.ts) -- these specific values are exactly where Python's
+    # repr() and JS's toString() natively disagree (both on when to switch
+    # to scientific notation and on exponent zero-padding), which is why
+    # _format_promql_number reimplements the fixed/scientific decision
+    # itself rather than delegating to repr()/toString() directly.
+    state = BuilderState(metric="metric", comparison=">", threshold=threshold)
+    assert generate_builder_expr(state) == f"metric > {expected}"
+
+
+def test_build_parse_round_trip_stays_builder_mode_with_tiny_threshold() -> None:
+    # A threshold small enough to force scientific notation (1e-6) must
+    # still round-trip through the annotation and be recognized as
+    # mode=builder -- regression guard for the repr()/toString() format
+    # divergence above.
+    team = _team()
+    state = BuilderState(metric="node_load1", comparison=">", threshold=1e-6)
+    rule_input = RuleWrite(
+        slug="tiny-threshold",
+        alert_name="TinyThreshold",
+        expr=generate_builder_expr(state),
+        severity="warning",
+        mode="builder",
+        builder_state=state,
+    )
+
+    manifest = build_prometheus_rule(team, rule_input)
+    parsed = parse_prometheus_rule(manifest)
+
+    assert parsed["expr"] == "node_load1 > 1e-6"
+    assert parsed["mode"] == "builder"
+    assert parsed["builder_state"] == state.model_dump()
 
 
 def test_rule_write_requires_builder_state_in_builder_mode() -> None:

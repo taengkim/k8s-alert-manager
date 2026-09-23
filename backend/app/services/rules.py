@@ -2,6 +2,8 @@
 Phase 5 threshold builder's round trip through a CRD annotation.
 """
 
+import math
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -19,7 +21,14 @@ MANAGED_BY_VALUE = "kam"
 KAM_TEAM_LABEL = "kam_team"
 SEVERITY_LABEL = "severity"
 RUNBOOK_ANNOTATION = "runbook_url"
-GRAFANA_ANNOTATION = "kam.io/grafana-url"
+# A valid Prometheus annotation name (no dots/slashes): unlike
+# BUILDER_STATE_ANNOTATION below, this one is deliberately a *rule*-level
+# annotation (see build_prometheus_rule) so it propagates onto fired
+# alerts for notification templates -- it must pass the Prometheus
+# Operator admission webhook's rulefmt validation, which restricts
+# rule-level annotation *names* to `[a-zA-Z_][a-zA-Z0-9_]*` (confirmed
+# live: "kam.io/grafana-url" 422'd with "invalid annotation name").
+GRAFANA_ANNOTATION = "kam_grafana_url"
 BUILDER_STATE_ANNOTATION = "kam.io/builder-v1"
 
 Severity = Literal["critical", "warning", "info"]
@@ -50,14 +59,88 @@ class BuilderState(BaseModel):
     threshold: float
 
 
+def _parse_native_float_repr(s: str) -> tuple[str, str, int]:
+    """Parse Python's own `repr()` output for a non-zero float -- always
+    either plain decimal ("123.456", "0.0001", "5.0") or scientific
+    ("1e-05", "1e+21") -- into (sign, digits, exp) such that
+    value == sign + digits[0] + "." + digits[1:] + "e" + exp, i.e.
+    value = (sign)D.DDD * 10**exp where digits has no leading or trailing
+    zeros. This is purely string manipulation on repr()'s own already-
+    correct shortest-round-trip digit sequence -- it never re-derives
+    digits numerically (e.g. via log10), which would risk off-by-one
+    errors from floating-point imprecision at exact power-of-ten boundaries.
+    """
+    sign = ""
+    if s.startswith("-"):
+        sign, s = "-", s[1:]
+    if "e" in s or "E" in s:
+        mantissa, exp_part = re.split("[eE]", s)
+        sci_exp = int(exp_part)
+    else:
+        mantissa, sci_exp = s, 0
+    int_part, _, frac_part = mantissa.partition(".")
+    combined = int_part + frac_part
+    dot_pos = len(int_part)
+    first_nonzero = next((i for i, c in enumerate(combined) if c != "0"), None)
+    if first_nonzero is None:
+        return sign, "0", 0
+    digits = combined[first_nonzero:].rstrip("0") or "0"
+    exp = dot_pos - first_nonzero - 1 + sci_exp
+    return sign, digits, exp
+
+
+def _render_normalized_number(sign: str, digits: str, exp: int) -> str:
+    """Inverse of `_parse_native_float_repr`, applying OUR OWN canonical
+    fixed/scientific threshold and exponent format rather than Python's or
+    JS's native (and mutually divergent) ones -- see `_format_promql_number`."""
+    if digits == "0":
+        return "0"
+    if -4 <= exp < 21:
+        if exp >= 0:
+            if len(digits) <= exp + 1:
+                int_part = digits + "0" * (exp + 1 - len(digits))
+                frac_part = ""
+            else:
+                int_part = digits[: exp + 1]
+                frac_part = digits[exp + 1 :]
+        else:
+            int_part = "0"
+            frac_part = "0" * (-exp - 1) + digits
+        return sign + int_part + (f".{frac_part}" if frac_part else "")
+    mantissa = f"{digits[0]}.{digits[1:]}" if len(digits) > 1 else digits[0]
+    exp_sign = "-" if exp < 0 else "+"
+    return f"{sign}{mantissa}e{exp_sign}{abs(exp)}"
+
+
 def _format_promql_number(value: float) -> str:
-    """Render `value` the way the frontend's JS `${value}` template
-    interpolation would (e.g. 5.0 -> "5", 1.5 -> "1.5") -- this must match
-    ThresholdBuilder.tsx's generator exactly, since it's compared byte-for-
-    byte against the frontend-generated expr stored by `build_prometheus_rule`."""
-    if value.is_integer():
-        return str(int(value))
-    return repr(value)
+    """Render `value` in a format PINNED to match the frontend's
+    `formatPromqlNumber` (builderExpr.ts) byte-for-byte, since this is
+    compared directly against the frontend-generated expr stored by
+    `build_prometheus_rule`.
+
+    This can't just be `repr(value)` vs. JS's `${value}`/`String(value)`:
+    those two natively disagree both on WHEN to switch from fixed to
+    scientific notation (Python flips around 1e-4/1e16, JS around
+    1e-6/1e21) and on how they zero-pad the exponent (Python: "1e-05",
+    JS: "1e-5") -- e.g. 0.00001 round-trips as "1e-05" in Python but stays
+    "0.00001" in JS, and 1e-7 is "1e-07" vs "1e-7".
+
+    The fix: parse each language's own native shortest-round-trip string
+    (repr()/toString()) into (sign, digits, exponent) -- see
+    `_parse_native_float_repr` -- then re-render with OUR OWN rule,
+    applied identically on both sides: fixed notation for
+    -4 <= exponent < 21 (trimmed, no trailing zeros), scientific
+    otherwise with an unpadded, explicitly-signed exponent (e.g. "1e-5",
+    "1e+21"). Both sides only ever reformat the exact digit sequence their
+    own native shortest-round-trip algorithm already produced, so the
+    output is guaranteed to agree without re-deriving anything numerically.
+    """
+    if value == 0:
+        return "0"
+    if not math.isfinite(value):
+        return str(value)
+    sign, digits, exp = _parse_native_float_repr(repr(value))
+    return _render_normalized_number(sign, digits, exp)
 
 
 def _quote_promql_string(value: str) -> str:
