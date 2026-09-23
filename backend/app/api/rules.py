@@ -2,7 +2,7 @@
 mode -- a guided threshold builder is Phase 5).
 """
 
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
@@ -38,7 +38,10 @@ from app.services.rules import (
 router = APIRouter(prefix="/api/v1/teams/{team_id}/rules", tags=["rules"])
 validate_router = APIRouter(prefix="/api/v1/rules", tags=["rules"])
 
-SlugPath = Path(pattern=RULE_SLUG_RE)
+# Annotated (not a shared `Path(...)` default value) so each parameter gets
+# its own FieldInfo copy rather than three route functions sharing one
+# mutable instance.
+SlugParam = Annotated[str, Path(pattern=RULE_SLUG_RE)]
 
 
 class ValidateRequest(BaseModel):
@@ -174,7 +177,7 @@ async def create_rule(
 @router.get("/{slug}")
 async def get_rule(
     team_id: int,
-    slug: str = SlugPath,
+    slug: SlugParam,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
@@ -191,8 +194,8 @@ async def get_rule(
 @router.put("/{slug}")
 async def update_rule(
     team_id: int,
+    slug: SlugParam,
     body: RuleWrite,
-    slug: str = SlugPath,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
@@ -250,7 +253,7 @@ async def update_rule(
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rule(
     team_id: int,
-    slug: str = SlugPath,
+    slug: SlugParam,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
