@@ -33,3 +33,23 @@ make migrate
 ```bash
 make seed-dev
 ```
+
+## 멀티 클러스터 (개발)
+
+로컬 kind 클러스터 하나로 멀티 클러스터 UI/API 경로(ClusterFilter, `/admin/clusters`,
+클러스터별 webhook 토큰, `clusters=[...]`로 범위를 좁힌 라우팅 규칙 등)를 테스트할 수
+있도록, 같은 인프라(같은 Prometheus/Alertmanager/kubeconfig)를 가리키는 `staging-sim`
+클러스터를 등록하는 멱등 스크립트가 있습니다:
+
+```bash
+make dev-second-cluster-sim
+```
+
+백엔드가 실행 중이어야 하며(`make backend`), `seed-dev`로 만든 admin 계정으로 로그인해
+클러스터 생성 API를 호출합니다. 새 웹훅 토큰은 최초 1회만 출력되므로 꼭 기록해 두세요.
+
+실제로 물리적으로 분리된 두 번째 클러스터(`dev-up-2` 같은 별도 kind 클러스터)를 붙이는
+것은 이번 단계 범위 밖입니다. 필요하다면 `dev/kind-config.yaml`을 참고해 두 번째
+kind 클러스터를 별도 이름으로 띄우고, `kube-prometheus-values.yaml`의 NodePort를
+충돌하지 않게 바꾼 뒤, `/admin/clusters`에서 그 클러스터의 실제 Prometheus/Alertmanager
+URL로 새 클러스터를 등록하면 됩니다.

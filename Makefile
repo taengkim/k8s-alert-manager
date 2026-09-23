@@ -1,4 +1,4 @@
-.PHONY: dev-deps dev-deps-down dev-up dev-down backend frontend migrate seed-dev test test-backend
+.PHONY: dev-deps dev-deps-down dev-up dev-down backend frontend migrate seed-dev dev-second-cluster-sim test test-backend
 
 dev-deps:
 	docker compose -f docker-compose.dev.yml up -d
@@ -23,6 +23,9 @@ migrate:
 
 seed-dev:
 	cd backend && uv run python -m scripts.seed_dev
+
+dev-second-cluster-sim:
+	cd backend && uv run python -m scripts.add_sim_cluster
 
 test: test-backend
 	cd frontend && npm run build
