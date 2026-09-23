@@ -4,7 +4,9 @@ import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
 import { TeamProvider } from "./auth/TeamContext";
+import { ClusterFilterProvider } from "./auth/ClusterFilterContext";
 import TeamSwitcher from "./components/TeamSwitcher";
+import ClusterFilterSelect from "./components/ClusterFilterSelect";
 import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
@@ -77,6 +79,7 @@ function AppLayout() {
         >
           <span>K8s Alert Manager</span>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <ClusterFilterSelect />
             <TeamSwitcher />
             <Dropdown menu={{ items: [{ key: "logout", label: "로그아웃", onClick: handleLogout }] }}>
               <span style={{ cursor: "pointer", color: "white" }}>{user?.display_name} ▾</span>
@@ -94,7 +97,9 @@ function AppLayout() {
 function AuthenticatedShell() {
   return (
     <TeamProvider>
-      <AppLayout />
+      <ClusterFilterProvider>
+        <AppLayout />
+      </ClusterFilterProvider>
     </TeamProvider>
   );
 }
