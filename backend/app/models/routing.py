@@ -59,6 +59,13 @@ class RoutingRule(Base):
     namespaces_include: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     namespaces_exclude: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     clusters: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    # This rule's own message template (Phase 13) -- takes priority over the
+    # channel's template_id (see app.services.templating.resolve_template).
+    # ON DELETE SET NULL: deleting the template just reverts the rule to
+    # whatever the channel (or its type's default) would otherwise render.
+    template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("message_templates.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime,

@@ -42,6 +42,15 @@ class Channel(Base):
     type: Mapped[str] = mapped_column(String(64))
     config_encrypted: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)
+    # This channel's own default message template (Phase 13), overriding the
+    # channel type's built-in default_templates -- overridden in turn by a
+    # routing rule's own template_id (see app.services.templating.resolve_template
+    # and app/worker/outbox.py's deliver()). ON DELETE SET NULL: deleting the
+    # template just reverts this channel to its type's default, rather than
+    # blocking (or cascading through) the delete.
+    template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("message_templates.id", ondelete="SET NULL"), nullable=True
+    )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ON DELETE SET NULL: deleting the creating user must not delete (or
     # block deleting) the channel itself -- it just loses its "created by"
