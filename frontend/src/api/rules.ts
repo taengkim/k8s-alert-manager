@@ -1,6 +1,8 @@
 import { apiFetch } from "./client";
+import type { BuilderState } from "../components/rule-editor/builderExpr";
 
 export type Severity = "critical" | "warning" | "info";
+export type RuleMode = "builder" | "promql";
 
 export interface RuleOut {
   slug: string;
@@ -16,6 +18,11 @@ export interface RuleOut {
   health: string;
   state: string | null;
   last_error: string | null;
+  /** "builder" only when the stored expr still matches its builder_state
+   * annotation; a hand-edit after switching to PromQL mode falls back to
+   * "promql" even if a stale annotation is still present. */
+  mode: RuleMode;
+  builder_state: BuilderState | null;
 }
 
 export interface RulesListResponse {
@@ -34,6 +41,8 @@ export interface RuleWriteInput {
   annotations?: Record<string, string>;
   runbook_url?: string;
   grafana_url?: string;
+  mode: RuleMode;
+  builder_state?: BuilderState;
 }
 
 export interface ValidateResult {

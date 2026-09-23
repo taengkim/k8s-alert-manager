@@ -9,6 +9,7 @@ from app.api.alerts import router as alerts_router
 from app.api.auth import router as auth_router
 from app.api.clusters import namespaces_router
 from app.api.clusters import router as clusters_router
+from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
 from app.api.rules import router as rules_router
 from app.api.rules import validate_router as rules_validate_router
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router)
     app.include_router(rules_router)
     app.include_router(rules_validate_router)
+    app.include_router(metrics_router)
     return app
 
 
