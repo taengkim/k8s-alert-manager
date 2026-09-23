@@ -347,11 +347,18 @@ def test_build_stores_builder_state_as_annotation_in_builder_mode() -> None:
     )
 
     manifest = build_prometheus_rule(team, rule_input)
-    rule = manifest["spec"]["groups"][0]["rules"][0]
 
-    assert BUILDER_STATE_ANNOTATION in rule["annotations"]
-    stored = BuilderState.model_validate_json(rule["annotations"][BUILDER_STATE_ANNOTATION])
+    # Deliberately k8s object metadata, not a rule-level annotation: the
+    # Prometheus Operator's admission webhook runs rulefmt validation on
+    # rule-level annotation *names* and rejects a dotted/slashed key like
+    # this one outright ("invalid annotation name").
+    meta_annotations = manifest["metadata"]["annotations"]
+    assert BUILDER_STATE_ANNOTATION in meta_annotations
+    stored = BuilderState.model_validate_json(meta_annotations[BUILDER_STATE_ANNOTATION])
     assert stored == state
+
+    rule = manifest["spec"]["groups"][0]["rules"][0]
+    assert BUILDER_STATE_ANNOTATION not in rule.get("annotations", {})
 
 
 def test_build_omits_builder_annotation_in_promql_mode() -> None:
@@ -365,9 +372,8 @@ def test_build_omits_builder_annotation_in_promql_mode() -> None:
     )
 
     manifest = build_prometheus_rule(team, rule_input)
-    rule = manifest["spec"]["groups"][0]["rules"][0]
 
-    assert BUILDER_STATE_ANNOTATION not in rule.get("annotations", {})
+    assert BUILDER_STATE_ANNOTATION not in manifest["metadata"].get("annotations", {})
 
 
 def test_parse_reports_builder_mode_when_annotation_matches_stored_expr() -> None:
@@ -428,6 +434,7 @@ def test_parse_ignores_malformed_builder_annotation() -> None:
         "metadata": {
             "name": "kam-t1-x",
             "labels": {"app.kubernetes.io/managed-by": "kam", "kam/team-id": "1"},
+            "annotations": {BUILDER_STATE_ANNOTATION: "not-json"},
         },
         "spec": {
             "groups": [
@@ -438,7 +445,6 @@ def test_parse_ignores_malformed_builder_annotation() -> None:
                             "alert": "X",
                             "expr": "up > 0",
                             "labels": {"kam_team": "platform", "severity": "info"},
-                            "annotations": {BUILDER_STATE_ANNOTATION: "not-json"},
                         }
                     ],
                 }

@@ -138,12 +138,6 @@ def build_prometheus_rule(team: Team, rule_input: RuleWrite) -> dict[str, Any]:
         annotations[RUNBOOK_ANNOTATION] = rule_input.runbook_url
     if rule_input.grafana_url:
         annotations[GRAFANA_ANNOTATION] = rule_input.grafana_url
-    if rule_input.mode == "builder" and rule_input.builder_state is not None:
-        annotations[BUILDER_STATE_ANNOTATION] = rule_input.builder_state.model_dump_json()
-    # A promql-mode save carries no builder_state, so the annotation is
-    # simply never added here -- since replace_rule always submits a fresh
-    # manifest (not a patch), any annotation from a prior builder-mode save
-    # is naturally dropped rather than needing explicit removal.
 
     rule: dict[str, Any] = {
         "alert": rule_input.alert_name,
@@ -155,20 +149,38 @@ def build_prometheus_rule(team: Team, rule_input: RuleWrite) -> dict[str, Any]:
     if annotations:
         rule["annotations"] = annotations
 
+    metadata: dict[str, Any] = {
+        "name": name,
+        "labels": {
+            MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+            TEAM_ID_LABEL: str(team.id),
+            # Not used for ownership/identity (that's TEAM_ID_LABEL) --
+            # purely so `kubectl get prometheusrule -l ...` reads as a
+            # team name instead of a bare numeric id.
+            TEAM_SLUG_LABEL: team.slug,
+        },
+    }
+    if rule_input.mode == "builder" and rule_input.builder_state is not None:
+        # Deliberately a k8s *object* metadata annotation, not a rule-level
+        # one (spec.groups[].rules[].annotations): the Prometheus Operator's
+        # admission webhook runs rulefmt validation on rule-level
+        # annotation *names*, which -- like label names -- must match
+        # `[a-zA-Z_][a-zA-Z0-9_]*` and so rejects a dotted/slashed key like
+        # this outright ("invalid annotation name"). Object metadata carries
+        # no such restriction, and this is purely round-trip bookkeeping for
+        # the UI anyway, not something meant to show up on a fired alert.
+        metadata["annotations"] = {
+            BUILDER_STATE_ANNOTATION: rule_input.builder_state.model_dump_json()
+        }
+    # A promql-mode save carries no builder_state, so the annotation is
+    # simply never added here -- since replace_rule always submits a fresh
+    # manifest (not a patch), any annotation from a prior builder-mode save
+    # is naturally dropped rather than needing explicit removal.
+
     return {
         "apiVersion": "monitoring.coreos.com/v1",
         "kind": "PrometheusRule",
-        "metadata": {
-            "name": name,
-            "labels": {
-                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
-                TEAM_ID_LABEL: str(team.id),
-                # Not used for ownership/identity (that's TEAM_ID_LABEL) --
-                # purely so `kubectl get prometheusrule -l ...` reads as a
-                # team name instead of a bare numeric id.
-                TEAM_SLUG_LABEL: team.slug,
-            },
-        },
+        "metadata": metadata,
         "spec": {"groups": [{"name": group_name, "rules": [rule]}]},
     }
 
@@ -201,7 +213,10 @@ def parse_prometheus_rule(obj: dict[str, Any]) -> dict[str, Any]:
     annotations = dict(rule.get("annotations") or {})
     runbook_url = annotations.pop(RUNBOOK_ANNOTATION, None)
     grafana_url = annotations.pop(GRAFANA_ANNOTATION, None)
-    builder_state_raw = annotations.pop(BUILDER_STATE_ANNOTATION, None)
+    # The builder-state annotation lives on the k8s object's own metadata,
+    # not the rule-level annotations -- see build_prometheus_rule.
+    meta_annotations = metadata.get("annotations") or {}
+    builder_state_raw = meta_annotations.get(BUILDER_STATE_ANNOTATION)
     expr = rule.get("expr", "")
 
     mode: RuleMode = "promql"
