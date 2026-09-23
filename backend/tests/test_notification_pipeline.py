@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 import app.db as db_module
-from app.channels.base import AlertNotification, NotificationChannel
+from app.channels.base import AlertNotification, NotificationChannel, RenderedMessage
 from app.channels.registry import ChannelRegistry
 from app.config import get_settings
 from app.models.alert import AlertEvent
@@ -65,13 +65,16 @@ class _FakeChannel(NotificationChannel):
     config_schema = _FakeConfig
 
     sent: ClassVar[list[AlertNotification]] = []
+    sent_messages: ClassVar[list[RenderedMessage]] = []
 
-    async def send(self, notification: AlertNotification) -> None:
+    async def send(self, notification: AlertNotification, msg: RenderedMessage) -> None:
         _FakeChannel.sent.append(notification)
+        _FakeChannel.sent_messages.append(msg)
 
 
 async def test_webhook_to_delivery_end_to_end(client: AsyncClient, app) -> None:
     _FakeChannel.sent.clear()
+    _FakeChannel.sent_messages.clear()
 
     await _default_cluster()  # sanity: the seeded default cluster exists
     async with db_module.async_session_factory() as session:
@@ -136,3 +139,9 @@ async def test_webhook_to_delivery_end_to_end(client: AsyncClient, app) -> None:
     assert len(_FakeChannel.sent) == 1
     assert _FakeChannel.sent[0].alertname == "KamCriticalDemo"
     assert _FakeChannel.sent[0].team_slug == "platform"
+
+    # No routing rule/channel template_id was set, and _FakeChannel declares
+    # no default_templates -- the app-wide default template renders here.
+    assert len(_FakeChannel.sent_messages) == 1
+    assert "KamCriticalDemo" in _FakeChannel.sent_messages[0].title
+    assert "critical" in _FakeChannel.sent_messages[0].title

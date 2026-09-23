@@ -1,6 +1,13 @@
-"""Unit tests for the built-in email channel (app/channels/email.py):
-subject/body formatting and SMTP failure -> ChannelDeliveryError mapping.
-`aiosmtplib.send` is monkeypatched throughout -- no real network/SMTP.
+"""Unit tests for the built-in email channel (app/channels/email.py).
+
+As of Phase 13, `send()` receives an already-rendered `RenderedMessage`
+(title/body/body_html) rather than rendering its own subject/body from the
+raw `AlertNotification` -- that rendering now happens once, centrally, in
+`app/services/templating.py` (see tests/test_templating.py for those
+tests). This file only covers what email.py itself still owns: wiring
+`msg` into a MIME message, applying `subject_prefix`, and mapping SMTP/
+build failures to `ChannelDeliveryError`. `aiosmtplib.send` is monkeypatched
+throughout -- no real network/SMTP.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -8,14 +15,14 @@ from unittest.mock import AsyncMock, patch
 import aiosmtplib
 import pytest
 
-from app.channels.base import AlertNotification, ChannelDeliveryError
+from app.channels.base import AlertNotification, ChannelDeliveryError, RenderedMessage
 from app.channels.email import EmailChannel, EmailConfig
 
 
-def _notification(**overrides) -> AlertNotification:
-    base = AlertNotification.example().model_dump()
+def _msg(**overrides) -> RenderedMessage:
+    base = {"title": "HighCPU firing", "body": "cluster: prod", "body_html": "<p>prod</p>"}
     base.update(overrides)
-    return AlertNotification(**base)
+    return RenderedMessage(**base)
 
 
 def _parts(message) -> dict[str, str]:
@@ -26,19 +33,14 @@ def _parts(message) -> dict[str, str]:
     }
 
 
-async def test_send_formats_subject_recipients_and_body() -> None:
+async def test_send_maps_msg_into_subject_recipients_and_body() -> None:
     config = EmailConfig(recipients=["ops@example.org", "oncall@example.org"])
     channel = EmailChannel(config)
-    notification = _notification(
-        trigger="firing",
-        alertname="HighCPU",
-        severity="critical",
-        labels={"alertname": "HighCPU", "pod": "api-7d9f"},
-    )
+    msg = _msg(title="[FIRING] HighCPU (critical)", body="text body", body_html="<b>html body</b>")
 
     mock_send = AsyncMock(return_value=({}, "OK"))
     with patch("app.channels.email.aiosmtplib.send", new=mock_send):
-        await channel.send(notification)
+        await channel.send(AlertNotification.example(), msg)
 
     assert mock_send.await_count == 1
     message = mock_send.await_args.args[0]
@@ -46,13 +48,24 @@ async def test_send_formats_subject_recipients_and_body() -> None:
     assert message["To"] == "ops@example.org, oncall@example.org"
 
     parts = _parts(message)
-    for body in (parts["text/plain"], parts["text/html"]):
-        assert "HighCPU" in body
-        assert "critical" in body  # via the subject line embedded at the top
-        assert "api-7d9f" in body  # from labels
+    assert parts["text/plain"] == "text body"
+    assert parts["text/html"] == "<b>html body</b>"
 
 
-async def test_send_test_uses_example_notification() -> None:
+async def test_send_with_no_body_html_omits_html_part() -> None:
+    config = EmailConfig(recipients=["ops@example.org"])
+    channel = EmailChannel(config)
+    msg = _msg(body_html=None)
+
+    mock_send = AsyncMock(return_value=({}, "OK"))
+    with patch("app.channels.email.aiosmtplib.send", new=mock_send):
+        await channel.send(AlertNotification.example(), msg)
+
+    message = mock_send.await_args.args[0]
+    assert "text/html" not in _parts(message)
+
+
+async def test_send_test_uses_example_notification_and_default_template() -> None:
     config = EmailConfig(recipients=["ops@example.org"])
     channel = EmailChannel(config)
 
@@ -64,6 +77,10 @@ async def test_send_test_uses_example_notification() -> None:
     assert "[TEST]" in message["Subject"]
     assert "KamTestAlert" in message["Subject"]
 
+    parts = _parts(message)
+    assert "kam-demo" in parts["text/plain"]  # namespace, from the default text template
+    assert "text/html" in parts
+
 
 async def test_smtp_exception_is_wrapped_as_delivery_error() -> None:
     config = EmailConfig(recipients=["ops@example.org"])
@@ -74,7 +91,7 @@ async def test_smtp_exception_is_wrapped_as_delivery_error() -> None:
         patch("app.channels.email.aiosmtplib.send", new=mock_send),
         pytest.raises(ChannelDeliveryError, match="mailbox full"),
     ):
-        await channel.send(AlertNotification.example())
+        await channel.send(AlertNotification.example(), _msg())
 
 
 async def test_connection_error_is_wrapped_as_delivery_error() -> None:
@@ -86,24 +103,25 @@ async def test_connection_error_is_wrapped_as_delivery_error() -> None:
         patch("app.channels.email.aiosmtplib.send", new=mock_send),
         pytest.raises(ChannelDeliveryError, match="connection refused"),
     ):
-        await channel.send(AlertNotification.example())
+        await channel.send(AlertNotification.example(), _msg())
 
 
-async def test_header_injection_attempt_in_alertname_is_sanitized() -> None:
-    """Regression: alert-derived fields (alertname here) flow unsanitized
-    into the Subject header before this fix. A raw CRLF there either raises
-    email.errors.HeaderParseError (an uncaught 500, since message-building
-    used to sit outside send()'s try/except) or, if it slipped through,
-    could inject an extra header. Phase 9 routes real Alertmanager label
-    data through this path, so this must be handled, not just theoretical.
+async def test_header_injection_in_rendered_title_is_sanitized() -> None:
+    """Defense in depth: `msg.title` should already have embedded newlines
+    stripped by templating.py's `render()` before it ever reaches a
+    channel, but email.py re-sanitizes the combined `subject_prefix + title`
+    itself regardless -- a raw CRLF reaching this far (a rendering bug, a
+    directly-constructed RenderedMessage bypassing render(), ...) either
+    raises `email.errors.HeaderParseError` or, if it slipped through, could
+    inject an extra header.
     """
     config = EmailConfig(recipients=["ops@example.org"])
     channel = EmailChannel(config)
-    notification = _notification(alertname="Evil\r\nX-Evil: 1", severity="critical")
+    msg = _msg(title="Evil\r\nX-Evil: 1")
 
     mock_send = AsyncMock(return_value=({}, "OK"))
     with patch("app.channels.email.aiosmtplib.send", new=mock_send):
-        await channel.send(notification)  # must not raise
+        await channel.send(AlertNotification.example(), msg)  # must not raise
 
     message = mock_send.await_args.args[0]
     subject = message["Subject"]
@@ -114,16 +132,21 @@ async def test_header_injection_attempt_in_alertname_is_sanitized() -> None:
 
 
 async def test_non_smtp_error_during_message_build_is_wrapped_as_delivery_error() -> None:
-    """Regression: send() used to only wrap aiosmtplib.send()'s own
-    exceptions -- anything raised while building the message (template
-    rendering, a bad header value the sanitizer doesn't catch, ...) escaped
-    as an unhandled exception instead of ChannelDeliveryError.
+    """Regression: send() must wrap failures from building the MIME message
+    itself, not just aiosmtplib.send()'s own exceptions.
     """
     config = EmailConfig(recipients=["ops@example.org"])
     channel = EmailChannel(config)
 
     with (
-        patch("app.channels.email._env.get_template", side_effect=RuntimeError("template exploded")),
-        pytest.raises(ChannelDeliveryError, match="template exploded"),
+        patch("app.channels.email.MIMEText", side_effect=RuntimeError("mime exploded")),
+        pytest.raises(ChannelDeliveryError, match="mime exploded"),
     ):
-        await channel.send(AlertNotification.example())
+        await channel.send(AlertNotification.example(), _msg())
+
+
+def test_default_templates_expose_title_body_and_html() -> None:
+    assert set(EmailChannel.default_templates) == {"title", "body", "body_html"}
+    assert "{{ alertname }}" in EmailChannel.default_templates["title"]
+    assert "{{ cluster }}" in EmailChannel.default_templates["body"]
+    assert "{{ cluster }}" in EmailChannel.default_templates["body_html"]

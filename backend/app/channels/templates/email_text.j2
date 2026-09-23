@@ -1,28 +1,26 @@
-{{ subject }}
-
-Cluster:    {{ n.cluster }}
-Namespace:  {{ n.namespace or "-" }}
-Team:       {{ n.team_slug }}
-Starts At:  {{ n.starts_at }}
-{% if n.ends_at %}
-Ends At:    {{ n.ends_at }}
+Cluster:    {{ cluster }}
+Namespace:  {{ namespace or "-" }}
+Team:       {{ team }}
+Starts At:  {{ starts_at | datetime_format }}
+{% if ends_at %}
+Ends At:    {{ ends_at | datetime_format }}
 {% endif %}
 
 Labels:
-{% for key, value in n.labels.items() %}
+{% for key, value in labels.items() %}
   {{ key }}: {{ value }}
 {% endfor %}
 
 Annotations:
-{% for key, value in n.annotations.items() %}
+{% for key, value in annotations.items() %}
   {{ key }}: {{ value }}
 {% endfor %}
-{% if n.runbook_url %}
-Runbook: {{ n.runbook_url }}
+{% if runbook_url %}
+Runbook: {{ runbook_url }}
 {% endif %}
-{% if n.grafana_url %}
-Grafana: {{ n.grafana_url }}
+{% if grafana_url %}
+Grafana: {{ grafana_url }}
 {% endif %}
-{% if n.app_url %}
-View in app: {{ n.app_url }}
+{% if app_url %}
+View in app: {{ app_url }}
 {% endif %}
