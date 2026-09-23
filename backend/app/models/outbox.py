@@ -39,7 +39,13 @@ class NotificationOutbox(Base):
     )
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id"))
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
-    trigger: Mapped[str] = mapped_column(String(16))  # 'firing' | 'resolved'
+    # 'firing' | 'resolved' | 'escalation' (Phase 15, single-fire per
+    # (event, rule)) | f'renotify:{scheduled_action_id}' (Phase 15 -- each
+    # renotify cycle gets its own value, since a bare 'renotify' reused
+    # every cycle would collide with the first cycle's row on this table's
+    # own (alert_event_id, channel_id, trigger) unique constraint below --
+    # see app/worker/scheduler.py's _dispatch_renotify docstring).
+    trigger: Mapped[str] = mapped_column(String(32))
     # A frozen AlertNotification, serialized at routing time -- delivery
     # never re-derives it from the (possibly since-changed) event row.
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
