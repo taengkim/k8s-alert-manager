@@ -1,17 +1,24 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import {
   Alert,
+  App,
   Badge,
+  Button,
   DatePicker,
   Descriptions,
   Drawer,
   Empty,
   Input,
+  List,
+  Popconfirm,
   Segmented,
   Select,
+  Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -19,10 +26,18 @@ import {
 } from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
+import { ApiError } from "../api/client";
 import {
+  ackAlert,
+  addAlertComment,
+  deleteAlertComment,
+  getAlertComments,
   getAlertHistory,
   getAlertHistoryDetail,
   getAlertHistoryNotifications,
+  resolveTestAlert,
+  setAlertAssignee,
+  unackAlert,
 } from "../api/history";
 import type {
   AlertEventStatus,
@@ -30,6 +45,7 @@ import type {
   AlertNotificationRecord,
   NotificationStatus,
 } from "../api/history";
+import { listMembers } from "../api/teams";
 
 dayjs.extend(relativeTime);
 
@@ -55,6 +71,10 @@ function severityColor(severity: string | null): string {
   return (severity && SEVERITY_TAG_COLOR[severity]) ?? "default";
 }
 
+function apiErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.detail : fallback;
+}
+
 const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
   pending: "default",
   in_progress: "processing",
@@ -72,18 +92,31 @@ const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
 };
 
 export default function AlertHistory() {
+  const { message } = App.useApp();
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
   const isAdmin = !!user?.is_admin;
+  const queryClient = useQueryClient();
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [severity, setSeverity] = useState<string[]>([]);
   const [namespace, setNamespace] = useState<string | undefined>(undefined);
   const [search, setSearch] = useState("");
   const [range, setRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
+  const [includeTest, setIncludeTest] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [commentText, setCommentText] = useState("");
+  const [searchParams] = useSearchParams();
+
+  // Deep-link support: the Alerts (live) page's "이력에서 보기" drawer link
+  // lands here with ?highlight=<event_id>, opening that row's drawer
+  // directly instead of leaving the user to search for it.
+  useEffect(() => {
+    const highlight = searchParams.get("highlight");
+    if (highlight) setSelectedId(Number(highlight));
+  }, [searchParams]);
 
   const teamId = currentTeam?.id;
   const noTeamSelected = !isAdmin && teams.length === 0;
@@ -100,6 +133,7 @@ export default function AlertHistory() {
       search,
       fromTs,
       toTs,
+      includeTest,
       page,
       pageSize,
     ],
@@ -112,6 +146,7 @@ export default function AlertHistory() {
         search: search || undefined,
         fromTs,
         toTs,
+        includeTest,
         page,
         pageSize,
       }),
@@ -124,10 +159,67 @@ export default function AlertHistory() {
     enabled: selectedId !== null,
   });
 
+  const selected = selectedId !== null ? detailQuery.data : undefined;
+
   const notificationsQuery = useQuery({
     queryKey: ["alert-history-notifications", selectedId],
     queryFn: () => getAlertHistoryNotifications(selectedId as number),
     enabled: selectedId !== null,
+  });
+
+  const commentsQuery = useQuery({
+    queryKey: ["alert-comments", selectedId],
+    queryFn: () => getAlertComments(selectedId as number),
+    enabled: selectedId !== null,
+  });
+
+  const membersQuery = useQuery({
+    queryKey: ["team-members-for-assignee", selected?.team_id],
+    queryFn: () => listMembers(selected!.team_id as number),
+    enabled: selected?.team_id != null,
+  });
+
+  const invalidateSelected = () => {
+    queryClient.invalidateQueries({ queryKey: ["alert-history-detail", selectedId] });
+    queryClient.invalidateQueries({ queryKey: ["alert-history"] });
+  };
+
+  const ackMutation = useMutation({
+    mutationFn: () => ackAlert(selectedId as number),
+    onSuccess: invalidateSelected,
+    onError: (err) => message.error(apiErrorMessage(err, "확인 처리에 실패했습니다")),
+  });
+  const unackMutation = useMutation({
+    mutationFn: () => unackAlert(selectedId as number),
+    onSuccess: invalidateSelected,
+    onError: (err) => message.error(apiErrorMessage(err, "확인 취소에 실패했습니다")),
+  });
+  const assigneeMutation = useMutation({
+    mutationFn: (userId: number | null) => setAlertAssignee(selectedId as number, userId),
+    onSuccess: invalidateSelected,
+    onError: (err) => message.error(apiErrorMessage(err, "담당자 지정에 실패했습니다")),
+  });
+  const resolveTestMutation = useMutation({
+    mutationFn: () => resolveTestAlert(selectedId as number),
+    onSuccess: () => {
+      invalidateSelected();
+      queryClient.invalidateQueries({ queryKey: ["alert-history-notifications", selectedId] });
+      message.success("테스트 알럿을 해제했습니다");
+    },
+    onError: (err) => message.error(apiErrorMessage(err, "테스트 알럿 해제에 실패했습니다")),
+  });
+  const addCommentMutation = useMutation({
+    mutationFn: (body: string) => addAlertComment(selectedId as number, body),
+    onSuccess: () => {
+      setCommentText("");
+      queryClient.invalidateQueries({ queryKey: ["alert-comments", selectedId] });
+    },
+    onError: (err) => message.error(apiErrorMessage(err, "댓글 작성에 실패했습니다")),
+  });
+  const deleteCommentMutation = useMutation({
+    mutationFn: (commentId: number) => deleteAlertComment(commentId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["alert-comments", selectedId] }),
+    onError: (err) => message.error(apiErrorMessage(err, "댓글 삭제에 실패했습니다")),
   });
 
   const items = useMemo(() => query.data?.items ?? [], [query.data]);
@@ -145,6 +237,12 @@ export default function AlertHistory() {
       .sort()
       .map((ns) => ({ value: ns, label: ns }));
   }, [items]);
+
+  const isTeamOwner = useMemo(() => {
+    if (!user || selected?.team_id == null) return false;
+    if (user.is_admin) return true;
+    return user.teams.find((t) => t.id === selected.team_id)?.role === "owner";
+  }, [user, selected]);
 
   const resetToFirstPage = <T,>(setter: (value: T) => void) => (value: T) => {
     setter(value);
@@ -178,7 +276,17 @@ export default function AlertHistory() {
           <Badge status="default" text="resolved" />
         ),
     },
-    { title: "알럿명", dataIndex: "alertname", key: "alertname" },
+    {
+      title: "알럿명",
+      dataIndex: "alertname",
+      key: "alertname",
+      render: (value: string, record: AlertEventSummary) => (
+        <Space size={4}>
+          {value}
+          {record.is_test && <Tag color="purple">테스트</Tag>}
+        </Space>
+      ),
+    },
     {
       title: "심각도",
       dataIndex: "severity",
@@ -192,6 +300,29 @@ export default function AlertHistory() {
       render: (value: string | null) => value ?? "-",
     },
     { title: "클러스터", dataIndex: "cluster_name", key: "cluster_name" },
+    {
+      title: "확인",
+      key: "acknowledged",
+      width: 70,
+      align: "center" as const,
+      render: (_: unknown, record: AlertEventSummary) =>
+        record.acknowledged_at ? (
+          <Tooltip
+            title={`${record.acknowledged_by?.username ?? "?"} · ${dayjs(record.acknowledged_at).format("YYYY-MM-DD HH:mm:ss")}`}
+          >
+            <Tag color="success">✓</Tag>
+          </Tooltip>
+        ) : (
+          <Text type="secondary">-</Text>
+        ),
+    },
+    {
+      title: "담당자",
+      key: "assignee",
+      width: 100,
+      render: (_: unknown, record: AlertEventSummary) =>
+        record.assignee?.username ?? <Text type="secondary">-</Text>,
+    },
     { title: "수신 횟수", dataIndex: "receive_count", key: "receive_count", width: 100 },
     {
       title: "시작 시각",
@@ -211,8 +342,6 @@ export default function AlertHistory() {
     },
   ];
 
-  const selected = selectedId !== null ? detailQuery.data : undefined;
-
   return (
     <div>
       <div
@@ -231,7 +360,7 @@ export default function AlertHistory() {
         </h2>
       </div>
 
-      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <Segmented<StatusFilter>
           value={statusFilter}
           onChange={resetToFirstPage(setStatusFilter)}
@@ -265,6 +394,10 @@ export default function AlertHistory() {
           onSearch={resetToFirstPage(setSearch)}
         />
         <RangePicker showTime value={range} onChange={resetToFirstPage(setRange)} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Switch checked={includeTest} onChange={resetToFirstPage(setIncludeTest)} />
+          <Text>테스트 포함</Text>
+        </div>
       </div>
 
       <Table<AlertEventSummary>
@@ -290,14 +423,40 @@ export default function AlertHistory() {
       />
 
       <Drawer
-        title={selected?.alertname}
+        title={
+          <Space>
+            {selected?.alertname}
+            {selected?.is_test && <Tag color="purple">테스트</Tag>}
+          </Space>
+        }
         open={selectedId !== null}
-        onClose={() => setSelectedId(null)}
-        width={480}
+        onClose={() => {
+          setSelectedId(null);
+          setCommentText("");
+        }}
+        width={520}
         loading={detailQuery.isLoading}
       >
         {selected && (
           <>
+            {selected.is_test && selected.status === "firing" && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="테스트 알럿입니다"
+                action={
+                  <Button
+                    size="small"
+                    loading={resolveTestMutation.isPending}
+                    onClick={() => resolveTestMutation.mutate()}
+                  >
+                    지금 해제
+                  </Button>
+                }
+              />
+            )}
+
             <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
               <Descriptions.Item label="상태">{selected.status}</Descriptions.Item>
               <Descriptions.Item label="심각도">
@@ -315,6 +474,47 @@ export default function AlertHistory() {
                 {dayjs(selected.last_received_at).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
               <Descriptions.Item label="수신 횟수">{selected.receive_count}</Descriptions.Item>
+              <Descriptions.Item label="확인">
+                {selected.acknowledged_at ? (
+                  <Space>
+                    <Tag color="success">
+                      {selected.acknowledged_by?.username} ·{" "}
+                      {dayjs(selected.acknowledged_at).format("YYYY-MM-DD HH:mm:ss")}
+                    </Tag>
+                    <Button
+                      size="small"
+                      loading={unackMutation.isPending}
+                      onClick={() => unackMutation.mutate()}
+                    >
+                      확인 취소
+                    </Button>
+                  </Space>
+                ) : (
+                  <Button
+                    size="small"
+                    type="primary"
+                    loading={ackMutation.isPending}
+                    onClick={() => ackMutation.mutate()}
+                  >
+                    확인
+                  </Button>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="담당자">
+                <Select
+                  allowClear
+                  placeholder="담당자 지정"
+                  style={{ minWidth: 220 }}
+                  disabled={selected.team_id == null}
+                  loading={membersQuery.isLoading}
+                  value={selected.assignee?.id}
+                  options={(membersQuery.data ?? []).map((m) => ({
+                    value: m.user_id,
+                    label: m.display_name,
+                  }))}
+                  onChange={(value) => assigneeMutation.mutate(value ?? null)}
+                />
+              </Descriptions.Item>
             </Descriptions>
 
             <Title level={5}>레이블</Title>
@@ -347,8 +547,68 @@ export default function AlertHistory() {
             )}
 
             <Title level={5} style={{ marginTop: 24 }}>
-              알림 전송 이력
+              댓글
             </Title>
+            <List
+              size="small"
+              loading={commentsQuery.isLoading}
+              dataSource={commentsQuery.data ?? []}
+              locale={{ emptyText: <Empty description="댓글이 없습니다" /> }}
+              style={{ marginBottom: 12 }}
+              renderItem={(comment) => {
+                const canDelete =
+                  isTeamOwner || isAdmin || comment.user?.id === user?.id;
+                return (
+                  <List.Item
+                    actions={
+                      canDelete
+                        ? [
+                            <Popconfirm
+                              key="delete"
+                              title="이 댓글을 삭제하시겠습니까?"
+                              onConfirm={() => deleteCommentMutation.mutate(comment.id)}
+                            >
+                              <Button size="small" type="text" danger>
+                                삭제
+                              </Button>
+                            </Popconfirm>,
+                          ]
+                        : []
+                    }
+                  >
+                    <List.Item.Meta
+                      title={
+                        <Space>
+                          <Text strong>{comment.user?.display_name ?? "(탈퇴한 사용자)"}</Text>
+                          <Text type="secondary" style={{ fontWeight: "normal", fontSize: 12 }}>
+                            {dayjs(comment.created_at).format("YYYY-MM-DD HH:mm:ss")}
+                          </Text>
+                        </Space>
+                      }
+                      description={<div style={{ whiteSpace: "pre-wrap" }}>{comment.body}</div>}
+                    />
+                  </List.Item>
+                );
+              }}
+            />
+            <Space.Compact style={{ width: "100%", marginBottom: 24 }}>
+              <Input.TextArea
+                rows={2}
+                placeholder="댓글을 입력하세요"
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+              />
+              <Button
+                type="primary"
+                loading={addCommentMutation.isPending}
+                disabled={!commentText.trim()}
+                onClick={() => addCommentMutation.mutate(commentText)}
+              >
+                등록
+              </Button>
+            </Space.Compact>
+
+            <Title level={5}>알림 전송 이력</Title>
             <Table<AlertNotificationRecord>
               rowKey="id"
               size="small"

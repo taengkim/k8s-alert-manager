@@ -12,6 +12,7 @@ import {
   Input,
   Segmented,
   Select,
+  Space,
   Table,
   Tag,
   Tooltip,
@@ -20,8 +21,8 @@ import {
 import { Link } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
-import { getLiveAlerts } from "../api/alerts";
-import type { LiveAlert } from "../api/alerts";
+import { getAckStatus, getLiveAlerts } from "../api/alerts";
+import type { AckStatusMatch, LiveAlert } from "../api/alerts";
 import { listClusters } from "../api/admin";
 import type { MatcherInput } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
@@ -104,6 +105,26 @@ export default function Alerts() {
   const alerts = useMemo(() => query.data?.alerts ?? [], [query.data]);
   const errors = query.data?.errors ?? [];
 
+  const ackStatusQuery = useQuery({
+    queryKey: ["ack-status", teamId, alerts.map((a) => `${a.cluster}|${a.fingerprint}`)],
+    queryFn: () =>
+      getAckStatus(
+        teamId,
+        alerts.map((a) => ({ cluster: a.cluster, fingerprint: a.fingerprint })),
+      ),
+    enabled: (isAdmin || !!teamId) && alerts.length > 0,
+  });
+
+  const ackByKey = useMemo(() => {
+    const map = new Map<string, AckStatusMatch>();
+    for (const match of ackStatusQuery.data?.matched ?? []) {
+      map.set(`${match.cluster}|${match.fingerprint}`, match);
+    }
+    return map;
+  }, [ackStatusQuery.data]);
+
+  const selectedAck = selected ? ackByKey.get(`${selected.cluster}|${selected.fingerprint}`) : undefined;
+
   const namespaceOptions = useMemo(() => {
     const seen = new Set<string>();
     for (const alert of alerts) {
@@ -150,6 +171,21 @@ export default function Alerts() {
     },
     { title: "네임스페이스", dataIndex: "namespace", key: "namespace" },
     { title: "클러스터", dataIndex: "cluster", key: "cluster" },
+    {
+      title: "확인",
+      key: "acknowledged",
+      width: 70,
+      align: "center" as const,
+      render: (_: unknown, record: LiveAlert) => {
+        const match = ackByKey.get(`${record.cluster}|${record.fingerprint}`);
+        if (!match?.acknowledged) return <Text type="secondary">-</Text>;
+        return (
+          <Tooltip title={match.assignee_username ? `담당자: ${match.assignee_username}` : "확인됨"}>
+            <Tag color="success">✓</Tag>
+          </Tooltip>
+        );
+      },
+    },
     {
       title: "시작 시각",
       dataIndex: "starts_at",
@@ -252,14 +288,19 @@ export default function Alerts() {
         onClose={() => setSelected(null)}
         width={480}
         extra={
-          <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
-            <Button
-              disabled={!currentTeam || !selectedClusterId}
-              onClick={() => setSilenceModalOpen(true)}
-            >
-              이 알럿 사일런스
-            </Button>
-          </Tooltip>
+          <Space>
+            {selectedAck?.event_id && (
+              <Link to={`/alerts/history?highlight=${selectedAck.event_id}`}>이력에서 보기</Link>
+            )}
+            <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
+              <Button
+                disabled={!currentTeam || !selectedClusterId}
+                onClick={() => setSilenceModalOpen(true)}
+              >
+                이 알럿 사일런스
+              </Button>
+            </Tooltip>
+          </Space>
         }
       >
         {selected && (
@@ -270,6 +311,13 @@ export default function Alerts() {
                 <Tag color={severityColor(selected.severity)}>{selected.severity || "none"}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="네임스페이스">{selected.namespace}</Descriptions.Item>
+              {selectedAck?.acknowledged && (
+                <Descriptions.Item label="확인">
+                  <Tag color="success">
+                    확인됨{selectedAck.assignee_username ? ` · 담당자: ${selectedAck.assignee_username}` : ""}
+                  </Tag>
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="클러스터">{selected.cluster}</Descriptions.Item>
               <Descriptions.Item label="시작 시각">
                 {dayjs(selected.starts_at).format("YYYY-MM-DD HH:mm:ss")}
