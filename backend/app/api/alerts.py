@@ -227,7 +227,10 @@ async def get_alert_history(
     if namespace:
         conditions.append(AlertEvent.namespace == namespace)
     if search:
-        conditions.append(AlertEvent.alertname.ilike(f"%{search}%"))
+        # Escape the user's literal `%`/`_` so they filter as literal
+        # characters instead of SQL LIKE wildcards.
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(AlertEvent.alertname.ilike(f"%{escaped}%", escape="\\"))
     if from_ts:
         conditions.append(AlertEvent.last_received_at >= from_ts)
     if to_ts:
@@ -242,7 +245,10 @@ async def get_alert_history(
     result = await session.execute(
         select(AlertEvent)
         .where(*conditions)
-        .order_by(AlertEvent.last_received_at.desc())
+        # id.desc() breaks ties within the same last_received_at (a batch
+        # of events all stamped with one `now()`) so pagination has a
+        # stable order instead of depending on incidental storage order.
+        .order_by(AlertEvent.last_received_at.desc(), AlertEvent.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

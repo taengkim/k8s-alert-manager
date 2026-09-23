@@ -294,6 +294,45 @@ async def test_history_item_timestamps_are_offset_aware(client: AsyncClient) -> 
         assert value.endswith(("+00:00", "Z")), f"{field}={value!r} has no UTC offset"
 
 
+async def test_pagination_tiebreaks_on_id_when_last_received_at_ties(
+    client: AsyncClient,
+) -> None:
+    cluster_id = await _default_cluster_id()
+    same_ts = datetime.now(UTC)
+    id1 = await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="f1",
+        alertname="First",
+        team_id=None,
+        last_received_at=same_ts,
+    )
+    id2 = await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="f2",
+        alertname="Second",
+        team_id=None,
+        last_received_at=same_ts,
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/history")
+    body = response.json()
+    assert [i["id"] for i in body["items"]] == sorted([id1, id2], reverse=True)
+
+
+async def test_search_filter_escapes_percent_as_literal(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+    await _create_event(cluster_id=cluster_id, fingerprint="f1", alertname="cpu%usage", team_id=None)
+    await _create_event(
+        cluster_id=cluster_id, fingerprint="f2", alertname="cpu_usage_alt", team_id=None
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/alerts/history", params={"search": "cpu%usage"})
+    body = response.json()
+    assert [i["alertname"] for i in body["items"]] == ["cpu%usage"]
+
+
 # -- detail ---------------------------------------------------------------
 
 
