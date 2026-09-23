@@ -3,15 +3,18 @@ scoped by team and filtered server-side.
 """
 
 import asyncio
+import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -247,32 +250,21 @@ async def _serialize_one_detail(session: AsyncSession, event: AlertEvent) -> dic
     return _serialize_event_detail(event, usernames, grafana_url)
 
 
-@router.get("/history")
-async def get_alert_history(
-    team_id: int | None = Query(default=None),
-    cluster_id: list[int] = Query(default=[]),
-    status_filter: Literal["firing", "resolved"] | None = Query(default=None, alias="status"),
-    severity: str | None = Query(default=None),
-    namespace: str | None = Query(default=None),
-    search: str | None = Query(default=None),
-    from_ts: datetime | None = Query(default=None),
-    to_ts: datetime | None = Query(default=None),
-    include_test: bool = Query(default=False),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    """Server-paginated alert_events history, scoped by team using the same
-    semantics as /live: non-admins must supply a team_id they belong to;
-    admins may omit it to see everything, including unassigned events.
-
-    `include_test` defaults to excluding synthetic POST .../test-alert rows
-    from the default view -- they'd otherwise clutter real incident history.
-    """
-    team = await _resolve_team_scope(team_id, user, session)
-
-    conditions = []
+def _build_history_conditions(
+    *,
+    team: Team | None,
+    cluster_id: list[int],
+    status_filter: str | None,
+    severity: str | None,
+    namespace: str | None,
+    search: str | None,
+    from_ts: datetime | None,
+    to_ts: datetime | None,
+    include_test: bool,
+) -> list[ColumnElement[bool]]:
+    """Shared by GET /history (paginated) and GET /history/export (the whole
+    matching set) -- every filter must behave identically between the two."""
+    conditions: list[ColumnElement[bool]] = []
     if not include_test:
         conditions.append(AlertEvent.is_test.is_(False))
     if team is not None:
@@ -304,6 +296,44 @@ async def get_alert_history(
         conditions.append(AlertEvent.last_received_at >= from_ts)
     if to_ts:
         conditions.append(AlertEvent.last_received_at <= to_ts)
+    return conditions
+
+
+@router.get("/history")
+async def get_alert_history(
+    team_id: int | None = Query(default=None),
+    cluster_id: list[int] = Query(default=[]),
+    status_filter: Literal["firing", "resolved"] | None = Query(default=None, alias="status"),
+    severity: str | None = Query(default=None),
+    namespace: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    include_test: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Server-paginated alert_events history, scoped by team using the same
+    semantics as /live: non-admins must supply a team_id they belong to;
+    admins may omit it to see everything, including unassigned events.
+
+    `include_test` defaults to excluding synthetic POST .../test-alert rows
+    from the default view -- they'd otherwise clutter real incident history.
+    """
+    team = await _resolve_team_scope(team_id, user, session)
+    conditions = _build_history_conditions(
+        team=team,
+        cluster_id=cluster_id,
+        status_filter=status_filter,
+        severity=severity,
+        namespace=namespace,
+        search=search,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        include_test=include_test,
+    )
 
     total = (
         await session.execute(
@@ -333,6 +363,204 @@ async def get_alert_history(
         "page": page,
         "page_size": page_size,
     }
+
+
+# -- history export ---------------------------------------------------------
+#
+# json is capped small enough (10k rows) to build as one in-memory document;
+# ndjson goes up to 100k and is genuinely streamed, one HISTORY_EXPORT_PAGE_SIZE
+# page at a time, so a large export never holds its full result set in memory.
+# Both constants are read directly (not captured into a default argument) so
+# tests can `monkeypatch.setattr` them to exercise the cap logic without
+# actually creating tens of thousands of rows.
+
+HISTORY_EXPORT_JSON_CAP = 10_000
+HISTORY_EXPORT_NDJSON_CAP = 100_000
+HISTORY_EXPORT_PAGE_SIZE = 1_000
+
+
+def _export_row(event: AlertEvent) -> dict[str, Any]:
+    def _iso(value: datetime | None) -> str | None:
+        return value.isoformat() if value is not None else None
+
+    return {
+        "id": event.id,
+        "cluster_id": event.cluster_id,
+        "cluster_name": event.cluster_name,
+        "fingerprint": event.fingerprint,
+        "status": event.status,
+        "alertname": event.alertname,
+        "severity": event.severity,
+        "namespace": event.namespace,
+        "team_id": event.team_id,
+        "labels": event.labels,
+        "annotations": event.annotations,
+        "starts_at": _iso(event.starts_at),
+        "ends_at": _iso(event.ends_at),
+        "first_received_at": _iso(event.first_received_at),
+        "last_received_at": _iso(event.last_received_at),
+        "receive_count": event.receive_count,
+        "is_test": event.is_test,
+        "generator_url": event.generator_url,
+        "acknowledged_at": _iso(event.acknowledged_at),
+        "acknowledged_by": event.acknowledged_by,
+        "assignee_user_id": event.assignee_user_id,
+    }
+
+
+async def _stream_history_ndjson(
+    session: AsyncSession, conditions: list[ColumnElement[bool]]
+) -> AsyncIterator[bytes]:
+    """Page through every matching row via keyset (not offset) pagination,
+    and never emit more than HISTORY_EXPORT_NDJSON_CAP rows.
+
+    Keyset, not offset: `last_received_at` mutates in place on a re-fire
+    (see AlertEvent's docstring), so under live ingestion a row can shift
+    across an *offset* boundary between two page queries -- silently
+    skipping or double-emitting rows depending on which way it moved.
+    Paging instead by "strictly before the last row we emitted" in the same
+    (last_received_at DESC, id DESC) order as the output is immune to that:
+    a row already emitted can't un-emit itself just because some other row's
+    timestamp changed, and a row not yet reached is simply wherever the next
+    query finds it.
+
+    Hard cap, not just the pre-flight COUNT(*) gate: that count and this
+    scan are two separate queries, so the live matching-row total can have
+    grown past HISTORY_EXPORT_NDJSON_CAP by the time this actually runs (or
+    simply differ from it for the same reason a row can move across an
+    offset boundary above). This loop refuses to yield past the cap
+    regardless of how many rows actually match, rather than trusting the
+    earlier count to still be accurate.
+    """
+    cursor: tuple[datetime, int] | None = None
+    emitted = 0
+    while emitted < HISTORY_EXPORT_NDJSON_CAP:
+        page_conditions = list(conditions)
+        if cursor is not None:
+            last_value, last_id = cursor
+            # Explicit OR/AND expansion of the (last_received_at, id) < (v, i)
+            # tuple comparison rather than SQLAlchemy's tuple_(...) < (...):
+            # row-value comparison is SQLite-version-dependent (3.15+) but
+            # this expansion is portable and reads identically on Postgres.
+            page_conditions.append(
+                or_(
+                    AlertEvent.last_received_at < last_value,
+                    and_(
+                        AlertEvent.last_received_at == last_value,
+                        AlertEvent.id < last_id,
+                    ),
+                )
+            )
+
+        page_limit = min(HISTORY_EXPORT_PAGE_SIZE, HISTORY_EXPORT_NDJSON_CAP - emitted)
+        result = await session.execute(
+            select(AlertEvent)
+            .where(*page_conditions)
+            .order_by(AlertEvent.last_received_at.desc(), AlertEvent.id.desc())
+            .limit(page_limit)
+        )
+        rows = result.scalars().all()
+        if not rows:
+            return
+
+        for row in rows:
+            yield (json.dumps(_export_row(row), ensure_ascii=False) + "\n").encode("utf-8")
+        emitted += len(rows)
+        cursor = (rows[-1].last_received_at, rows[-1].id)
+
+        if len(rows) < page_limit:
+            return
+
+
+@router.get("/history/export")
+async def export_alert_history(
+    team_id: int | None = Query(default=None),
+    cluster_id: list[int] = Query(default=[]),
+    status_filter: Literal["firing", "resolved"] | None = Query(default=None, alias="status"),
+    severity: str | None = Query(default=None),
+    namespace: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    from_ts: datetime | None = Query(default=None),
+    to_ts: datetime | None = Query(default=None),
+    include_test: bool = Query(default=False),
+    export_format: Literal["json", "ndjson"] = Query(default="json", alias="format"),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """The same scoping/filters as GET /history, exported whole rather than
+    paginated -- `json` (small, capped, one document) or `ndjson` (larger cap,
+    genuinely streamed).
+    """
+    team = await _resolve_team_scope(team_id, user, session)
+    conditions = _build_history_conditions(
+        team=team,
+        cluster_id=cluster_id,
+        status_filter=status_filter,
+        severity=severity,
+        namespace=namespace,
+        search=search,
+        from_ts=from_ts,
+        to_ts=to_ts,
+        include_test=include_test,
+    )
+
+    filters = {
+        "team_id": team.id if team is not None else None,
+        "cluster_id": cluster_id or None,
+        "status": status_filter,
+        "severity": severity,
+        "namespace": namespace,
+        "search": search,
+        "from_ts": from_ts.isoformat() if from_ts else None,
+        "to_ts": to_ts.isoformat() if to_ts else None,
+        "include_test": include_test,
+    }
+
+    cap = HISTORY_EXPORT_JSON_CAP if export_format == "json" else HISTORY_EXPORT_NDJSON_CAP
+    total = (
+        await session.execute(select(func.count()).select_from(AlertEvent).where(*conditions))
+    ).scalar_one()
+    if total > cap:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"필터를 좁혀주세요: {total}건이 캡({cap}건)을 초과했습니다",
+        )
+
+    await audit.log(
+        session,
+        user_id=user.id,
+        team_id=team.id if team is not None else None,
+        action="history.export",
+        object_type="alert_event",
+        object_ref="history",
+        detail={"filters": filters, "format": export_format},
+    )
+    await session.commit()
+
+    if export_format == "ndjson":
+        return StreamingResponse(
+            _stream_history_ndjson(session, conditions),
+            media_type="application/x-ndjson",
+            headers={"Content-Disposition": 'attachment; filename="kam-alert-history.ndjson"'},
+        )
+
+    result = await session.execute(
+        select(AlertEvent)
+        .where(*conditions)
+        .order_by(AlertEvent.last_received_at.desc(), AlertEvent.id.desc())
+    )
+    payload = {
+        "kam_export_version": 1,
+        "kind": "alert_history",
+        "exported_at": datetime.now(UTC).isoformat(),
+        "filters": filters,
+        "items": [_export_row(row) for row in result.scalars().all()],
+    }
+    return Response(
+        content=json.dumps(payload, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="kam-alert-history.json"'},
+    )
 
 
 async def _get_event_or_404(session: AsyncSession, event_id: int) -> AlertEvent:

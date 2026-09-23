@@ -1,11 +1,22 @@
 """PrometheusRule CRUD API: team-scoped alert rule management (raw PromQL
-mode -- a guided threshold builder is Phase 5).
+mode -- a guided threshold builder is Phase 5), plus JSON export/import
+(Phase 12 -- see `app.services.rule_transfer`).
 """
 
+import json
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +38,14 @@ from app.services.k8s import (
     RuleUpdateConflictError,
 )
 from app.services.prometheus import PrometheusClient, PrometheusUnavailableError
+from app.services.rule_transfer import (
+    ConflictStrategy,
+    UnsupportedExportVersion,
+    build_export_envelope,
+    execute_import,
+    parse_envelope,
+    plan_import,
+)
 from app.services.rules import (
     RULE_SLUG_RE,
     RuleWrite,
@@ -172,6 +191,122 @@ async def create_rule(
     await session.commit()
 
     return parse_prometheus_rule(created)
+
+
+class RuleImportRequest(BaseModel):
+    data: dict[str, Any]
+    target_cluster_id: int
+    conflict_strategy: ConflictStrategy
+    dry_run: bool = False
+
+
+# Registered ahead of GET /{slug} below: "export" is itself a valid RULE_SLUG_RE
+# string, and Starlette matches routes in registration order against the raw
+# path shape (the {slug} pattern constraint is only enforced once a route has
+# already matched) -- so this must come first or GET .../rules/export would
+# be swallowed by GET .../rules/{slug} instead.
+@router.get("/export")
+async def export_rules(
+    team_id: int,
+    cluster_id: int = Query(...),
+    slugs: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+    k8s: K8sClientFactory = Depends(get_k8s_factory),
+    actor: User = Depends(require_team_role("member")),
+) -> Response:
+    """A portable JSON envelope of this team's rules on one cluster --
+    ownership metadata stripped (already true of `parse_prometheus_rule`'s
+    output), ready to hand to POST .../rules/import against any team/cluster.
+    """
+    team = await _get_team_or_404(session, team_id)
+    cluster = await _get_cluster_or_404(session, cluster_id)
+
+    try:
+        raw_rules = await k8s.list_rules(cluster, team.id)
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except K8sUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    parsed = [parse_prometheus_rule(obj) for obj in raw_rules]
+    if slugs:
+        wanted = {s.strip() for s in slugs.split(",") if s.strip()}
+        parsed = [r for r in parsed if r["slug"] in wanted]
+
+    envelope = build_export_envelope(team, cluster, parsed)
+
+    await audit.log(
+        session,
+        user_id=actor.id,
+        team_id=team.id,
+        action="rules.export",
+        object_type="prometheus_rule",
+        object_ref=cluster.name,
+        detail={"count": len(parsed)},
+    )
+    await session.commit()
+
+    filename = f"kam-rules-{team.slug}-{cluster.name}.json"
+    return Response(
+        content=json.dumps(envelope, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import")
+async def import_rules(
+    team_id: int,
+    body: RuleImportRequest,
+    session: AsyncSession = Depends(get_session),
+    k8s: K8sClientFactory = Depends(get_k8s_factory),
+    http_client: httpx.AsyncClient = Depends(get_http_client),
+    # A write, unlike every other rules/* endpoint here (which accept
+    # 'member') -- importing can create/overwrite rules across an entire
+    # cluster in one call, so it's owner-gated.
+    actor: User = Depends(require_team_role("owner")),
+) -> dict[str, Any]:
+    team = await _get_team_or_404(session, team_id)
+    target_cluster = await _get_cluster_or_404(session, body.target_cluster_id)
+
+    try:
+        envelope = parse_envelope(body.data)
+    except UnsupportedExportVersion as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    runner = plan_import if body.dry_run else execute_import
+    try:
+        verdicts = await runner(
+            k8s,
+            http_client,
+            team=team,
+            target_cluster=target_cluster,
+            entries=envelope.entries,
+            conflict_strategy=body.conflict_strategy,
+        )
+    except PrometheusUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+    summary = {"created": 0, "skipped": 0, "overwritten": 0, "renamed": 0, "failed": 0}
+    for verdict in verdicts:
+        summary[verdict.action] += 1
+
+    await audit.log(
+        session,
+        user_id=actor.id,
+        team_id=team.id,
+        action="rules.import",
+        object_type="prometheus_rule",
+        object_ref=target_cluster.name,
+        detail={"summary": summary, "dry_run": body.dry_run},
+    )
+    await session.commit()
+
+    return {"verdicts": [v.to_dict() for v in verdicts], "summary": summary}
 
 
 @router.get("/{slug}")

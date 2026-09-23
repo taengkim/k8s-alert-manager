@@ -89,3 +89,46 @@ export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promis
 
   return (await res.json()) as T;
 }
+
+/**
+ * GET `path` and save the response body to a file via the browser's normal
+ * download flow (an anchor with a blob: URL, clicked programmatically and
+ * immediately revoked) -- used by the rules/history export buttons, whose
+ * responses are `Content-Disposition: attachment` files, not JSON to render.
+ *
+ * `filename` is a fallback only: the server-provided Content-Disposition
+ * filename (present on every export response) wins when parseable, so a
+ * renamed/versioned export still saves under its own real name.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, { credentials: "include" });
+
+  if (!res.ok) {
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      // non-JSON error body; fall back to statusText below
+    }
+    const detail = extractDetail(data, res.statusText || `request failed (${res.status})`);
+    if (res.status === 401) notifyUnauthorized();
+    throw new ApiError(res.status, detail);
+  }
+
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const resolvedFilename = match?.[1] ?? filename;
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = resolvedFilename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}

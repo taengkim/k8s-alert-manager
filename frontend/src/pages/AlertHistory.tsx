@@ -32,6 +32,7 @@ import {
   ackAlert,
   addAlertComment,
   deleteAlertComment,
+  downloadAlertHistoryExport,
   getAlertComments,
   getAlertHistory,
   getAlertHistoryDetail,
@@ -44,6 +45,8 @@ import type {
   AlertEventStatus,
   AlertEventSummary,
   AlertNotificationRecord,
+  HistoryExportFilters,
+  HistoryExportFormat,
   NotificationStatus,
 } from "../api/history";
 import { listMembers } from "../api/teams";
@@ -110,6 +113,7 @@ export default function AlertHistory() {
   const [pageSize, setPageSize] = useState(50);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [commentText, setCommentText] = useState("");
+  const [exportFormat, setExportFormat] = useState<HistoryExportFormat>("json");
   const [searchParams] = useSearchParams();
 
   // Deep-link support: the Alerts (live) page's "이력에서 보기" drawer link
@@ -125,36 +129,42 @@ export default function AlertHistory() {
   const fromTs = range?.[0] ? range[0].toISOString() : undefined;
   const toTs = range?.[1] ? range[1].toISOString() : undefined;
 
-  const query = useQuery({
-    queryKey: [
-      "alert-history",
+  // Shared by the paginated query below and the export button, so an export
+  // always reflects exactly the filters currently on screen.
+  const currentFilters: HistoryExportFilters = useMemo(
+    () => ({
       teamId,
-      clusterIds,
-      statusFilter,
-      severity,
+      clusterIds: clusterIds.length > 0 ? clusterIds : undefined,
+      status: statusFilter === "all" ? undefined : statusFilter,
+      severity: severity.length > 0 ? severity : undefined,
       namespace,
-      search,
+      search: search || undefined,
       fromTs,
       toTs,
       includeTest,
-      page,
-      pageSize,
-    ],
-    queryFn: () =>
-      getAlertHistory({
-        teamId,
-        clusterIds: clusterIds.length > 0 ? clusterIds : undefined,
-        status: statusFilter === "all" ? undefined : statusFilter,
-        severity: severity.length > 0 ? severity : undefined,
-        namespace,
-        search: search || undefined,
-        fromTs,
-        toTs,
-        includeTest,
-        page,
-        pageSize,
-      }),
+    }),
+    [teamId, clusterIds, statusFilter, severity, namespace, search, fromTs, toTs, includeTest],
+  );
+
+  const query = useQuery({
+    queryKey: ["alert-history", currentFilters, page, pageSize],
+    queryFn: () => getAlertHistory({ ...currentFilters, page, pageSize }),
     enabled: isAdmin || !!teamId,
+  });
+
+  // Server-side caps mirrored here (app/api/alerts.py's
+  // HISTORY_EXPORT_JSON_CAP/HISTORY_EXPORT_NDJSON_CAP) purely so the export
+  // button can warn *before* the user waits on a request that's guaranteed
+  // to 400 -- the server enforces the real limit regardless.
+  const HISTORY_EXPORT_CAP: Record<HistoryExportFormat, number> = {
+    json: 10_000,
+    ndjson: 100_000,
+  };
+  const exportOverCap = query.data !== undefined && query.data.total > HISTORY_EXPORT_CAP[exportFormat];
+
+  const exportMutation = useMutation({
+    mutationFn: () => downloadAlertHistoryExport(currentFilters, exportFormat),
+    onError: (err) => message.error(apiErrorMessage(err, "내보내기에 실패했습니다")),
   });
 
   const detailQuery = useQuery({
@@ -362,7 +372,34 @@ export default function AlertHistory() {
             ({total}건)
           </Text>
         </h2>
+        <Space>
+          <Select<HistoryExportFormat>
+            value={exportFormat}
+            onChange={setExportFormat}
+            style={{ width: 110 }}
+            options={[
+              { value: "json", label: "JSON" },
+              { value: "ndjson", label: "NDJSON" },
+            ]}
+          />
+          <Button
+            loading={exportMutation.isPending}
+            disabled={exportOverCap}
+            onClick={() => exportMutation.mutate()}
+          >
+            {exportFormat === "json" ? "JSON 내보내기" : "NDJSON 내보내기"}
+          </Button>
+        </Space>
       </div>
+
+      {exportOverCap && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`현재 필터 결과(${total}건)가 ${exportFormat.toUpperCase()} 내보내기 캡(${HISTORY_EXPORT_CAP[exportFormat].toLocaleString()}건)을 초과합니다. 필터를 좁혀주세요.`}
+        />
+      )}
 
       <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <Segmented<StatusFilter>
