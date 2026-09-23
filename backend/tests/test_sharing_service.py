@@ -191,3 +191,21 @@ async def test_shared_source_team_ids_returns_only_shares_targeting_viewer(app) 
 
         empty = await shared_source_team_ids(session, other.id)
         assert empty == []
+
+
+def test_share_matches_partial_compile_failure_fails_closed() -> None:
+    """One uncompilable matcher among otherwise-valid ones must deny the
+    whole share -- evaluating against only the surviving matchers would
+    silently widen the owner's configured scope. Pins the exact-count
+    comparison in compile_share_scope (a future simplification to "no
+    matchers compiled" would pass the total-failure tests but not this).
+    """
+    share = _share(
+        [
+            {"kind": "include", "target": "alertname", "key": None, "pattern": ".*"},
+            {"kind": "include", "target": "label", "key": "severity", "pattern": "(unterminated"},
+        ]
+    )
+    # The valid catch-all include alone would match -- the broken second
+    # matcher must force a deny instead.
+    assert share_matches(share, _event(severity="critical")) is False
