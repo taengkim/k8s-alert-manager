@@ -1,8 +1,11 @@
 import httpx
 import respx
 from httpx import AsyncClient
+from sqlalchemy import select
 
 import app.db as db_module
+from app.config import get_settings
+from app.models.cluster import Cluster
 from app.models.team import Team, TeamMembership
 from tests.conftest import login_as
 
@@ -266,3 +269,110 @@ async def test_alertmanager_non_list_json_body_returns_partial_failure(
     assert body["alerts"] == []
     assert len(body["errors"]) == 1
     assert body["errors"][0]["cluster"] == "local"
+
+
+# -- cluster_id[] filter + grafana_url ---------------------------------------
+
+
+async def _default_cluster_id() -> int:
+    async with db_module.async_session_factory() as session:
+        result = await session.execute(
+            select(Cluster).where(Cluster.name == get_settings().default_cluster_name)
+        )
+        return result.scalar_one().id
+
+
+async def _create_cluster(name: str, *, grafana_url: str | None = None) -> Cluster:
+    async with db_module.async_session_factory() as session:
+        cluster = Cluster(
+            name=name,
+            display_name=name,
+            prometheus_url="http://prom-2",
+            alertmanager_url="http://am-2",
+            grafana_url=grafana_url,
+            webhook_token_hash=f"hash-{name}",
+        )
+        session.add(cluster)
+        await session.commit()
+        await session.refresh(cluster)
+        return cluster
+
+
+@respx.mock
+async def test_cluster_id_filter_narrows_fan_out_to_requested_enabled_clusters(
+    client: AsyncClient,
+) -> None:
+    respx.get(AM_URL).mock(return_value=httpx.Response(200, json=SAMPLE_ALERTS))
+    other = await _create_cluster("other-live")
+    other_route = respx.get("http://am-2/api/v2/alerts").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    default_id = await _default_cluster_id()
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    response = await client.get(f"/api/v1/alerts/live?cluster_id={other.id}")
+    assert response.status_code == 200
+    # Only the requested cluster is queried -- the default cluster's alerts
+    # (SAMPLE_ALERTS) must not appear.
+    assert response.json()["alerts"] == []
+    assert other_route.called
+
+    response_default = await client.get(f"/api/v1/alerts/live?cluster_id={default_id}")
+    assert len(response_default.json()["alerts"]) == 4
+
+
+@respx.mock
+async def test_live_alert_grafana_url_falls_back_to_cluster(client: AsyncClient) -> None:
+    cluster = await _create_cluster(
+        "grafana-live", grafana_url="https://cluster-grafana.example.com"
+    )
+    respx.get("http://am-2/api/v2/alerts").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "fingerprint": "gf1",
+                    "labels": {"alertname": "NoAnnotationAlert"},
+                    "annotations": {},
+                    "status": {"state": "active", "silencedBy": []},
+                    "startsAt": "2026-09-22T00:00:00Z",
+                    "generatorURL": "http://prom/graph",
+                }
+            ],
+        )
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(f"/api/v1/alerts/live?cluster_id={cluster.id}")
+    assert response.status_code == 200
+    alert = response.json()["alerts"][0]
+    assert alert["grafana_url"] == (
+        "https://cluster-grafana.example.com/alerting/list?queryString=NoAnnotationAlert"
+    )
+
+
+@respx.mock
+async def test_live_alert_grafana_url_annotation_wins_over_cluster(client: AsyncClient) -> None:
+    cluster = await _create_cluster(
+        "grafana-live-2", grafana_url="https://cluster-grafana.example.com"
+    )
+    respx.get("http://am-2/api/v2/alerts").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "fingerprint": "gf2",
+                    "labels": {"alertname": "AnnotatedAlert"},
+                    "annotations": {"kam_grafana_url": "https://direct-link.example.com/d/x"},
+                    "status": {"state": "active", "silencedBy": []},
+                    "startsAt": "2026-09-22T00:00:00Z",
+                    "generatorURL": "http://prom/graph",
+                }
+            ],
+        )
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(f"/api/v1/alerts/live?cluster_id={cluster.id}")
+    alert = response.json()["alerts"][0]
+    assert alert["grafana_url"] == "https://direct-link.example.com/d/x"

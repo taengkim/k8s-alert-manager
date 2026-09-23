@@ -27,6 +27,7 @@ from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.services import audit
 from app.services.alertmanager import AlertmanagerClient, AlertmanagerUnavailableError
+from app.services.grafana import resolve_grafana_url
 from app.services.ingest import (
     AlertmanagerAlert,
     AlertmanagerWebhookPayload,
@@ -76,20 +77,23 @@ async def _resolve_team_scope(
     return team
 
 
-def _flatten(cluster_name: str, raw: dict[str, Any]) -> dict[str, Any]:
+def _flatten(cluster: Cluster, raw: dict[str, Any]) -> dict[str, Any]:
     labels = raw.get("labels") or {}
+    annotations = raw.get("annotations") or {}
     status_obj = raw.get("status") or {}
+    alertname = labels.get("alertname", "")
     return {
         "fingerprint": raw.get("fingerprint"),
-        "alertname": labels.get("alertname", ""),
+        "alertname": alertname,
         "severity": labels.get("severity", ""),
         "namespace": labels.get("namespace", ""),
-        "cluster": cluster_name,
+        "cluster": cluster.name,
         "state": status_obj.get("state", ""),
         "labels": labels,
-        "annotations": raw.get("annotations") or {},
+        "annotations": annotations,
         "starts_at": raw.get("startsAt"),
         "generator_url": raw.get("generatorURL"),
+        "grafana_url": resolve_grafana_url(annotations, cluster, alertname),
         "silenced_by": status_obj.get("silencedBy") or [],
     }
 
@@ -107,7 +111,7 @@ async def _fetch_cluster_alerts(
     client = AlertmanagerClient(cluster, http_client)
     try:
         raw_alerts = await client.get_alerts()
-        return cluster.name, [_flatten(cluster.name, a) for a in raw_alerts], None
+        return cluster.name, [_flatten(cluster, a) for a in raw_alerts], None
     except AlertmanagerUnavailableError as exc:
         return cluster.name, [], str(exc)
     except Exception:
@@ -120,6 +124,7 @@ async def _fetch_cluster_alerts(
 @router.get("/live")
 async def get_live_alerts(
     team_id: int | None = Query(default=None),
+    cluster_id: list[int] = Query(default=[]),
     severity: str | None = Query(default=None),
     namespace: str | None = Query(default=None),
     search: str | None = Query(default=None),
@@ -130,10 +135,16 @@ async def get_live_alerts(
 ) -> dict[str, Any]:
     team = await _resolve_team_scope(team_id, user, session)
 
+    cluster_conditions = [Cluster.enabled.is_(True)]
+    if cluster_id:
+        # The ClusterFilter header select narrows the fan-out to just these
+        # clusters -- still intersected with enabled, same as the unfiltered
+        # default, rather than letting a stale/disabled cluster id sneak
+        # back into the fan-out.
+        cluster_conditions.append(Cluster.id.in_(cluster_id))
+
     clusters = (
-        (await session.execute(select(Cluster).where(Cluster.enabled.is_(True))))
-        .scalars()
-        .all()
+        (await session.execute(select(Cluster).where(*cluster_conditions))).scalars().all()
     )
 
     fetch_results = await asyncio.gather(
@@ -211,23 +222,29 @@ def _serialize_event_summary(event: AlertEvent, usernames: dict[int, str]) -> di
     }
 
 
-def _serialize_event_detail(event: AlertEvent, usernames: dict[int, str]) -> dict[str, Any]:
+def _serialize_event_detail(
+    event: AlertEvent, usernames: dict[int, str], grafana_url: str | None
+) -> dict[str, Any]:
     return {
         **_serialize_event_summary(event, usernames),
         "labels": event.labels,
         "annotations": event.annotations,
         "generator_url": event.generator_url,
+        "grafana_url": grafana_url,
     }
 
 
 async def _serialize_one_detail(session: AsyncSession, event: AlertEvent) -> dict[str, Any]:
     """Convenience for endpoints returning exactly one event (ack/assignee/
-    resolve-test) -- resolves just that event's own ack/assignee usernames
-    rather than pulling in `_resolve_usernames`' page-batching for a single
-    row.
+    resolve-test/detail) -- resolves just that event's own ack/assignee
+    usernames rather than pulling in `_resolve_usernames`' page-batching for
+    a single row, plus its Grafana deep link (annotation, falling back to
+    the owning cluster's `grafana_url` -- see `resolve_grafana_url`).
     """
     usernames = await _resolve_usernames(session, {event.acknowledged_by, event.assignee_user_id})
-    return _serialize_event_detail(event, usernames)
+    cluster = await session.get(Cluster, event.cluster_id)
+    grafana_url = resolve_grafana_url(event.annotations, cluster, event.alertname)
+    return _serialize_event_detail(event, usernames, grafana_url)
 
 
 @router.get("/history")
