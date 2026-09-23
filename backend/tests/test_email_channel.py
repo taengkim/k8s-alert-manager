@@ -87,3 +87,43 @@ async def test_connection_error_is_wrapped_as_delivery_error() -> None:
         pytest.raises(ChannelDeliveryError, match="connection refused"),
     ):
         await channel.send(AlertNotification.example())
+
+
+async def test_header_injection_attempt_in_alertname_is_sanitized() -> None:
+    """Regression: alert-derived fields (alertname here) flow unsanitized
+    into the Subject header before this fix. A raw CRLF there either raises
+    email.errors.HeaderParseError (an uncaught 500, since message-building
+    used to sit outside send()'s try/except) or, if it slipped through,
+    could inject an extra header. Phase 9 routes real Alertmanager label
+    data through this path, so this must be handled, not just theoretical.
+    """
+    config = EmailConfig(recipients=["ops@example.org"])
+    channel = EmailChannel(config)
+    notification = _notification(alertname="Evil\r\nX-Evil: 1", severity="critical")
+
+    mock_send = AsyncMock(return_value=({}, "OK"))
+    with patch("app.channels.email.aiosmtplib.send", new=mock_send):
+        await channel.send(notification)  # must not raise
+
+    message = mock_send.await_args.args[0]
+    subject = message["Subject"]
+    assert "\r" not in subject
+    assert "\n" not in subject
+    assert "Evil X-Evil: 1" in subject
+    assert "X-Evil" not in message  # no header actually got injected
+
+
+async def test_non_smtp_error_during_message_build_is_wrapped_as_delivery_error() -> None:
+    """Regression: send() used to only wrap aiosmtplib.send()'s own
+    exceptions -- anything raised while building the message (template
+    rendering, a bad header value the sanitizer doesn't catch, ...) escaped
+    as an unhandled exception instead of ChannelDeliveryError.
+    """
+    config = EmailConfig(recipients=["ops@example.org"])
+    channel = EmailChannel(config)
+
+    with (
+        patch("app.channels.email._env.get_template", side_effect=RuntimeError("template exploded")),
+        pytest.raises(ChannelDeliveryError, match="template exploded"),
+    ):
+        await channel.send(AlertNotification.example())
