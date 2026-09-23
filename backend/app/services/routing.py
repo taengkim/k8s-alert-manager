@@ -292,6 +292,29 @@ def _build_notification(
     )
 
 
+async def build_notification_for_event(
+    session: AsyncSession, event: AlertEvent, trigger: str | None = None
+) -> AlertNotification:
+    """Public entry point for `_build_notification` for callers outside this
+    module that need an `AlertNotification` for an *already-stored* event --
+    the template preview API (`app/api/templates.py`), specifically, which
+    has no routing outcome of its own to build one from. Resolves `team`
+    (for `team_slug`) and `cluster` (for the Grafana deep link) itself, the
+    same way `route_event` does.
+
+    `trigger` defaults to the event's own stored `status` -- "what would
+    this alert's actual notification have looked like" -- rather than
+    always assuming "firing" the way route preview's evaluation does; a
+    template author previewing against a resolved event presumably wants to
+    see its resolved-shaped notification (`ends_at` populated, etc).
+    """
+    team = await session.get(Team, event.team_id) if event.team_id is not None else None
+    cluster = await session.get(Cluster, event.cluster_id)
+    return _build_notification(
+        event, trigger if trigger is not None else event.status, team.slug if team else "", cluster
+    )
+
+
 async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) -> RoutingOutcome:
     """Stage outbox rows (or record a suppression) for one event transition.
 

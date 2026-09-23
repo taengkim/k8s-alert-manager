@@ -21,6 +21,7 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.routing import RoutingMatcher, RoutingRule
 from app.models.team import Team, TeamMembership
+from app.models.template import MessageTemplate
 from app.models.user import User
 from app.services import audit
 from app.services.routing import (
@@ -58,6 +59,7 @@ class RouteWrite(BaseModel):
     clusters: list[int] | None = None
     channel_ids: list[int] = []
     matchers: list[MatcherInput] = []
+    template_id: int | None = None
 
 
 async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
@@ -178,6 +180,17 @@ async def _resolve_channels(
     return [by_id[cid] for cid in unique_ids]
 
 
+async def _validate_template(session: AsyncSession, team_id: int, template_id: int | None) -> None:
+    if template_id is None:
+        return
+    template = await session.get(MessageTemplate, template_id)
+    if template is None or template.team_id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="template_id must belong to this team",
+        )
+
+
 async def _validate_clusters_exist(session: AsyncSession, cluster_ids: list[int] | None) -> None:
     if not cluster_ids:
         return
@@ -214,6 +227,7 @@ def _serialize(rule: RoutingRule) -> dict[str, Any]:
         "namespaces_include": rule.namespaces_include,
         "namespaces_exclude": rule.namespaces_exclude,
         "clusters": rule.clusters,
+        "template_id": rule.template_id,
         "channel_ids": [c.id for c in rule.channels],
         "matchers": [
             {
@@ -253,6 +267,7 @@ async def create_route(
     await _get_team_or_404(session, team_id)
     _validate_body(body)
     await _validate_clusters_exist(session, body.clusters)
+    await _validate_template(session, team_id, body.template_id)
     channels = await _resolve_channels(session, team_id, body.action, body.channel_ids)
 
     rule = RoutingRule(
@@ -267,6 +282,7 @@ async def create_route(
         namespaces_include=body.namespaces_include,
         namespaces_exclude=body.namespaces_exclude,
         clusters=body.clusters,
+        template_id=body.template_id,
         channels=channels,
         matchers=[
             RoutingMatcher(
@@ -356,6 +372,7 @@ async def update_route(
 
     _validate_body(body)
     await _validate_clusters_exist(session, body.clusters)
+    await _validate_template(session, rule.team_id, body.template_id)
     channels = await _resolve_channels(session, rule.team_id, body.action, body.channel_ids)
 
     rule.name = body.name
@@ -368,6 +385,7 @@ async def update_route(
     rule.namespaces_include = body.namespaces_include
     rule.namespaces_exclude = body.namespaces_exclude
     rule.clusters = body.clusters
+    rule.template_id = body.template_id
     # Full replace, per the API contract -- both are already eagerly loaded
     # (via _get_rule_or_404's selectinload), so this diffs cleanly against
     # the in-memory collections rather than triggering a lazy load.

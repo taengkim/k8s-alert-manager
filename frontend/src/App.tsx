@@ -18,6 +18,8 @@ import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
 import Silences from "./pages/Silences";
 import TeamSettings from "./pages/TeamSettings";
+import Templates from "./pages/Templates";
+import TemplateEditor from "./pages/TemplateEditor";
 import Admin from "./pages/Admin";
 
 const { Header, Sider, Content } = Layout;
@@ -27,6 +29,7 @@ const sections = [
   { key: "rules", label: "Rules", path: "/rules" },
   { key: "silences", label: "Silences", path: "/silences" },
   { key: "channels", label: "Channels", path: "/channels" },
+  { key: "templates", label: "템플릿", path: "/templates" },
   { key: "routes", label: "Routes", path: "/routes" },
 ];
 
@@ -119,6 +122,9 @@ export default function App() {
             <Route path="/rules/:slug/edit" element={<RuleEditor />} />
             <Route path="/silences" element={<Silences />} />
             <Route path="/channels" element={<Channels />} />
+            <Route path="/templates" element={<Templates />} />
+            <Route path="/templates/new" element={<TemplateEditor />} />
+            <Route path="/templates/:id/edit" element={<TemplateEditor />} />
             <Route path="/routes" element={<RoutesPage />} />
             <Route path="/routes/new" element={<RouteEditor />} />
             <Route path="/routes/:id/edit" element={<RouteEditor />} />
@@ -129,6 +135,7 @@ export default function App() {
                   section.key !== "rules" &&
                   section.key !== "silences" &&
                   section.key !== "channels" &&
+                  section.key !== "templates" &&
                   section.key !== "routes",
               )
               .map((section) => (

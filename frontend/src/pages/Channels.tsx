@@ -13,7 +13,9 @@ import {
   testChannel,
 } from "../api/channels";
 import type { Channel, ChannelType } from "../api/channels";
+import { listTemplates } from "../api/templates";
 import JsonSchemaForm from "../components/JsonSchemaForm";
+import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
 
 export default function Channels() {
   const { user } = useAuth();
@@ -52,6 +54,7 @@ interface ChannelFormValues {
   name: string;
   type: string;
   config: Record<string, unknown>;
+  template_id?: number;
 }
 
 interface ChannelsTableProps {
@@ -78,6 +81,13 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
     queryFn: listChannelTypes,
   });
 
+  const templatesQuery = useQuery({
+    queryKey: ["templates", teamId],
+    queryFn: () => listTemplates(teamId),
+  });
+  const selectedTemplateId = Form.useWatch("template_id", form);
+  const selectedTemplate = (templatesQuery.data ?? []).find((t) => t.id === selectedTemplateId);
+
   const closeModal = () => {
     setModalOpen(false);
     setEditing(null);
@@ -91,6 +101,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         name: values.name,
         type: values.type,
         config: values.config ?? {},
+        template_id: values.template_id ?? null,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
@@ -103,7 +114,11 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
 
   const updateMutation = useMutation({
     mutationFn: (values: ChannelFormValues) =>
-      patchChannel(editing!.id, { name: values.name, config: values.config ?? {} }),
+      patchChannel(editing!.id, {
+        name: values.name,
+        config: values.config ?? {},
+        template_id: values.template_id ?? null,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
       closeModal();
@@ -249,7 +264,12 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
           layout="vertical"
           initialValues={
             editing
-              ? { name: editing.name, type: editing.type, config: editing.config }
+              ? {
+                  name: editing.name,
+                  type: editing.type,
+                  config: editing.config,
+                  template_id: editing.template_id ?? undefined,
+                }
               : undefined
           }
           onFinish={(values) =>
@@ -281,6 +301,19 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
           {selectedType && (
             <JsonSchemaForm schema={selectedType.json_schema} namePrefix={["config"]} />
           )}
+          <Form.Item
+            name="template_id"
+            label="메시지 템플릿"
+            help="비워두면 채널 타입의 기본 템플릿(또는 앱 기본 템플릿)을 사용합니다"
+          >
+            <Select
+              allowClear
+              loading={templatesQuery.isLoading}
+              placeholder="기본값 상속"
+              options={(templatesQuery.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
+            />
+          </Form.Item>
+          <TemplatePreviewPopover template={selectedTemplate} />
         </Form>
       </Modal>
     </div>

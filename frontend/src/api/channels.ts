@@ -36,18 +36,25 @@ export interface Channel {
   type: string;
   enabled: boolean;
   config: Record<string, unknown>;
+  /** This channel's own default message template (Phase 13) -- null means
+   * "use the channel type's default_templates, or the app default". */
+  template_id: number | null;
 }
 
 export interface ChannelCreateInput {
   name: string;
   type: string;
   config: Record<string, unknown>;
+  template_id?: number | null;
 }
 
 export interface ChannelUpdateInput {
   name?: string;
   config?: Record<string, unknown>;
   enabled?: boolean;
+  /** Included in the request only when actually changed -- see
+   * Channels.tsx's update mutation. `null` explicitly clears it. */
+  template_id?: number | null;
 }
 
 export function listChannelTypes(): Promise<ChannelType[]> {

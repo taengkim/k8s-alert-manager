@@ -23,6 +23,7 @@ from app.db import get_session
 from app.models.channel import Channel
 from app.models.routing import routing_rule_channels
 from app.models.team import Team, TeamMembership
+from app.models.template import MessageTemplate
 from app.models.user import User
 from app.security import decrypt_str, encrypt_str
 from app.services import audit
@@ -37,12 +38,18 @@ class ChannelCreate(BaseModel):
     name: str
     type: str
     config: dict[str, Any] = {}
+    template_id: int | None = None
 
 
 class ChannelUpdate(BaseModel):
     name: str | None = None
     config: dict[str, Any] | None = None
     enabled: bool | None = None
+    # None is ambiguous between "not provided" (leave unchanged) and
+    # "explicitly clear it" -- update_channel disambiguates via
+    # `body.model_fields_set` rather than the value itself, same as every
+    # other Optional field on this model.
+    template_id: int | None = None
 
 
 async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
@@ -110,6 +117,17 @@ def _mask_secrets(config: dict[str, Any], schema_cls: type[BaseModel] | None) ->
     return masked
 
 
+async def _validate_template_ownership(
+    session: AsyncSession, team_id: int, template_id: int
+) -> None:
+    template = await session.get(MessageTemplate, template_id)
+    if template is None or template.team_id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="template_id must belong to this team",
+        )
+
+
 def _decrypt_config(channel: Channel) -> dict[str, Any]:
     return json.loads(decrypt_str(channel.config_encrypted))
 
@@ -140,6 +158,7 @@ def _serialize(channel: Channel, registry: ChannelRegistry) -> dict[str, Any]:
         "type": channel.type,
         "enabled": channel.enabled,
         "config": _mask_secrets(config, schema_cls),
+        "template_id": channel.template_id,
     }
 
 
@@ -181,6 +200,8 @@ async def create_channel(
             status_code=status.HTTP_404_NOT_FOUND, detail="unknown channel type"
         )
     validated_config = _validate_config(channel_cls, body.config)
+    if body.template_id is not None:
+        await _validate_template_ownership(session, team_id, body.template_id)
 
     channel = Channel(
         team_id=team_id,
@@ -188,6 +209,7 @@ async def create_channel(
         type=body.type,
         config_encrypted=_encrypt_config(validated_config),
         created_by=actor.id,
+        template_id=body.template_id,
     )
     session.add(channel)
     try:
@@ -236,6 +258,10 @@ async def update_channel(
         channel.name = body.name
     if body.enabled is not None:
         channel.enabled = body.enabled
+    if "template_id" in body.model_fields_set:
+        if body.template_id is not None:
+            await _validate_template_ownership(session, channel.team_id, body.template_id)
+        channel.template_id = body.template_id
 
     try:
         await session.flush()

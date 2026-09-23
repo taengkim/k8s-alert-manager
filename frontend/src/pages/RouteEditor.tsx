@@ -37,6 +37,8 @@ import type {
   RouteVerdict,
   RouteWriteInput,
 } from "../api/routes";
+import { listTemplates } from "../api/templates";
+import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
 
 const { Text, Title } = Typography;
 
@@ -118,6 +120,7 @@ interface FormValues {
   clusters: number[];
   channel_ids: number[];
   matchers: MatcherFormValue[];
+  template_id?: number;
 }
 
 function isValidRegex(pattern: string): boolean {
@@ -143,6 +146,7 @@ function toBody(values: FormValues): RouteWriteInput {
     namespaces_exclude: values.namespaces_exclude?.length ? values.namespaces_exclude : undefined,
     clusters: values.clusters?.length ? values.clusters : undefined,
     channel_ids: values.action === "suppress" ? [] : (values.channel_ids ?? []),
+    template_id: values.action === "suppress" ? undefined : values.template_id,
     matchers: (values.matchers ?? []).map((m) => ({
       kind: m.kind,
       target: m.target,
@@ -187,6 +191,13 @@ export default function RouteEditor() {
     queryFn: () => listNamespaces(clusterId!),
     enabled: !!clusterId,
   });
+  const templatesQuery = useQuery({
+    queryKey: ["templates", teamId],
+    queryFn: () => listTemplates(teamId!),
+    enabled: !!teamId,
+  });
+  const selectedTemplateId = Form.useWatch("template_id", form);
+  const selectedTemplate = (templatesQuery.data ?? []).find((t) => t.id === selectedTemplateId);
 
   useEffect(() => {
     if (!routeQuery.data) return;
@@ -203,6 +214,7 @@ export default function RouteEditor() {
       namespaces_exclude: r.namespaces_exclude ?? [],
       clusters: r.clusters ?? [],
       channel_ids: r.channel_ids,
+      template_id: r.template_id ?? undefined,
       matchers: r.matchers.map((m) => ({
         kind: m.kind,
         target: m.target,
@@ -426,7 +438,20 @@ export default function RouteEditor() {
             >
               <Select mode="multiple" options={channelOptions} placeholder="채널 선택" />
             </Form.Item>
-            <Space direction="vertical" style={{ marginBottom: 16 }}>
+            <Form.Item
+              name="template_id"
+              label="메시지 템플릿"
+              help="비워두면 채널의 템플릿(또는 채널 타입/앱 기본 템플릿)을 사용합니다"
+            >
+              <Select
+                allowClear
+                loading={templatesQuery.isLoading}
+                placeholder="기본값 상속"
+                options={(templatesQuery.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
+              />
+            </Form.Item>
+            <TemplatePreviewPopover template={selectedTemplate} />
+            <Space direction="vertical" style={{ marginBottom: 16, marginTop: 8 }}>
               <Form.Item name="notify_on_firing" valuePropName="checked" noStyle>
                 <Checkbox>firing 시 알림</Checkbox>
               </Form.Item>

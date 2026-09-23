@@ -23,7 +23,9 @@ from app.channels.base import AlertNotification
 from app.channels.registry import ChannelRegistry
 from app.models.channel import Channel
 from app.models.outbox import NotificationOutbox
+from app.models.routing import RoutingRule
 from app.security import decrypt_str
+from app.services.templating import APP_DEFAULT_TEMPLATES, render, resolve_template
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +187,37 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     try:
         instance = channel_cls(config)
         notification = AlertNotification(**row.payload)
+
+        # Template resolution + rendering happens here, at delivery time,
+        # not back when route_event staged this row -- row.payload is a
+        # frozen AlertNotification snapshot, but which template applies
+        # (and that template's own source) is read fresh on every attempt,
+        # so an edit to a team's template takes effect for anything still
+        # queued, not just alerts routed after the edit.
+        rule = (
+            await session.get(RoutingRule, row.routing_rule_id)
+            if row.routing_rule_id is not None
+            else None
+        )
+        template_strs = await resolve_template(
+            session,
+            rule.template_id if rule is not None else None,
+            channel.template_id,
+        )
+        if template_strs is None:
+            template_strs = channel_cls.default_templates or APP_DEFAULT_TEMPLATES
+        outcome = await render(template_strs, notification)
+
         async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
-            await instance.send(notification)
+            await instance.send(notification, outcome.message)
     except Exception as exc:  # noqa: BLE001
         # Deliberately catch-all (ChannelDeliveryError, the asyncio.timeout
         # block's TimeoutError, and anything else a channel's send() could
         # raise): every transient failure mode gets the same backoff-and-
         # retry treatment, never an unhandled exception that would kill
-        # the worker loop.
+        # the worker loop. render() itself never raises (see its docstring)
+        # -- this only catches failures from send() or the channel's own
+        # construction.
         await _mark_delivery_failure(session, row, exc)
         return
 
@@ -200,6 +225,13 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     row.delivered_at = datetime.now(UTC)
     row.locked_by = None
     row.locked_at = None
+    if outcome.fallback_used:
+        # A broken custom template must not block the alert -- render()
+        # already fell back to the default template and this still counts
+        # as delivered, but the fallback is recorded so a team notices their
+        # template is broken instead of silently getting the wrong message
+        # forever.
+        row.last_error = f"template render failed: {outcome.error}; fallback used"[:500]
     await session.commit()
 
 

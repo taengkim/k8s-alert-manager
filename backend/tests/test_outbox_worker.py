@@ -18,6 +18,7 @@ from app.channels.base import (
     AlertNotification,
     ChannelDeliveryError,
     NotificationChannel,
+    RenderedMessage,
 )
 from app.channels.email import EmailConfig
 from app.channels.registry import ChannelRegistry
@@ -50,7 +51,7 @@ def _make_fake_channel_type(type_name: str = "fake"):
         display_name = "Fake"
         config_schema = FakeConfig
 
-        async def send(self, notification: AlertNotification) -> None:
+        async def send(self, notification: AlertNotification, msg: RenderedMessage) -> None:
             if fail_queue:
                 raise fail_queue.pop(0)
             sent.append(notification)
@@ -492,3 +493,205 @@ async def test_run_tick_one_bad_row_does_not_block_the_rest_of_the_batch(app) ->
     assert len(sent) == 1
 
     assert len(sent) == 1
+
+
+# -- Phase 13: template resolution + rendering at delivery time ----------------
+
+
+async def _make_recording_channel_type(type_name: str):
+    """Like `_make_fake_channel_type`, but also records the `RenderedMessage`
+    each `send()` call received -- these template-resolution/fallback tests
+    need to assert on the rendered title, not just that delivery succeeded.
+    """
+    sent_messages: list[RenderedMessage] = []
+
+    class FakeConfig(BaseModel):
+        marker: str = "ok"
+
+    class RecordingChannel(NotificationChannel):
+        display_name = "Recording"
+        config_schema = FakeConfig
+
+        async def send(self, notification: AlertNotification, msg: RenderedMessage) -> None:
+            sent_messages.append(msg)
+
+    RecordingChannel.type_name = type_name
+    return RecordingChannel, sent_messages
+
+
+async def test_deliver_resolves_rule_template_over_channel_template(app) -> None:
+    """Priority order: a routing rule's own template_id wins over the
+    channel's, which wins over the channel type's default_templates, which
+    wins over the app-wide default -- see
+    app.services.templating.resolve_template.
+    """
+    from app.models.routing import RoutingRule
+    from app.models.template import MessageTemplate
+
+    fake_cls, sent_messages = await _make_recording_channel_type("template-priority-fake")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+
+        rule_template = MessageTemplate(
+            team_id=team.id,
+            name="rule-tpl",
+            title_template="RULE-WINS: {{ alertname }}",
+            body_template="rule body",
+        )
+        channel_template = MessageTemplate(
+            team_id=team.id,
+            name="channel-tpl",
+            title_template="CHANNEL: {{ alertname }}",
+            body_template="channel body",
+        )
+        session.add_all([rule_template, channel_template])
+        await session.flush()
+
+        channel.template_id = channel_template.id
+        rule = RoutingRule(
+            team_id=team.id,
+            name="rule-with-template",
+            action="notify",
+            template_id=rule_template.id,
+            channels=[channel],
+        )
+        session.add(rule)
+        await session.flush()
+
+        event = await _create_event(session, cluster, team, fingerprint="fp-priority")
+        row = NotificationOutbox(
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel_id=channel.id,
+            team_id=team.id,
+            trigger="firing",
+            payload=AlertNotification.example()
+            .model_copy(update={"alertname": "RuleTemplateAlert"})
+            .model_dump(mode="json"),
+        )
+        session.add(row)
+        await session.commit()
+
+        await deliver(row, registry, session)
+
+        assert row.status == "delivered"
+
+    assert len(sent_messages) == 1
+    assert sent_messages[0].title == "RULE-WINS: RuleTemplateAlert"
+
+
+async def test_deliver_falls_back_to_channel_template_when_rule_has_none(app) -> None:
+    from app.models.routing import RoutingRule
+    from app.models.template import MessageTemplate
+
+    fake_cls, sent_messages = await _make_recording_channel_type("template-channel-fake")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+
+        channel_template = MessageTemplate(
+            team_id=team.id,
+            name="channel-tpl-2",
+            title_template="CHANNEL-WINS: {{ alertname }}",
+            body_template="channel body",
+        )
+        session.add(channel_template)
+        await session.flush()
+        channel.template_id = channel_template.id
+
+        # No template_id on this rule -- resolve_template must fall through
+        # to the channel's.
+        rule = RoutingRule(team_id=team.id, name="rule-no-template", action="notify", channels=[channel])
+        session.add(rule)
+        await session.flush()
+
+        event = await _create_event(session, cluster, team, fingerprint="fp-channel-fallback")
+        row = NotificationOutbox(
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel_id=channel.id,
+            team_id=team.id,
+            trigger="firing",
+            payload=AlertNotification.example()
+            .model_copy(update={"alertname": "ChannelTemplateAlert"})
+            .model_dump(mode="json"),
+        )
+        session.add(row)
+        await session.commit()
+
+        await deliver(row, registry, session)
+        assert row.status == "delivered"
+
+    assert sent_messages[0].title == "CHANNEL-WINS: ChannelTemplateAlert"
+
+
+async def test_deliver_broken_template_falls_back_and_records_last_error(app) -> None:
+    """A team's own template with a syntax error must never block delivery
+    -- render() falls back to the app default, delivery still succeeds, and
+    last_error records the fallback so the team can notice their template
+    is broken.
+    """
+    from app.models.routing import RoutingRule
+    from app.models.template import MessageTemplate
+
+    fake_cls, sent_messages = await _make_recording_channel_type("template-broken-fake")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+
+        broken_template = MessageTemplate(
+            team_id=team.id,
+            name="broken-tpl",
+            title_template="{% if unterminated",
+            body_template="ok",
+        )
+        session.add(broken_template)
+        await session.flush()
+        channel.template_id = broken_template.id
+
+        rule = RoutingRule(team_id=team.id, name="rule-broken", action="notify", channels=[channel])
+        session.add(rule)
+        await session.flush()
+
+        event = await _create_event(session, cluster, team, fingerprint="fp-broken")
+        row = NotificationOutbox(
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel_id=channel.id,
+            team_id=team.id,
+            trigger="firing",
+            payload=AlertNotification.example()
+            .model_copy(update={"alertname": "BrokenTemplateAlert"})
+            .model_dump(mode="json"),
+        )
+        session.add(row)
+        await session.commit()
+
+        await deliver(row, registry, session)
+
+        assert row.status == "delivered"
+        assert "template render failed" in row.last_error
+        assert "fallback used" in row.last_error
+
+    assert "BrokenTemplateAlert" in sent_messages[0].title  # app default template rendered instead
+
+
+async def test_deliver_with_no_template_anywhere_uses_app_default(app) -> None:
+    fake_cls, sent_messages = await _make_recording_channel_type("template-none-fake")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+        event = await _create_event(session, cluster, team, fingerprint="fp-no-template")
+        row = await _create_outbox_row(session, team, channel, event)
+        await session.commit()
+
+        await deliver(row, registry, session)
+        assert row.status == "delivered"
+
+    assert sent_messages[0].title  # app default rendered something non-empty
+    assert row.last_error is None

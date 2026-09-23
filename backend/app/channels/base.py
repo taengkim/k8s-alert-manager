@@ -1,16 +1,22 @@
 """The channel abstraction every notification channel (built-in or
 third-party plugin) implements.
 
-Message formatting is each channel's own responsibility for now -- a
-central, editable message-template system (with a shared `RenderedMessage`
-passed into `send()`) is planned for Phase 13. Until then, `send()` receives
-the raw `AlertNotification` and formats its own subject/body however suits
-its transport (see `app/channels/email.py` for the built-in example).
+Message formatting is centralized as of Phase 13: `app/services/templating.py`
+sandboxed-renders a team's (or a channel type's, or the app's) template into
+a `RenderedMessage`, and `app/worker/outbox.py`'s `deliver()` passes that
+alongside the raw `AlertNotification` into `send()`. A channel's `send()` is
+free to use `msg` however suits its transport (email maps `msg.title` to the
+Subject; a channel with no meaningful "subject" concept can just use
+`msg.body`) -- see `app/channels/email.py` for the built-in example.
+
+BREAKING (Phase 13): `send()`'s signature changed from `send(notification)`
+to `send(notification, msg)`. Every channel -- built-in and third-party
+plugin alike -- must be updated; see `plugins/example_webhook_channel/`.
 
 Routing, the outbox queue, and retry scheduling are Phase 9 -- a channel here
 only needs to know how to deliver *one* notification. A `send()` failure
-raises `ChannelDeliveryError`; the Phase 9 outbox worker is what will decide
-whether/when to retry.
+raises `ChannelDeliveryError`; the outbox worker is what decides whether/when
+to retry.
 """
 
 from abc import ABC, abstractmethod
@@ -69,11 +75,28 @@ class AlertNotification(BaseModel):
         )
 
 
+class RenderedMessage(BaseModel):
+    """The output of `app/services/templating.py`'s `render()` -- a
+    channel's `send()` receives one of these alongside the raw
+    `AlertNotification`, already rendered from whichever template applies
+    (a routing rule's, a channel's, a channel type's default, or the app's
+    fallback default -- see `templating.resolve_template`).
+
+    `title` has already had embedded newlines stripped (protects against
+    header injection for channels that map it to something like an email
+    Subject); `body_html` is `None` when no HTML slot was rendered (either
+    the template supplied none, or the channel type doesn't declare one).
+    """
+
+    title: str
+    body: str
+    body_html: str | None = None
+
+
 class ChannelDeliveryError(Exception):
     """Raised by `send()`/`send_test()` when delivery fails (network error,
-    transport rejection, etc). The Phase 9 outbox worker will catch this to
-    decide on retries; for now (Phase 8) it's what the test-send API maps to
-    a 502.
+    transport rejection, etc). The outbox worker catches this to decide on
+    retries; the test-send API maps it to a 502.
     """
 
 
@@ -81,7 +104,7 @@ class NotificationChannel(ABC):
     """Base class for every channel type -- built-in (`email.py`) and
     third-party plugins alike (see `plugins/example_webhook_channel/`).
 
-    Subclasses declare three class attributes and implement `send()`:
+    Subclasses declare class attributes and implement `send()`:
 
     - `type_name`: stable identifier stored in `channels.type` and used as
       the discovery/registry key. Must be unique across all discovered
@@ -92,23 +115,42 @@ class NotificationChannel(ABC):
       `model_json_schema()` is exposed over the API so the frontend can
       render a config form for *any* channel type -- including third-party
       plugins -- without per-type frontend code.
+    - `default_templates` (optional): this channel type's own default Jinja2
+      template source, keyed by slot (`title`/`body`/`body_html`) -- used
+      when neither a routing rule nor a channel instance has a custom
+      template assigned (see `app.services.templating.resolve_template`).
+      Left empty (the default), `app.services.templating.APP_DEFAULT_TEMPLATES`
+      is used instead.
     """
 
     type_name: ClassVar[str]
     display_name: ClassVar[str]
     config_schema: ClassVar[type[BaseModel]]
+    default_templates: ClassVar[dict[str, str]] = {}
 
     def __init__(self, config: BaseModel) -> None:
         self.config = config
 
     @abstractmethod
-    async def send(self, notification: AlertNotification) -> None:
-        """Deliver `notification` through this channel. Raise
-        `ChannelDeliveryError` on failure."""
+    async def send(self, notification: AlertNotification, msg: RenderedMessage) -> None:
+        """Deliver `notification` (raw alert data) through this channel,
+        formatted per `msg` (this channel's resolved+rendered template
+        output). Raise `ChannelDeliveryError` on failure.
+        """
 
     async def send_test(self) -> None:
-        """Send a synthetic test notification. The default implementation
-        just calls `send(AlertNotification.example())`; override only if a
-        channel needs different behavior for test sends.
+        """Send a synthetic test notification, rendered from this channel
+        type's own `default_templates` (or the app default, if it declares
+        none). Override only if a channel needs different test-send
+        behavior.
+
+        Imports `app.services.templating` locally to avoid a module-level
+        import cycle: that module itself imports `AlertNotification` and
+        `RenderedMessage` from here.
         """
-        await self.send(AlertNotification.example())
+        from app.services.templating import APP_DEFAULT_TEMPLATES, render
+
+        example = AlertNotification.example()
+        template_strs = type(self).default_templates or APP_DEFAULT_TEMPLATES
+        outcome = await render(template_strs, example)
+        await self.send(example, outcome.message)

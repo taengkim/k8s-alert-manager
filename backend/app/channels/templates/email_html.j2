@@ -1,20 +1,19 @@
 <!doctype html>
 <html>
   <body style="font-family: sans-serif; color: #1a1a1a;">
-    <h2 style="margin-bottom: 0;">{{ subject }}</h2>
     <table cellpadding="4" cellspacing="0" style="border-collapse: collapse; margin-top: 12px;">
-      <tr><td style="font-weight: bold;">Cluster</td><td>{{ n.cluster }}</td></tr>
-      <tr><td style="font-weight: bold;">Namespace</td><td>{{ n.namespace or "-" }}</td></tr>
-      <tr><td style="font-weight: bold;">Team</td><td>{{ n.team_slug }}</td></tr>
-      <tr><td style="font-weight: bold;">Starts At</td><td>{{ n.starts_at }}</td></tr>
-      {% if n.ends_at %}
-      <tr><td style="font-weight: bold;">Ends At</td><td>{{ n.ends_at }}</td></tr>
+      <tr><td style="font-weight: bold;">Cluster</td><td>{{ cluster }}</td></tr>
+      <tr><td style="font-weight: bold;">Namespace</td><td>{{ namespace or "-" }}</td></tr>
+      <tr><td style="font-weight: bold;">Team</td><td>{{ team }}</td></tr>
+      <tr><td style="font-weight: bold;">Starts At</td><td>{{ starts_at | datetime_format }}</td></tr>
+      {% if ends_at %}
+      <tr><td style="font-weight: bold;">Ends At</td><td>{{ ends_at | datetime_format }}</td></tr>
       {% endif %}
     </table>
 
     <h3>Labels</h3>
     <table cellpadding="4" cellspacing="0" style="border-collapse: collapse; border: 1px solid #ddd;">
-      {% for key, value in n.labels.items() %}
+      {% for key, value in labels.items() %}
       <tr>
         <td style="border: 1px solid #ddd; font-weight: bold;">{{ key }}</td>
         <td style="border: 1px solid #ddd;">{{ value }}</td>
@@ -24,7 +23,7 @@
 
     <h3>Annotations</h3>
     <table cellpadding="4" cellspacing="0" style="border-collapse: collapse; border: 1px solid #ddd;">
-      {% for key, value in n.annotations.items() %}
+      {% for key, value in annotations.items() %}
       <tr>
         <td style="border: 1px solid #ddd; font-weight: bold;">{{ key }}</td>
         <td style="border: 1px solid #ddd;">{{ value }}</td>
@@ -33,12 +32,12 @@
     </table>
 
     <p>
-      {% if n.runbook_url %}<a href="{{ n.runbook_url }}">Runbook</a>{% endif %}
-      {% if n.runbook_url and n.grafana_url %} &middot; {% endif %}
-      {% if n.grafana_url %}<a href="{{ n.grafana_url }}">Grafana</a>{% endif %}
-      {% if n.app_url %}
-        {% if n.runbook_url or n.grafana_url %} &middot; {% endif %}
-        <a href="{{ n.app_url }}">View in app</a>
+      {% if runbook_url %}<a href="{{ runbook_url }}">Runbook</a>{% endif %}
+      {% if runbook_url and grafana_url %} &middot; {% endif %}
+      {% if grafana_url %}<a href="{{ grafana_url }}">Grafana</a>{% endif %}
+      {% if app_url %}
+        {% if runbook_url or grafana_url %} &middot; {% endif %}
+        <a href="{{ app_url }}">View in app</a>
       {% endif %}
     </p>
   </body>
