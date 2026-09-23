@@ -8,7 +8,9 @@ import httpx
 from fastapi import FastAPI
 
 import app.db as db_module
+from app.api.alerts import comments_router as alerts_comments_router
 from app.api.alerts import router as alerts_router
+from app.api.alerts import team_router as alerts_team_router
 from app.api.auth import router as auth_router
 from app.api.channels import router as channels_router
 from app.api.channels import types_router as channel_types_router
@@ -106,6 +108,8 @@ def create_app() -> FastAPI:
     app.include_router(clusters_router)
     app.include_router(namespaces_router)
     app.include_router(alerts_router)
+    app.include_router(alerts_comments_router)
+    app.include_router(alerts_team_router)
     app.include_router(rules_router)
     app.include_router(rules_validate_router)
     app.include_router(metrics_router)

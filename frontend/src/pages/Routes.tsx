@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App, Button, Empty, Popconfirm, Space, Switch, Table, Tag, Typography } from "antd";
 import { useNavigate } from "react-router";
@@ -9,6 +9,7 @@ import { ApiError } from "../api/client";
 import { listClusters } from "../api/admin";
 import { deleteRoute, listRoutes, updateRoute } from "../api/routes";
 import type { RouteOut, RouteWriteInput } from "../api/routes";
+import TestAlertModal from "../components/TestAlertModal";
 
 const { Text } = Typography;
 
@@ -57,6 +58,7 @@ export default function Routes() {
   }, [user, currentTeam]);
 
   const teamId = currentTeam?.id;
+  const [testAlertModalOpen, setTestAlertModalOpen] = useState(false);
 
   const routesQuery = useQuery({
     queryKey: ["routes", teamId],
@@ -228,11 +230,14 @@ export default function Routes() {
         }}
       >
         <h2 style={{ margin: 0 }}>라우팅 규칙 — {currentTeam.name}</h2>
-        {isOwner && (
-          <Button type="primary" onClick={() => navigate("/routes/new")}>
-            규칙 생성
-          </Button>
-        )}
+        <Space>
+          <Button onClick={() => setTestAlertModalOpen(true)}>테스트 알럿 발사</Button>
+          {isOwner && (
+            <Button type="primary" onClick={() => navigate("/routes/new")}>
+              규칙 생성
+            </Button>
+          )}
+        </Space>
       </div>
 
       <Table<RouteOut>
@@ -242,6 +247,12 @@ export default function Routes() {
         columns={columns}
         pagination={false}
         locale={{ emptyText: <Empty description="규칙이 없습니다" /> }}
+      />
+
+      <TestAlertModal
+        open={testAlertModalOpen}
+        onClose={() => setTestAlertModalOpen(false)}
+        teamId={currentTeam.id}
       />
     </div>
   );

@@ -2,6 +2,15 @@ import { apiFetch } from "./client";
 
 export type AlertEventStatus = "firing" | "resolved";
 
+export interface UserRef {
+  id: number;
+  username: string;
+}
+
+export interface CommentUserRef extends UserRef {
+  display_name: string;
+}
+
 export interface AlertEventSummary {
   id: number;
   cluster_id: number;
@@ -17,6 +26,10 @@ export interface AlertEventSummary {
   first_received_at: string;
   last_received_at: string;
   receive_count: number;
+  is_test: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: UserRef | null;
+  assignee: UserRef | null;
 }
 
 export interface AlertEventDetail extends AlertEventSummary {
@@ -42,6 +55,8 @@ export interface AlertHistoryFilters {
   search?: string;
   fromTs?: string;
   toTs?: string;
+  /** Defaults to false server-side -- excludes POST .../test-alert rows. */
+  includeTest?: boolean;
   page?: number;
   pageSize?: number;
 }
@@ -58,10 +73,57 @@ export function getAlertHistory(filters: AlertHistoryFilters): Promise<AlertHist
   if (filters.search) params.set("search", filters.search);
   if (filters.fromTs) params.set("from_ts", filters.fromTs);
   if (filters.toTs) params.set("to_ts", filters.toTs);
+  if (filters.includeTest) params.set("include_test", "true");
   params.set("page", String(filters.page ?? 1));
   params.set("page_size", String(filters.pageSize ?? 50));
 
   return apiFetch<AlertHistoryResponse>(`/alerts/history?${params.toString()}`);
+}
+
+export function ackAlert(eventId: number): Promise<AlertEventDetail> {
+  return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}/ack`, { method: "POST" });
+}
+
+export function unackAlert(eventId: number): Promise<AlertEventDetail> {
+  return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}/ack`, { method: "DELETE" });
+}
+
+export function setAlertAssignee(
+  eventId: number,
+  userId: number | null,
+): Promise<AlertEventDetail> {
+  return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}/assignee`, {
+    method: "PUT",
+    body: { user_id: userId },
+  });
+}
+
+export function resolveTestAlert(eventId: number): Promise<AlertEventDetail> {
+  return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}/resolve-test`, {
+    method: "POST",
+  });
+}
+
+export interface AlertComment {
+  id: number;
+  user: CommentUserRef | null;
+  body: string;
+  created_at: string;
+}
+
+export function getAlertComments(eventId: number): Promise<AlertComment[]> {
+  return apiFetch<AlertComment[]>(`/alerts/history/${eventId}/comments`);
+}
+
+export function addAlertComment(eventId: number, body: string): Promise<AlertComment> {
+  return apiFetch<AlertComment>(`/alerts/history/${eventId}/comments`, {
+    method: "POST",
+    body: { body },
+  });
+}
+
+export function deleteAlertComment(commentId: number): Promise<void> {
+  return apiFetch<void>(`/comments/${commentId}`, { method: "DELETE" });
 }
 
 export function getAlertHistoryDetail(eventId: number): Promise<AlertEventDetail> {
