@@ -372,9 +372,12 @@ async def test_update_kind_and_credentials_together_validated_against_new_kind(
         )
 
 
-async def test_update_kind_change_without_credentials_but_stored_creds_exist_is_422(
+async def test_update_kind_change_to_token_without_credentials_is_422(
     client: AsyncClient,
 ) -> None:
+    # 'token' is the one kind with no valid "no credentials" state -- unlike
+    # 'incluster'/'kubeconfig' below, there's nothing sensible to fall back
+    # to, so this must still be refused outright.
     await login_as(client, username="alice", group_dns=[ADMIN_DN])
     created = await _create_cluster(
         client,
@@ -400,7 +403,7 @@ async def test_update_kind_change_with_no_stored_creds_at_all_is_allowed(
 ) -> None:
     # No credentials ever stored (kubeconfig's dev-default: use the host's
     # own kubeconfig) -- switching to 'incluster', which also needs none,
-    # must not be blocked by the "stored creds exist" guard above.
+    # must not be blocked.
     await login_as(client, username="alice", group_dns=[ADMIN_DN])
     created = await _create_cluster(client, name="staging-kind-switch-empty")
 
@@ -409,6 +412,85 @@ async def test_update_kind_change_with_no_stored_creds_at_all_is_allowed(
     )
     assert response.status_code == 200
     assert response.json()["k8s_auth_kind"] == "incluster"
+
+
+async def test_update_kubeconfig_to_incluster_without_credentials_clears_stored_secret(
+    client: AsyncClient,
+) -> None:
+    # 'incluster' never reads stored credentials, so this switch has a
+    # perfectly valid "no credentials supplied" state (unlike 'token') --
+    # but the stale kubeconfig ciphertext must not silently survive the
+    # switch as if it still meant something.
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    created = await _create_cluster(
+        client,
+        name="staging-kc-to-incluster",
+        k8s_auth_kind="kubeconfig",
+        credentials="apiVersion: v1\nkind: Config\nclusters: []\n",
+    )
+
+    response = await client.patch(
+        f"/api/v1/clusters/{created['id']}", json={"k8s_auth_kind": "incluster"}
+    )
+    assert response.status_code == 200
+    assert response.json()["k8s_auth_kind"] == "incluster"
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, created["id"])
+        assert cluster.k8s_auth_kind == "incluster"
+        assert cluster.credentials_encrypted is None
+
+
+async def test_update_token_to_incluster_without_credentials_clears_stored_secret(
+    client: AsyncClient,
+) -> None:
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    created = await _create_cluster(
+        client,
+        name="staging-tok-to-incluster",
+        k8s_auth_kind="token",
+        k8s_api_url="https://cluster.invalid:6443",
+        credentials={"token": "some-token"},
+    )
+
+    response = await client.patch(
+        f"/api/v1/clusters/{created['id']}", json={"k8s_auth_kind": "incluster"}
+    )
+    assert response.status_code == 200
+    assert response.json()["k8s_auth_kind"] == "incluster"
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, created["id"])
+        assert cluster.k8s_auth_kind == "incluster"
+        assert cluster.credentials_encrypted is None
+
+
+async def test_update_token_to_kubeconfig_without_credentials_uses_host_default(
+    client: AsyncClient,
+) -> None:
+    # 'kubeconfig' with no credentials supplied is its own valid state (the
+    # dev-default: use the host's own kubeconfig) -- the stale token+ca_cert
+    # blob must not survive the switch as if it were still a usable
+    # kubeconfig.
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    created = await _create_cluster(
+        client,
+        name="staging-tok-to-kubeconfig",
+        k8s_auth_kind="token",
+        k8s_api_url="https://cluster.invalid:6443",
+        credentials={"token": "some-token"},
+    )
+
+    response = await client.patch(
+        f"/api/v1/clusters/{created['id']}", json={"k8s_auth_kind": "kubeconfig"}
+    )
+    assert response.status_code == 200
+    assert response.json()["k8s_auth_kind"] == "kubeconfig"
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, created["id"])
+        assert cluster.k8s_auth_kind == "kubeconfig"
+        assert cluster.credentials_encrypted is None
 
 
 async def test_rotate_webhook_token_invalidates_old_token(client: AsyncClient) -> None:
