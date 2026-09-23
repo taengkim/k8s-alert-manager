@@ -420,3 +420,64 @@ async def test_detail_allowed_for_admin_on_unassigned(client: AsyncClient) -> No
 
     response = await client.get(f"/api/v1/alerts/history/{event_id}")
     assert response.status_code == 200
+
+
+# -- grafana_url --------------------------------------------------------
+
+
+async def test_detail_grafana_url_falls_back_to_cluster_grafana_url(client: AsyncClient) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = Cluster(
+            name="grafana-hist",
+            display_name="grafana-hist",
+            prometheus_url="http://prom",
+            alertmanager_url="http://am",
+            grafana_url="https://cluster-grafana.example.com",
+            webhook_token_hash="hash-grafana-hist",
+        )
+        session.add(cluster)
+        await session.commit()
+        await session.refresh(cluster)
+        cluster_id = cluster.id
+
+    event_id = await _create_event(
+        cluster_id=cluster_id, fingerprint="f1", alertname="NoAnnotation", team_id=None
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.status_code == 200
+    assert response.json()["grafana_url"] == (
+        "https://cluster-grafana.example.com/alerting/list?queryString=NoAnnotation"
+    )
+
+
+async def test_detail_grafana_url_prefers_annotation(client: AsyncClient) -> None:
+    cluster_id = await _default_cluster_id()
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        event = AlertEvent(
+            cluster_id=cluster_id,
+            cluster_name=cluster.name,
+            fingerprint="f-annot",
+            status="firing",
+            alertname="Annotated",
+            severity="critical",
+            namespace="kam-demo",
+            labels={"alertname": "Annotated"},
+            annotations={"kam_grafana_url": "https://direct-link.example.com/d/x"},
+            team_id=None,
+            starts_at=datetime.now(UTC),
+            first_received_at=datetime.now(UTC),
+            last_received_at=datetime.now(UTC),
+        )
+        session.add(event)
+        await session.commit()
+        await session.refresh(event)
+        event_id = event.id
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(f"/api/v1/alerts/history/{event_id}")
+    assert response.json()["grafana_url"] == "https://direct-link.example.com/d/x"

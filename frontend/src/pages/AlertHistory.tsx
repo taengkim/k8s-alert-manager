@@ -26,6 +26,7 @@ import {
 } from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
+import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
 import {
   ackAlert,
@@ -95,6 +96,7 @@ export default function AlertHistory() {
   const { message } = App.useApp();
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
+  const { selectedIds: clusterIds } = useClusterFilter();
   const isAdmin = !!user?.is_admin;
   const queryClient = useQueryClient();
 
@@ -127,6 +129,7 @@ export default function AlertHistory() {
     queryKey: [
       "alert-history",
       teamId,
+      clusterIds,
       statusFilter,
       severity,
       namespace,
@@ -140,6 +143,7 @@ export default function AlertHistory() {
     queryFn: () =>
       getAlertHistory({
         teamId,
+        clusterIds: clusterIds.length > 0 ? clusterIds : undefined,
         status: statusFilter === "all" ? undefined : statusFilter,
         severity: severity.length > 0 ? severity : undefined,
         namespace,
@@ -540,11 +544,18 @@ export default function AlertHistory() {
               )}
             </div>
 
-            {selected.generator_url && (
-              <a href={selected.generator_url} target="_blank" rel="noreferrer">
-                Prometheus에서 보기
-              </a>
-            )}
+            <Space size="middle">
+              {selected.generator_url && (
+                <a href={selected.generator_url} target="_blank" rel="noreferrer">
+                  Prometheus에서 보기
+                </a>
+              )}
+              {selected.grafana_url && (
+                <a href={selected.grafana_url} target="_blank" rel="noreferrer">
+                  Grafana에서 보기
+                </a>
+              )}
+            </Space>
 
             <Title level={5} style={{ marginTop: 24 }}>
               댓글

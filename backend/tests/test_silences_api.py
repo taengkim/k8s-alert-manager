@@ -391,3 +391,90 @@ async def test_expire_am_down_returns_503(client: AsyncClient) -> None:
 
     response = await client.delete(f"/api/v1/silences/sil-1?cluster_id={cluster_id}")
     assert response.status_code == 503
+
+
+# -- GET / list: multi-cluster fan-out --------------------------------------
+
+
+async def _create_cluster(name: str) -> int:
+    async with db_module.async_session_factory() as session:
+        cluster = Cluster(
+            name=name,
+            display_name=name,
+            prometheus_url="http://prom-2",
+            alertmanager_url="http://am-2",
+            webhook_token_hash=f"hash-{name}",
+        )
+        session.add(cluster)
+        await session.commit()
+        await session.refresh(cluster)
+        return cluster.id
+
+
+async def test_list_unknown_cluster_id_is_404_single_value_backcompat(client: AsyncClient) -> None:
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    response = await client.get("/api/v1/silences?cluster_id=999999")
+    assert response.status_code == 404
+
+
+@respx.mock
+async def test_list_fans_out_across_multiple_cluster_ids_and_tags_cluster(
+    client: AsyncClient,
+) -> None:
+    respx.get(SILENCES_URL).mock(return_value=httpx.Response(200, json=[_raw_silence("sil-a")]))
+    other_id = await _create_cluster("other-sil")
+    respx.get("http://am-2/api/v2/silences").mock(
+        return_value=httpx.Response(200, json=[_raw_silence("sil-b")])
+    )
+    default_id = await _default_cluster_id()
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(f"/api/v1/silences?cluster_id={default_id}&cluster_id={other_id}")
+    assert response.status_code == 200
+    body = response.json()
+    by_id = {s["id"]: s for s in body["silences"]}
+    assert set(by_id) == {"sil-a", "sil-b"}
+    assert by_id["sil-a"]["cluster"] == {"id": default_id, "name": get_settings().default_cluster_name}
+    assert by_id["sil-b"]["cluster"] == {"id": other_id, "name": "other-sil"}
+
+
+@respx.mock
+async def test_list_defaults_to_all_enabled_clusters_when_cluster_id_omitted(
+    client: AsyncClient,
+) -> None:
+    respx.get(SILENCES_URL).mock(return_value=httpx.Response(200, json=[_raw_silence("sil-a")]))
+    await _create_cluster("other-sil-2")
+    respx.get("http://am-2/api/v2/silences").mock(
+        return_value=httpx.Response(200, json=[_raw_silence("sil-c")])
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get("/api/v1/silences")
+    assert response.status_code == 200
+    assert {s["id"] for s in response.json()["silences"]} == {"sil-a", "sil-c"}
+
+
+@respx.mock
+async def test_list_explicit_disabled_cluster_id_is_silently_excluded_not_404(
+    client: AsyncClient,
+) -> None:
+    """An explicitly-requested cluster_id is still intersected with
+    `enabled` -- disabled means silently excluded (matching /alerts/live's
+    fan-out default), not a 404. Otherwise the same header ClusterFilter
+    selection would scope Silences differently from the live-alerts view.
+    """
+    respx.get(SILENCES_URL).mock(return_value=httpx.Response(200, json=[_raw_silence("sil-a")]))
+    disabled_id = await _create_cluster("disabled-sil")
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, disabled_id)
+        cluster.enabled = False
+        await session.commit()
+
+    default_id = await _default_cluster_id()
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.get(
+        f"/api/v1/silences?cluster_id={default_id}&cluster_id={disabled_id}"
+    )
+    assert response.status_code == 200
+    assert {s["id"] for s in response.json()["silences"]} == {"sil-a"}

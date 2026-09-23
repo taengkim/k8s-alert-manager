@@ -5,6 +5,7 @@ import { Alert, Button, DatePicker, Form, Input, Modal, Select, Switch } from "a
 import { ApiError } from "../api/client";
 import { createSilence } from "../api/silences";
 import type { MatcherInput } from "../api/silences";
+import type { Cluster } from "../api/types";
 
 const DURATION_OPTIONS = [
   { value: "1h", label: "1시간" },
@@ -26,6 +27,7 @@ interface SilenceModalTeam {
 }
 
 interface SilenceFormValues {
+  cluster_id: number;
   matchers: MatcherInput[];
   durationPreset: string;
   endsAt?: Dayjs;
@@ -35,8 +37,14 @@ interface SilenceFormValues {
 interface SilenceModalProps {
   open: boolean;
   onClose: () => void;
-  clusterId: number;
+  /** Clusters offered in the cluster Select -- typically the enabled ones. */
+  clusters: Cluster[];
   team: SilenceModalTeam;
+  /** Prefilled cluster -- e.g. the alert's own cluster from the Alerts
+   * drawer's "이 알럿 사일런스" button. Left unselected (required field) when
+   * there's no alert context, such as the Silences page's generic "생성"
+   * button. */
+  initialClusterId?: number;
   /** Prefilled matchers -- e.g. an alert's full label set from the Alerts
    * drawer's "이 알럿 사일런스" button. Defaults to one empty row. */
   initialMatchers?: MatcherInput[];
@@ -47,8 +55,9 @@ const EMPTY_MATCHER: MatcherInput = { name: "", value: "", is_regex: false };
 export default function SilenceModal({
   open,
   onClose,
-  clusterId,
+  clusters,
   team,
+  initialClusterId,
   initialMatchers,
 }: SilenceModalProps) {
   const queryClient = useQueryClient();
@@ -61,18 +70,19 @@ export default function SilenceModal({
   useEffect(() => {
     if (open) {
       form.setFieldsValue({
+        cluster_id: initialClusterId,
         matchers: initialMatchers && initialMatchers.length > 0 ? initialMatchers : [EMPTY_MATCHER],
         durationPreset: "1h",
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, initialMatchers]);
+  }, [open, initialClusterId, initialMatchers]);
 
   const mutation = useMutation({
     mutationFn: (values: SilenceFormValues) => {
       const isCustom = values.durationPreset === "custom";
       return createSilence({
-        cluster_id: clusterId,
+        cluster_id: values.cluster_id,
         team_id: team.id,
         matchers: values.matchers,
         comment: values.comment,
@@ -118,6 +128,7 @@ export default function SilenceModal({
         form={form}
         layout="vertical"
         initialValues={{
+          cluster_id: initialClusterId,
           matchers: initialMatchers && initialMatchers.length > 0 ? initialMatchers : [EMPTY_MATCHER],
           durationPreset: "1h",
         }}
@@ -125,6 +136,17 @@ export default function SilenceModal({
       >
         <Form.Item label="팀">
           <Input value={`${team.name} (${team.slug})`} disabled />
+        </Form.Item>
+
+        <Form.Item
+          name="cluster_id"
+          label="클러스터"
+          rules={[{ required: true, message: "클러스터를 선택하세요" }]}
+        >
+          <Select
+            placeholder="클러스터를 선택하세요"
+            options={clusters.map((c) => ({ value: c.id, label: c.display_name }))}
+          />
         </Form.Item>
 
         <Form.List

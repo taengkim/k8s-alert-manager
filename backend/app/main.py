@@ -29,6 +29,7 @@ from app.api.webhook import router as webhook_router
 from app.channels.registry import ChannelRegistry
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
+from app.services.cluster_health import ClusterHealthCache
 from app.services.k8s import K8sClientFactory
 from app.worker.outbox import run_loop
 
@@ -47,6 +48,11 @@ async def lifespan(app: FastAPI):
     # Caches per-cluster kubernetes ApiClients (see K8sClientFactory docstring
     # for the cache-invalidation rule).
     app.state.k8s_factory = K8sClientFactory()
+
+    # 30s in-process cache of per-cluster health probes (see
+    # ClusterHealthCache docstring) -- one instance per app, same rationale
+    # as k8s_factory above.
+    app.state.cluster_health_cache = ClusterHealthCache()
 
     # Discovered once at startup: built-in channels + entry-point/plugins-dir
     # third-party channels (see app/channels/registry.py). discover() already

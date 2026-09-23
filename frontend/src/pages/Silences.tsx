@@ -5,7 +5,7 @@ import relativeTime from "dayjs/plugin/relativeTime";
 import { Alert, App, Button, Empty, Popconfirm, Segmented, Table, Tag, Tooltip, Typography } from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
-import { useDefaultCluster } from "../api/useDefaultCluster";
+import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
 import { expireSilence, listSilences } from "../api/silences";
 import type { SilenceOut, SilenceStatus } from "../api/silences";
@@ -26,7 +26,7 @@ const STATUS_TAG: Record<SilenceStatus, { color: string; label: string }> = {
 export default function Silences() {
   const { user } = useAuth();
   const { currentTeam } = useTeam();
-  const { cluster, isLoading: clusterLoading } = useDefaultCluster();
+  const { activeClusters, isLoading: clusterLoading } = useClusterFilter();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
 
@@ -34,20 +34,20 @@ export default function Silences() {
   const [modalOpen, setModalOpen] = useState(false);
 
   const isAdmin = !!user?.is_admin;
-  const clusterId = cluster?.id;
+  const clusterIds = useMemo(() => activeClusters.map((c) => c.id), [activeClusters]);
 
   const query = useQuery({
-    queryKey: ["silences", clusterId],
-    queryFn: () => listSilences(clusterId!),
-    enabled: !!clusterId,
+    queryKey: ["silences", clusterIds],
+    queryFn: () => listSilences(clusterIds),
+    enabled: clusterIds.length > 0,
     refetchInterval: 30_000,
   });
 
   const expireMutation = useMutation({
-    mutationFn: (amSilenceId: string) => expireSilence(amSilenceId, clusterId!),
+    mutationFn: (record: SilenceOut) => expireSilence(record.id, record.cluster.id),
     onSuccess: () => {
       message.success("사일런스가 만료되었습니다");
-      queryClient.invalidateQueries({ queryKey: ["silences", clusterId] });
+      queryClient.invalidateQueries({ queryKey: ["silences"] });
     },
     onError: (err) => {
       message.error(
@@ -131,6 +131,13 @@ export default function Silences() {
     { title: "설명", dataIndex: "comment", key: "comment", ellipsis: true },
     { title: "생성자", dataIndex: "createdBy", key: "createdBy", width: 120 },
     {
+      title: "클러스터",
+      dataIndex: "cluster",
+      key: "cluster",
+      width: 120,
+      render: (cluster: SilenceOut["cluster"]) => <Tag>{cluster.name}</Tag>,
+    },
+    {
       title: "팀",
       dataIndex: "team",
       key: "team",
@@ -149,7 +156,7 @@ export default function Silences() {
             size="small"
             danger
             disabled={!allowed}
-            loading={expireMutation.isPending && expireMutation.variables === record.id}
+            loading={expireMutation.isPending && expireMutation.variables?.id === record.id}
           >
             만료
           </Button>
@@ -164,7 +171,7 @@ export default function Silences() {
         return (
           <Popconfirm
             title="이 사일런스를 만료시키겠습니까?"
-            onConfirm={() => expireMutation.mutate(record.id)}
+            onConfirm={() => expireMutation.mutate(record)}
           >
             {button}
           </Popconfirm>
@@ -209,7 +216,7 @@ export default function Silences() {
       />
 
       <Table<SilenceOut>
-        rowKey="id"
+        rowKey={(record) => `${record.cluster.id}-${record.id}`}
         loading={query.isLoading || clusterLoading}
         dataSource={filtered}
         columns={columns}
@@ -217,11 +224,11 @@ export default function Silences() {
         locale={{ emptyText: <Empty description="사일런스가 없습니다" /> }}
       />
 
-      {currentTeam && clusterId && (
+      {currentTeam && (
         <SilenceModal
           open={modalOpen}
           onClose={() => setModalOpen(false)}
-          clusterId={clusterId}
+          clusters={activeClusters}
           team={currentTeam}
         />
       )}

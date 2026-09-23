@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     alertmanager_url: str = "http://localhost:30093"
     webhook_token: str = "dev-webhook-token"
 
+    # Base URL Alertmanager itself can reach this app's webhook receiver at
+    # -- used only to render the copy-paste AM receiver config snippet
+    # returned (once) by POST/PATCH /clusters. Defaults to what the dev kind
+    # cluster's Alertmanager already uses (dev/kube-prometheus-values.yaml)
+    # to reach the host machine from inside Docker.
+    webhook_base_url: str = "http://host.docker.internal:8000"
+
     # SMTP connection settings for the built-in email channel. Per-channel
     # config (recipients, subject prefix) lives in `channels.config_encrypted`
     # instead -- these are app-wide (one mail relay per deployment), not

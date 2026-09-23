@@ -36,6 +36,7 @@ export interface AlertEventDetail extends AlertEventSummary {
   labels: Record<string, string>;
   annotations: Record<string, string>;
   generator_url: string | null;
+  grafana_url: string | null;
 }
 
 export interface AlertHistoryResponse {

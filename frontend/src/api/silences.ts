@@ -13,6 +13,11 @@ export interface SilenceTeam {
   slug: string;
 }
 
+export interface SilenceCluster {
+  id: number;
+  name: string;
+}
+
 export interface SilenceOut {
   id: string;
   matchers: SilenceMatcher[];
@@ -22,6 +27,7 @@ export interface SilenceOut {
   comment: string;
   status: SilenceStatus;
   team: SilenceTeam | null;
+  cluster: SilenceCluster;
 }
 
 export interface SilencesListResponse {
@@ -43,10 +49,17 @@ export interface SilenceCreateInput {
   comment: string;
 }
 
-export function listSilences(clusterId: number, teamId?: number): Promise<SilencesListResponse> {
-  const params = new URLSearchParams({ cluster_id: String(clusterId) });
+/** `clusterIds` omitted (or empty) defaults server-side to every enabled
+ * cluster -- matches /alerts/live's fan-out default. */
+export function listSilences(
+  clusterIds?: number[],
+  teamId?: number,
+): Promise<SilencesListResponse> {
+  const params = new URLSearchParams();
+  for (const id of clusterIds ?? []) params.append("cluster_id", String(id));
   if (teamId !== undefined) params.set("team_id", String(teamId));
-  return apiFetch<SilencesListResponse>(`/silences?${params.toString()}`);
+  const qs = params.toString();
+  return apiFetch<SilencesListResponse>(`/silences${qs ? `?${qs}` : ""}`);
 }
 
 export function createSilence(body: SilenceCreateInput): Promise<SilenceOut> {

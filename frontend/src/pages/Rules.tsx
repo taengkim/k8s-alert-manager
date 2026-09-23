@@ -1,11 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { Alert, App, Badge, Button, Empty, Popconfirm, Table, Tag, Tooltip, Typography } from "antd";
 import { useNavigate } from "react-router";
 import { useTeam } from "../auth/TeamContext";
-import { useDefaultCluster } from "../api/useDefaultCluster";
+import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
 import { deleteRule, listRules } from "../api/rules";
 import type { RuleOut } from "../api/rules";
+import type { Cluster } from "../api/types";
+
+interface RuleRow extends RuleOut {
+  cluster: Cluster;
+}
 
 const { Text } = Typography;
 
@@ -26,22 +32,46 @@ export default function Rules() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { currentTeam, teams } = useTeam();
-  const { cluster, isLoading: clusterLoading } = useDefaultCluster();
+  const { activeClusters, isLoading: clusterLoading } = useClusterFilter();
 
   const teamId = currentTeam?.id;
-  const clusterId = cluster?.id;
 
-  const query = useQuery({
-    queryKey: ["rules", teamId, clusterId],
-    queryFn: () => listRules(teamId!, clusterId!),
-    enabled: !!teamId && !!clusterId,
+  // A team's rules live per-cluster (each is a k8s PrometheusRule on that
+  // specific cluster's API server), so the ClusterFilter selection is
+  // queried per-cluster in parallel and merged here -- rather than one
+  // "all clusters" endpoint, which would need every cluster reachable to
+  // answer at all.
+  const ruleQueries = useQueries({
+    queries: activeClusters.map((cluster) => ({
+      queryKey: ["rules", teamId, cluster.id],
+      queryFn: () => listRules(teamId!, cluster.id),
+      enabled: !!teamId,
+    })),
   });
 
+  const rules: RuleRow[] = useMemo(
+    () =>
+      ruleQueries.flatMap((q, idx) =>
+        (q.data?.rules ?? []).map((rule) => ({ ...rule, cluster: activeClusters[idx] })),
+      ),
+    [ruleQueries, activeClusters],
+  );
+  const warnings = useMemo(
+    () =>
+      ruleQueries
+        .map((q, idx) =>
+          q.data?.warning ? `${activeClusters[idx].display_name}: ${q.data.warning}` : null,
+        )
+        .filter((w): w is string => w !== null),
+    [ruleQueries, activeClusters],
+  );
+  const isLoading = clusterLoading || ruleQueries.some((q) => q.isLoading);
+
   const deleteMutation = useMutation({
-    mutationFn: (slug: string) => deleteRule(teamId!, clusterId!, slug),
-    onSuccess: () => {
+    mutationFn: (rule: RuleRow) => deleteRule(teamId!, rule.cluster.id, rule.slug),
+    onSuccess: (_data, rule) => {
       message.success("룰이 삭제되었습니다");
-      queryClient.invalidateQueries({ queryKey: ["rules", teamId, clusterId] });
+      queryClient.invalidateQueries({ queryKey: ["rules", teamId, rule.cluster.id] });
     },
     onError: (err) => {
       message.error(
@@ -64,11 +94,15 @@ export default function Rules() {
     );
   }
 
-  const rules = query.data?.rules ?? [];
-
   const columns = [
     { title: "알럿명", dataIndex: "alert_name", key: "alert_name" },
     { title: "슬러그", dataIndex: "slug", key: "slug" },
+    {
+      title: "클러스터",
+      key: "cluster",
+      width: 140,
+      render: (_: unknown, record: RuleRow) => <Tag>{record.cluster.display_name}</Tag>,
+    },
     {
       title: "심각도",
       dataIndex: "severity",
@@ -107,16 +141,23 @@ export default function Rules() {
       title: "",
       key: "actions",
       width: 160,
-      render: (_: unknown, record: RuleOut) => (
+      render: (_: unknown, record: RuleRow) => (
         <div style={{ display: "flex", gap: 8 }}>
-          <Button size="small" onClick={() => navigate(`/rules/${record.slug}/edit`)}>
+          <Button
+            size="small"
+            onClick={() => navigate(`/rules/${record.slug}/edit?cluster=${record.cluster.id}`)}
+          >
             수정
           </Button>
           <Popconfirm
             title="이 룰을 삭제하시겠습니까?"
-            onConfirm={() => deleteMutation.mutate(record.slug)}
+            onConfirm={() => deleteMutation.mutate(record)}
           >
-            <Button size="small" danger loading={deleteMutation.isPending}>
+            <Button
+              size="small"
+              danger
+              loading={deleteMutation.isPending && deleteMutation.variables?.slug === record.slug}
+            >
               삭제
             </Button>
           </Popconfirm>
@@ -146,13 +187,13 @@ export default function Rules() {
         </Button>
       </div>
 
-      {query.data?.warning && (
-        <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={query.data.warning} />
-      )}
+      {warnings.map((warning) => (
+        <Alert key={warning} type="warning" showIcon style={{ marginBottom: 12 }} message={warning} />
+      ))}
 
-      <Table<RuleOut>
-        rowKey="slug"
-        loading={query.isLoading || clusterLoading}
+      <Table<RuleRow>
+        rowKey={(record) => `${record.cluster.id}-${record.slug}`}
+        loading={isLoading}
         dataSource={rules}
         columns={columns}
         pagination={{ pageSize: 20 }}

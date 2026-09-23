@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 from kubernetes import client, config
-from kubernetes.client import ApiClient, CoreV1Api, CustomObjectsApi
+from kubernetes.client import ApiClient, CoreV1Api, CustomObjectsApi, VersionApi
 from kubernetes.client.exceptions import ApiException
 
 from app.models.cluster import Cluster
@@ -242,6 +242,12 @@ class K8sClientFactory:
 
     def _core_api(self, cluster: Cluster) -> CoreV1Api:
         return CoreV1Api(self.get(cluster))
+
+    def _version_api(self, cluster: Cluster) -> VersionApi:
+        """Test seam for `app.services.cluster_health`'s k8s reachability
+        check -- mirrors `_co_api`/`_core_api` above.
+        """
+        return VersionApi(self.get(cluster))
 
     # -- rule operations ----------------------------------------------------
 
