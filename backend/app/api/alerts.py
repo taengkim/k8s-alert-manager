@@ -26,6 +26,7 @@ from app.models.cluster import Cluster
 from app.models.comment import MAX_COMMENT_LENGTH, AlertComment
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
+from app.models.share import AlertShare
 from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.services import audit
@@ -37,6 +38,7 @@ from app.services.ingest import (
     ingest_webhook,
 )
 from app.services.routing import evaluate, route_event
+from app.services.sharing import MatchableAlert, share_matches, shared_source_team_ids
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,30 @@ def _flatten(cluster: Cluster, raw: dict[str, Any]) -> dict[str, Any]:
         "generator_url": raw.get("generatorURL"),
         "grafana_url": resolve_grafana_url(annotations, cluster, alertname),
         "silenced_by": status_obj.get("silencedBy") or [],
+        # Phase 14: set below, in get_live_alerts, once the requested
+        # team's shared sources are known -- None here is just the default
+        # for an alert that turns out to belong to the requested team
+        # itself (or for the unscoped admin view, where sharing doesn't
+        # apply at all).
+        "shared_from": None,
+    }
+
+
+async def _load_shared_sources(session: AsyncSession, team_id: int) -> dict[str, AlertShare]:
+    """owner team slug -> the `AlertShare` that grants `team_id` (view or
+    view_notify -- both grant read visibility; view_notify's extra
+    notify-side effect is handled entirely by `route_event`) read access to
+    that owner's alerts. Keyed by slug rather than id since callers here
+    match against a `kam_team` label / denormalized team slug, not an id.
+    """
+    pairs = await shared_source_team_ids(session, team_id)
+    if not pairs:
+        return {}
+    owner_ids = [owner_id for owner_id, _ in pairs]
+    result = await session.execute(select(Team).where(Team.id.in_(owner_ids)))
+    slug_by_id = {t.id: t.slug for t in result.scalars().all()}
+    return {
+        slug_by_id[owner_id]: share for owner_id, share in pairs if owner_id in slug_by_id
     }
 
 
@@ -163,7 +189,24 @@ async def get_live_alerts(
         alerts.extend(cluster_alerts)
 
     if team is not None:
-        alerts = [a for a in alerts if a["labels"].get("kam_team") == team.slug]
+        # Phase 14: a non-owner alert is included only if some AlertShare
+        # targeting this team covers it (owner slug matches a share, and
+        # that share's optional matcher scope -- see share_matches --
+        # accepts this alert). `shared_from` records which owner it came
+        # through, for the "공유: {owner}" badge; own-team alerts keep the
+        # `_flatten` default of None.
+        shared_sources = await _load_shared_sources(session, team.id)
+        scoped: list[dict[str, Any]] = []
+        for alert in alerts:
+            owner_slug = alert["labels"].get("kam_team")
+            if owner_slug == team.slug:
+                scoped.append(alert)
+                continue
+            share = shared_sources.get(owner_slug) if owner_slug else None
+            if share is not None and share_matches(share, MatchableAlert.from_live_alert(alert)):
+                alert["shared_from"] = owner_slug
+                scoped.append(alert)
+        alerts = scoped
 
     if severity:
         # "none" is a synthetic value the frontend offers for alerts with no
@@ -202,7 +245,9 @@ def _user_ref(user_id: int | None, usernames: dict[int, str]) -> dict[str, Any] 
     return {"id": user_id, "username": usernames.get(user_id)}
 
 
-def _serialize_event_summary(event: AlertEvent, usernames: dict[int, str]) -> dict[str, Any]:
+def _serialize_event_summary(
+    event: AlertEvent, usernames: dict[int, str], *, shared_from: str | None = None
+) -> dict[str, Any]:
     return {
         "id": event.id,
         "cluster_id": event.cluster_id,
@@ -222,14 +267,22 @@ def _serialize_event_summary(event: AlertEvent, usernames: dict[int, str]) -> di
         "acknowledged_at": event.acknowledged_at,
         "acknowledged_by": _user_ref(event.acknowledged_by, usernames),
         "assignee": _user_ref(event.assignee_user_id, usernames),
+        # Phase 14: the owner team's slug when this event reached the
+        # viewer only via an AlertShare, None for the viewer's own team's
+        # events (and always None outside a team-scoped context).
+        "shared_from": shared_from,
     }
 
 
 def _serialize_event_detail(
-    event: AlertEvent, usernames: dict[int, str], grafana_url: str | None
+    event: AlertEvent,
+    usernames: dict[int, str],
+    grafana_url: str | None,
+    *,
+    shared_from: str | None = None,
 ) -> dict[str, Any]:
     return {
-        **_serialize_event_summary(event, usernames),
+        **_serialize_event_summary(event, usernames, shared_from=shared_from),
         "labels": event.labels,
         "annotations": event.annotations,
         "generator_url": event.generator_url,
@@ -237,17 +290,47 @@ def _serialize_event_detail(
     }
 
 
-async def _serialize_one_detail(session: AsyncSession, event: AlertEvent) -> dict[str, Any]:
+async def _resolve_shared_from(
+    session: AsyncSession, event: AlertEvent, viewer: User
+) -> str | None:
+    """None when `viewer` is an admin or belongs to the event's own team --
+    the event isn't "shared" from their point of view. Otherwise (reachable
+    only because `_authorize_event_read_access` already granted access via
+    a share) resolves the event's own team's slug, so the detail drawer can
+    show the same "공유: {owner}" badge /live and /history do.
+    """
+    if viewer.is_admin or event.team_id is None:
+        return None
+    result = await session.execute(
+        select(TeamMembership).where(
+            TeamMembership.team_id == event.team_id, TeamMembership.user_id == viewer.id
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        return None
+    team = await session.get(Team, event.team_id)
+    return team.slug if team is not None else None
+
+
+async def _serialize_one_detail(
+    session: AsyncSession, event: AlertEvent, *, viewer: User | None = None
+) -> dict[str, Any]:
     """Convenience for endpoints returning exactly one event (ack/assignee/
     resolve-test/detail) -- resolves just that event's own ack/assignee
     usernames rather than pulling in `_resolve_usernames`' page-batching for
     a single row, plus its Grafana deep link (annotation, falling back to
     the owning cluster's `grafana_url` -- see `resolve_grafana_url`).
+
+    `viewer` is only passed by the GET detail endpoint (the only caller
+    that needs `shared_from` -- every mutation endpoint using this already
+    requires own-team membership via `_authorize_event_access`, so
+    `shared_from` would always be None for them anyway).
     """
     usernames = await _resolve_usernames(session, {event.acknowledged_by, event.assignee_user_id})
     cluster = await session.get(Cluster, event.cluster_id)
     grafana_url = resolve_grafana_url(event.annotations, cluster, event.alertname)
-    return _serialize_event_detail(event, usernames, grafana_url)
+    shared_from = await _resolve_shared_from(session, event, viewer) if viewer is not None else None
+    return _serialize_event_detail(event, usernames, grafana_url, shared_from=shared_from)
 
 
 def _build_history_conditions(
@@ -261,14 +344,29 @@ def _build_history_conditions(
     from_ts: datetime | None,
     to_ts: datetime | None,
     include_test: bool,
+    shared_owner_team_ids: list[int] | None = None,
 ) -> list[ColumnElement[bool]]:
     """Shared by GET /history (paginated) and GET /history/export (the whole
-    matching set) -- every filter must behave identically between the two."""
+    matching set) -- every filter must behave identically between the two.
+
+    `shared_owner_team_ids` (Phase 14, GET /history only -- export doesn't
+    pass it, so its behavior is unchanged) widens the team_id condition from
+    "only `team.id`" to "`team.id` OR any of these owner teams' events".
+    This only covers a share's *team* scope, not its optional matcher scope
+    -- a matcher can't be expressed as a WHERE clause here (it reads
+    alertname/labels/annotations, not an indexed column), so a
+    matcher-scoped share needs a Python post-fetch filter on top of this;
+    see `get_alert_history`'s docstring for the pagination trade-off that
+    implies.
+    """
     conditions: list[ColumnElement[bool]] = []
     if not include_test:
         conditions.append(AlertEvent.is_test.is_(False))
     if team is not None:
-        conditions.append(AlertEvent.team_id == team.id)
+        if shared_owner_team_ids:
+            conditions.append(AlertEvent.team_id.in_([team.id, *shared_owner_team_ids]))
+        else:
+            conditions.append(AlertEvent.team_id == team.id)
     if cluster_id:
         conditions.append(AlertEvent.cluster_id.in_(cluster_id))
     if status_filter:
@@ -321,8 +419,34 @@ async def get_alert_history(
 
     `include_test` defaults to excluding synthetic POST .../test-alert rows
     from the default view -- they'd otherwise clutter real incident history.
+
+    Phase 14: when `team` has been shared alerts by other teams, this widens
+    to also include (matcher-scoped) events owned by those teams --
+    `shared_from` on each returned item names which owner a non-own-team row
+    came through. A share with no matchers is fully expressed in the SQL
+    WHERE clause (`_build_history_conditions`'s `shared_owner_team_ids`); a
+    share *with* matchers additionally needs a Python post-fetch filter,
+    since a matcher reads alertname/labels/annotations, not a column SQL can
+    filter on. That post-filter runs *after* `LIMIT`/`OFFSET`, so `total`
+    and a page's row count are an approximation (an upper bound) whenever a
+    matcher-scoped share is in play -- a page can come back with fewer than
+    `page_size` rows, or `total` can overcount what a user would see if they
+    paged all the way through. This is an accepted approximation for this
+    phase rather than re-deriving pagination from a filter-then-count pass.
     """
     team = await _resolve_team_scope(team_id, user, session)
+
+    shared_sources: dict[int, AlertShare] = {}
+    owner_slug_by_id: dict[int, str] = {}
+    if team is not None:
+        pairs = await shared_source_team_ids(session, team.id)
+        if pairs:
+            shared_sources = dict(pairs)
+            owners = (
+                await session.execute(select(Team).where(Team.id.in_(shared_sources)))
+            ).scalars().all()
+            owner_slug_by_id = {t.id: t.slug for t in owners}
+
     conditions = _build_history_conditions(
         team=team,
         cluster_id=cluster_id,
@@ -333,6 +457,7 @@ async def get_alert_history(
         from_ts=from_ts,
         to_ts=to_ts,
         include_test=include_test,
+        shared_owner_team_ids=list(shared_sources) or None,
     )
 
     total = (
@@ -353,12 +478,26 @@ async def get_alert_history(
     )
     items = result.scalars().all()
 
+    if team is not None and shared_sources:
+        items = [
+            e
+            for e in items
+            if e.team_id == team.id or share_matches(shared_sources[e.team_id], e)
+        ]
+
     usernames = await _resolve_usernames(
         session, {e.acknowledged_by for e in items} | {e.assignee_user_id for e in items}
     )
 
+    def _shared_from(event: AlertEvent) -> str | None:
+        if team is None or event.team_id == team.id:
+            return None
+        return owner_slug_by_id.get(event.team_id)
+
     return {
-        "items": [_serialize_event_summary(e, usernames) for e in items],
+        "items": [
+            _serialize_event_summary(e, usernames, shared_from=_shared_from(e)) for e in items
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -571,6 +710,14 @@ async def _get_event_or_404(session: AsyncSession, event_id: int) -> AlertEvent:
 
 
 async def _authorize_event_access(session: AsyncSession, event: AlertEvent, user: User) -> None:
+    """Mutation-grade authorization: admin, or a member of the event's own
+    team. Every write endpoint (ack/unack, assignee, comment create/delete,
+    resolve-test) uses this, unchanged by Phase 14 -- sharing only ever
+    grants read (and, for view_notify, a *separate* team's own notify) on
+    another team's alert, never write access to it. See
+    `_authorize_event_read_access` for the read-only variant those
+    endpoints don't use.
+    """
     if user.is_admin:
         return
     if event.team_id is None:
@@ -584,6 +731,40 @@ async def _authorize_event_access(session: AsyncSession, event: AlertEvent, user
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
 
+async def _authorize_event_read_access(session: AsyncSession, event: AlertEvent, user: User) -> None:
+    """Read-only variant of `_authorize_event_access` (Phase 14): additionally
+    allows a member of a team that `event`'s own team has shared this event
+    into -- a `view`/`view_notify` `AlertShare` whose matcher scope covers
+    it. Used only by the three read-only detail-drawer endpoints (detail,
+    notification history, comment list); every mutation endpoint keeps
+    using `_authorize_event_access` unchanged, so ack/assignee/comment-
+    create/comment-delete/resolve-test stay 403 for a shared-in viewer.
+    """
+    if user.is_admin:
+        return
+    if event.team_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+    result = await session.execute(
+        select(TeamMembership.team_id).where(TeamMembership.user_id == user.id)
+    )
+    member_team_ids = {team_id for (team_id,) in result.all()}
+    if event.team_id in member_team_ids:
+        return
+
+    if member_team_ids:
+        shares_result = await session.execute(
+            select(AlertShare).where(
+                AlertShare.owner_team_id == event.team_id,
+                AlertShare.target_team_id.in_(member_team_ids),
+            )
+        )
+        if any(share_matches(share, event) for share in shares_result.scalars().all()):
+            return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+
 @router.get("/history/{event_id}")
 async def get_alert_history_detail(
     event_id: int,
@@ -591,8 +772,8 @@ async def get_alert_history_detail(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     event = await _get_event_or_404(session, event_id)
-    await _authorize_event_access(session, event, user)
-    return await _serialize_one_detail(session, event)
+    await _authorize_event_read_access(session, event, user)
+    return await _serialize_one_detail(session, event, viewer=user)
 
 
 @router.get("/history/{event_id}/notifications")
@@ -606,7 +787,7 @@ async def get_alert_history_notifications(
     history detail drawer's "notification history" section.
     """
     event = await _get_event_or_404(session, event_id)
-    await _authorize_event_access(session, event, user)
+    await _authorize_event_read_access(session, event, user)
 
     result = await session.execute(
         select(NotificationOutbox, Channel.name)
@@ -785,7 +966,7 @@ async def list_alert_comments(
     session: AsyncSession = Depends(get_session),
 ) -> list[dict[str, Any]]:
     event = await _get_event_or_404(session, event_id)
-    await _authorize_event_access(session, event, user)
+    await _authorize_event_read_access(session, event, user)
 
     result = await session.execute(
         select(AlertComment, User)
