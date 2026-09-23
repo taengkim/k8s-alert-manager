@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Any, Literal
 
@@ -7,12 +8,26 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, require_admin, require_team_role
+from app.api.deps import (
+    get_current_user,
+    get_k8s_factory,
+    require_admin,
+    require_team_role,
+)
 from app.db import get_session
 from app.models.cluster import Cluster
 from app.models.team import Team, TeamLdapMapping, TeamMembership
 from app.models.user import User
 from app.services import audit
+from app.services.k8s import (
+    K8sBadRequestError,
+    K8sClientFactory,
+    K8sUnavailableError,
+    RuleForbiddenError,
+    RuleUpdateConflictError,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/teams", tags=["teams"])
 
@@ -146,8 +161,77 @@ async def delete_team(
     team_id: int,
     user: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
+    k8s: K8sClientFactory = Depends(get_k8s_factory),
 ) -> None:
+    """Deleting a team must not orphan its PrometheusRules: they'd keep
+    firing/routing on `kam_team` labels for a team that no longer exists,
+    invisible to anyone (the rules list is always team-scoped). So every
+    enabled cluster's rules for this team are deleted first.
+
+    This is all-or-nothing: if any enabled cluster can't be reached, nothing
+    is deleted (not the rules on other clusters, not the team) -- an admin
+    should not be able to delete a team while quietly leaving unreachable
+    orphaned rules behind on some cluster with no owner left to clean them
+    up later.
+    """
     team = await _get_team_or_404(session, team_id)
+
+    clusters = (
+        (await session.execute(select(Cluster).where(Cluster.enabled.is_(True))))
+        .scalars()
+        .all()
+    )
+
+    rules_by_cluster: list[tuple[Cluster, list[dict[str, Any]]]] = []
+    for cluster in clusters:
+        try:
+            raw_rules = await k8s.list_rules(cluster, team.id)
+        except K8sUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"클러스터 {cluster.name}에 접근할 수 없어 팀을 삭제할 수 없습니다 "
+                    "(규칙 정리 필요)"
+                ),
+            ) from exc
+        rules_by_cluster.append((cluster, raw_rules))
+
+    for cluster, raw_rules in rules_by_cluster:
+        for raw_rule in raw_rules:
+            name = (raw_rule.get("metadata") or {}).get("name", "")
+            if not name:
+                continue
+            try:
+                await k8s.delete_rule(cluster, name, team.id)
+            except (
+                RuleForbiddenError,
+                RuleUpdateConflictError,
+                K8sBadRequestError,
+                K8sUnavailableError,
+            ):
+                # Every one of these was just listed via the team-scoped
+                # label selector, so this should always succeed; don't let
+                # one rule's failure (e.g. a race with someone else
+                # deleting it, or the cluster going away mid-loop) block
+                # cleanup of the rest.
+                logger.warning(
+                    "failed to delete rule '%s' on cluster '%s' during team "
+                    "'%s' deletion",
+                    name,
+                    cluster.name,
+                    team.slug,
+                )
+                continue
+
+            await audit.log(
+                session,
+                user_id=user.id,
+                team_id=team.id,
+                action="rule.delete",
+                object_type="prometheus_rule",
+                object_ref=name,
+                detail={"cluster_id": cluster.id, "reason": "team_delete"},
+            )
 
     await audit.log(
         session,
