@@ -28,6 +28,7 @@ function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {})
     enabled: route.enabled,
     notify_on_firing: route.notify_on_firing,
     notify_on_resolved: route.notify_on_resolved,
+    include_shared: route.include_shared,
     severities: route.severities ?? undefined,
     namespaces_include: route.namespaces_include ?? undefined,
     namespaces_exclude: route.namespaces_exclude ?? undefined,

@@ -3,6 +3,10 @@ routing engine (compile_rule/evaluate are covered purely in
 test_routing_engine.py). Exercises suppress-first precedence, multi-rule
 channel-union dedup via the outbox UQ, the unassigned-team skip, and the
 frozen notification payload's content.
+
+The bottom section (Phase 14) exercises route_event's view_notify fan-out:
+an owner team's event reaching a target team's own include_shared=true
+rules via an AlertShare.
 """
 
 from datetime import UTC, datetime
@@ -17,6 +21,7 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingMatcher, RoutingRule
+from app.models.share import AlertShare
 from app.models.team import Team
 from app.security import encrypt_str
 from app.services.routing import route_event
@@ -338,3 +343,247 @@ async def test_firing_and_resolved_outbox_rows_coexist_for_same_event_channel(ap
         assert {r.trigger for r in rows} == {"firing", "resolved"}
         assert len(rows) == 2
         assert all(r.channel_id == channel.id and r.alert_event_id == event.id for r in rows)
+
+
+# -- Phase 14: view_notify fan-out -------------------------------------------
+
+
+async def test_view_notify_share_fans_out_to_targets_include_shared_rule(app) -> None:
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, target, name="shared-critical", channels=[target_channel], include_shared=True
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view_notify"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner, severity="critical")
+
+        outcome = await route_event(session, event, "firing")
+        await session.commit()
+
+        # The owning team has no rules of its own -- its own outcome is
+        # "no_match" regardless of the shared fan-out succeeding.
+        assert outcome.reason == "no_match"
+        # ... but shared_channels_notified still surfaces the cross-team
+        # delivery -- reason="no_match" describes the OWNER's own outcome
+        # only, not "nothing was staged anywhere".
+        assert outcome.shared_channels_notified == 1
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].team_id == target.id
+        assert rows[0].channel_id == target_channel.id
+        assert rows[0].trigger == "firing"
+
+
+async def test_view_notify_ignores_targets_rule_without_include_shared(app) -> None:
+    """A target rule that would otherwise match this event must NOT fire
+    for a shared-in alert unless include_shared=True -- that's the whole
+    point of the gate.
+    """
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, target, name="not-shared", channels=[target_channel], include_shared=False
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view_notify"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner)
+
+        await route_event(session, event, "firing")
+        await session.commit()
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert rows == []
+
+
+async def test_view_mode_share_never_notifies(app) -> None:
+    """mode='view' shares only affect read visibility (app/api/alerts.py) --
+    route_event's fan-out only ever considers mode='view_notify' shares.
+    """
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, target, name="shared-critical", channels=[target_channel], include_shared=True
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner)
+
+        await route_event(session, event, "firing")
+        await session.commit()
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert rows == []
+
+
+async def test_view_notify_matcher_scope_restricts_fan_out(app) -> None:
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, target, name="shared-all", channels=[target_channel], include_shared=True
+        )
+        session.add(
+            AlertShare(
+                owner_team_id=owner.id,
+                target_team_id=target.id,
+                mode="view_notify",
+                matchers=[
+                    {"kind": "include", "target": "label", "key": "severity", "pattern": "^critical$"}
+                ],
+            )
+        )
+        await session.flush()
+
+        # Built directly (not via the shared _create_event helper, whose
+        # `labels` dict never includes `severity`) since the share's
+        # 'label'/'severity' matcher reads from `event.labels`, not the
+        # denormalized `severity` column.
+        def _make_event(*, fingerprint: str, severity: str) -> AlertEvent:
+            return AlertEvent(
+                cluster_id=cluster.id,
+                cluster_name=cluster.name,
+                fingerprint=fingerprint,
+                status="firing",
+                alertname="HighCpu",
+                severity=severity,
+                namespace="kam-demo",
+                labels={"alertname": "HighCpu", "severity": severity},
+                annotations={},
+                team_id=owner.id,
+                starts_at=datetime(2026, 1, 1, tzinfo=UTC),
+            )
+
+        info_event = _make_event(fingerprint="fp-1", severity="info")
+        session.add(info_event)
+        await session.flush()
+        await route_event(session, info_event, "firing")
+        await session.commit()
+        assert (await session.execute(select(NotificationOutbox))).scalars().all() == []
+
+        critical_event = _make_event(fingerprint="fp-2", severity="critical")
+        session.add(critical_event)
+        await session.flush()
+        await route_event(session, critical_event, "firing")
+        await session.commit()
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].alert_event_id == critical_event.id
+
+
+async def test_view_notify_targets_own_suppress_blocks_only_target(app) -> None:
+    """A target's own suppress rule (include_shared=True) blocks only that
+    target's notification -- it must not touch the owning team's own
+    routing outcome, its own notification, or event.suppressed_by_rule_id
+    (which records the OWNING team's suppression history, never a
+    target's).
+    """
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        owner_channel = await _create_channel(session, owner, name="platform-email")
+        await _create_rule(session, owner, name="owner-notify-all", channels=[owner_channel])
+        await _create_rule(
+            session,
+            target,
+            name="target-suppress-critical",
+            action="suppress",
+            include_shared=True,
+            severities=["critical"],
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view_notify"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner, severity="critical")
+
+        outcome = await route_event(session, event, "firing")
+        await session.commit()
+
+        # Owner's own notification is entirely unaffected by the target's
+        # suppress rule.
+        assert outcome.routed is True
+        assert outcome.channels_notified == 1
+        assert event.suppressed_by_rule_id is None
+        # The target's suppress rule blocked its own delivery -- nothing
+        # cross-team was staged.
+        assert outcome.shared_channels_notified == 0
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].team_id == owner.id
+        assert rows[0].channel_id == owner_channel.id
+
+
+async def test_owners_own_suppress_does_not_block_shared_fan_out(app) -> None:
+    """The owning team's own suppress rule blocks only the owning team's
+    own notification -- a target's view_notify fan-out (its own,
+    independent routing pass) still runs.
+    """
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, owner, name="owner-suppress-all", action="suppress"
+        )
+        await _create_rule(
+            session, target, name="shared-critical", channels=[target_channel], include_shared=True
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view_notify"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner, severity="critical")
+
+        outcome = await route_event(session, event, "firing")
+        await session.commit()
+
+        assert outcome.reason == "suppressed"
+        assert event.suppressed_by_rule_id is not None
+        # This is the case M-c guards: reason="suppressed" must not be read
+        # as "nothing was delivered anywhere" -- the target's independent
+        # fan-out still notified.
+        assert outcome.shared_channels_notified == 1
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].team_id == target.id
+        assert rows[0].channel_id == target_channel.id
+
+
+async def test_view_notify_outbox_dedup_uq_still_applies_per_team(app) -> None:
+    """The (event, channel, trigger) UQ dedups the shared fan-out's inserts
+    the same way it dedups the owning team's own -- a repeated call for the
+    same transition must not create a second shared outbox row.
+    """
+    async with db_module.async_session_factory() as session:
+        owner = await _create_team(session, "platform")
+        target = await _create_team(session, "payments")
+        cluster = await _create_cluster(session)
+        target_channel = await _create_channel(session, target, name="payments-email")
+        await _create_rule(
+            session, target, name="shared-critical", channels=[target_channel], include_shared=True
+        )
+        session.add(AlertShare(owner_team_id=owner.id, target_team_id=target.id, mode="view_notify"))
+        await session.flush()
+        event = await _create_event(session, cluster, owner)
+
+        await route_event(session, event, "firing")
+        await session.commit()
+        await route_event(session, event, "firing")
+        await session.commit()
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1

@@ -15,6 +15,9 @@ export interface LiveAlert {
   generator_url: string | null;
   grafana_url: string | null;
   silenced_by: string[];
+  /** Phase 14: the owner team's slug when this alert reached the viewer
+   * only via an AlertShare, null for the viewer's own team's alerts. */
+  shared_from: string | null;
 }
 
 export interface AlertFetchError {

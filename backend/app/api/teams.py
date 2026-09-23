@@ -119,6 +119,24 @@ async def create_team(
     return _team_payload(team)
 
 
+@router.get("/all-brief")
+async def list_teams_brief(
+    _user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Every team's (id, slug, name) only -- unlike `GET /teams`, available
+    to any authenticated user regardless of membership, and registered
+    ahead of `GET /{team_id}` below so this literal path wins the match.
+
+    Exists for the Phase 14 share-target picker (Shares.tsx): choosing who
+    to share alerts *with* requires seeing every team, but `GET /teams`
+    only lists the caller's own teams for non-admins. Nothing sensitive is
+    exposed here that `GET /teams` doesn't already show its own members.
+    """
+    result = await session.execute(select(Team))
+    return [{"id": t.id, "slug": t.slug, "name": t.name} for t in result.scalars().all()]
+
+
 @router.get("/{team_id}")
 async def get_team(
     team_id: int,

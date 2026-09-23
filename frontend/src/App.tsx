@@ -16,6 +16,7 @@ import RouteEditor from "./pages/RouteEditor";
 import RoutesPage from "./pages/Routes";
 import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
+import Shares from "./pages/Shares";
 import Silences from "./pages/Silences";
 import TeamSettings from "./pages/TeamSettings";
 import Templates from "./pages/Templates";
@@ -31,6 +32,7 @@ const sections = [
   { key: "channels", label: "Channels", path: "/channels" },
   { key: "templates", label: "템플릿", path: "/templates" },
   { key: "routes", label: "Routes", path: "/routes" },
+  { key: "shares", label: "공유", path: "/shares" },
 ];
 
 function AppLayout() {
@@ -128,6 +130,7 @@ export default function App() {
             <Route path="/routes" element={<RoutesPage />} />
             <Route path="/routes/new" element={<RouteEditor />} />
             <Route path="/routes/:id/edit" element={<RouteEditor />} />
+            <Route path="/shares" element={<Shares />} />
             {sections
               .filter(
                 (section) =>
@@ -136,7 +139,8 @@ export default function App() {
                   section.key !== "silences" &&
                   section.key !== "channels" &&
                   section.key !== "templates" &&
-                  section.key !== "routes",
+                  section.key !== "routes" &&
+                  section.key !== "shares",
               )
               .map((section) => (
                 <Route

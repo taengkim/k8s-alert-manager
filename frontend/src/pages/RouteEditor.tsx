@@ -16,7 +16,6 @@ import {
   Tag,
   Typography,
 } from "antd";
-import type { FormInstance } from "antd";
 import { useTeam } from "../auth/TeamContext";
 import { useDefaultCluster } from "../api/useDefaultCluster";
 import { ApiError } from "../api/client";
@@ -39,6 +38,7 @@ import type {
 } from "../api/routes";
 import { listTemplates } from "../api/templates";
 import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
+import MatcherListEditor from "../components/MatcherListEditor";
 
 const { Text, Title } = Typography;
 
@@ -52,17 +52,6 @@ const SEVERITY_OPTIONS = [
   { value: "warning", label: "warning" },
   { value: "info", label: "info" },
   { value: "none", label: "없음" },
-];
-
-const MATCHER_KIND_OPTIONS: { value: MatcherKind; label: string }[] = [
-  { value: "include", label: "포함" },
-  { value: "exclude", label: "제외" },
-];
-
-const MATCHER_TARGET_OPTIONS: { value: MatcherTarget; label: string }[] = [
-  { value: "alertname", label: "알럿명" },
-  { value: "label", label: "레이블" },
-  { value: "annotation", label: "어노테이션" },
 ];
 
 // Preview only cares about what feeds evaluate() -- not channel_ids (which
@@ -121,16 +110,7 @@ interface FormValues {
   channel_ids: number[];
   matchers: MatcherFormValue[];
   template_id?: number;
-}
-
-function isValidRegex(pattern: string): boolean {
-  try {
-    // eslint-disable-next-line no-new
-    new RegExp(pattern);
-    return true;
-  } catch {
-    return false;
-  }
+  include_shared: boolean;
 }
 
 function toBody(values: FormValues): RouteWriteInput {
@@ -147,6 +127,7 @@ function toBody(values: FormValues): RouteWriteInput {
     clusters: values.clusters?.length ? values.clusters : undefined,
     channel_ids: values.action === "suppress" ? [] : (values.channel_ids ?? []),
     template_id: values.action === "suppress" ? undefined : values.template_id,
+    include_shared: values.include_shared ?? false,
     matchers: (values.matchers ?? []).map((m) => ({
       kind: m.kind,
       target: m.target,
@@ -215,6 +196,7 @@ export default function RouteEditor() {
       clusters: r.clusters ?? [],
       channel_ids: r.channel_ids,
       template_id: r.template_id ?? undefined,
+      include_shared: r.include_shared,
       matchers: r.matchers.map((m) => ({
         kind: m.kind,
         target: m.target,
@@ -351,6 +333,7 @@ export default function RouteEditor() {
           clusters: [],
           channel_ids: [],
           matchers: [],
+          include_shared: false,
         }}
         onFinish={handleFinish}
       >
@@ -370,6 +353,15 @@ export default function RouteEditor() {
         </Form.Item>
 
         <Form.Item name="enabled" label="활성화" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+
+        <Form.Item
+          name="include_shared"
+          label="공유 알럿 포함"
+          valuePropName="checked"
+          help="받는 공유(view_notify)의 알럿도 이 규칙으로 알림"
+        >
           <Switch />
         </Form.Item>
 
@@ -407,26 +399,7 @@ export default function RouteEditor() {
         </Form.Item>
 
         <Title level={5}>매처</Title>
-        <Form.List name="matchers">
-          {(fields, { add, remove }) => (
-            <>
-              {fields.map((field) => (
-                <MatcherRow
-                  key={field.key}
-                  field={field}
-                  form={form}
-                  onRemove={() => remove(field.name)}
-                />
-              ))}
-              <Button
-                onClick={() => add({ kind: "include", target: "alertname", pattern: "" })}
-                style={{ marginBottom: 16 }}
-              >
-                매처 추가
-              </Button>
-            </>
-          )}
-        </Form.List>
+        <MatcherListEditor name="matchers" form={form} />
 
         {action === "notify" && (
           <>
@@ -498,59 +471,5 @@ export default function RouteEditor() {
         />
       )}
     </div>
-  );
-}
-
-function MatcherRow({
-  field,
-  form,
-  onRemove,
-}: {
-  field: { key: number; name: number };
-  form: FormInstance<FormValues>;
-  onRemove: () => void;
-}) {
-  const target = Form.useWatch(["matchers", field.name, "target"], form) as
-    | MatcherTarget
-    | undefined;
-  const needsKey = target === "label" || target === "annotation";
-
-  return (
-    <Space align="baseline" style={{ display: "flex", marginBottom: 8, flexWrap: "wrap" }}>
-      <Form.Item name={[field.name, "kind"]} initialValue="include" noStyle>
-        <Segmented options={MATCHER_KIND_OPTIONS} />
-      </Form.Item>
-      <Form.Item name={[field.name, "target"]} initialValue="alertname" noStyle>
-        <Select style={{ width: 140 }} options={MATCHER_TARGET_OPTIONS} />
-      </Form.Item>
-      {needsKey && (
-        <Form.Item
-          name={[field.name, "key"]}
-          rules={[{ required: true, message: "키를 입력하세요" }]}
-          noStyle
-        >
-          <Input placeholder="key" style={{ width: 140 }} />
-        </Form.Item>
-      )}
-      <Form.Item
-        name={[field.name, "pattern"]}
-        rules={[
-          { required: true, message: "패턴을 입력하세요" },
-          {
-            validator: async (_, value?: string) => {
-              if (value && !isValidRegex(value)) {
-                throw new Error("올바른 정규식이 아닙니다");
-              }
-            },
-          },
-        ]}
-        noStyle
-      >
-        <Input placeholder="정규식 패턴" style={{ width: 220 }} />
-      </Form.Item>
-      <Button danger onClick={onRemove}>
-        삭제
-      </Button>
-    </Space>
   );
 }

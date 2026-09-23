@@ -163,7 +163,17 @@ export default function Alerts() {
           <Badge status="default" text={state || "-"} />
         ),
     },
-    { title: "알럿명", dataIndex: "alertname", key: "alertname" },
+    {
+      title: "알럿명",
+      dataIndex: "alertname",
+      key: "alertname",
+      render: (value: string, record: LiveAlert) => (
+        <Space size={4}>
+          {value}
+          {record.shared_from && <Tag color="blue">공유: {record.shared_from}</Tag>}
+        </Space>
+      ),
+    },
     {
       title: "심각도",
       dataIndex: "severity",
