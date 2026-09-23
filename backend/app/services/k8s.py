@@ -12,6 +12,8 @@ loop on a k8s API round trip.
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from typing import Any
 
 import yaml
@@ -34,12 +36,25 @@ MANAGED_BY_VALUE = "kam"
 
 
 class K8sUnavailableError(Exception):
-    """Raised when the k8s API server can't be reached, or returns an
-    unexpected error we can't attribute to conflict/ownership."""
+    """Raised when the k8s API server can't be reached (connect failure,
+    5xx), or its credentials/config can't even be built."""
+
+
+class K8sBadRequestError(Exception):
+    """Raised for any other 4xx from the k8s API server -- something about
+    *our own request* was malformed, as opposed to the cluster being down.
+    The API layer maps this to 422, surfacing the k8s message since it
+    describes the caller's own input."""
 
 
 class RuleConflictError(Exception):
     """Raised when creating a PrometheusRule whose name already exists."""
+
+
+class RuleUpdateConflictError(Exception):
+    """Raised when a replace/delete's resourceVersion precondition fails
+    (409): someone else modified or deleted the rule between our read and
+    write."""
 
 
 class RuleForbiddenError(Exception):
@@ -65,6 +80,17 @@ def _is_owned_by(obj: dict[str, Any] | None, team_id: int) -> bool:
     )
 
 
+def _map_status(exc: ApiException) -> Exception:
+    """Map an ApiException that has no caller-specific handling for its
+    status code (404/409 are always handled by the caller first) to a typed
+    error: any other 4xx is our own bad request; anything else (5xx, or no
+    status at all) means the cluster itself is unavailable."""
+    status_code = exc.status or 0
+    if 400 <= status_code < 500:
+        return K8sBadRequestError(str(exc))
+    return K8sUnavailableError(str(exc))
+
+
 class K8sClientFactory:
     """Caches per-cluster `ApiClient`s, invalidated when the cluster row
     changes.
@@ -72,33 +98,81 @@ class K8sClientFactory:
     Cache key is `(cluster.id, cluster.updated_at)` so an edit to a
     cluster's credentials/auth kind naturally evicts the stale client on the
     next `get()` -- editing `updated_at` is enough, no explicit invalidation
-    call needed.
+    call needed. Each cache entry also carries the path of any CA-cert temp
+    file written for it (token auth kind only), so it can be removed once
+    the entry is evicted rather than accumulating forever.
     """
 
     def __init__(self) -> None:
-        self._cache: dict[int, tuple[Any, ApiClient]] = {}
+        self._cache: dict[int, tuple[Any, ApiClient, str | None]] = {}
 
     def get(self, cluster: Cluster) -> ApiClient:
         cached = self._cache.get(cluster.id)
         if cached is not None and cached[0] == cluster.updated_at:
             return cached[1]
 
-        api_client = self._build(cluster)
-        self._cache[cluster.id] = (cluster.updated_at, api_client)
+        if cached is not None:
+            self._cleanup_ca_file(cached[2])
+
+        api_client, ca_path = self._build(cluster)
+        self._cache[cluster.id] = (cluster.updated_at, api_client, ca_path)
         return api_client
 
-    def _build(self, cluster: Cluster) -> ApiClient:
+    @staticmethod
+    def _cleanup_ca_file(path: str | None) -> None:
+        if path is None:
+            return
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    def _build(self, cluster: Cluster) -> tuple[ApiClient, str | None]:
+        """Build a client for `cluster`, containing any credential/config
+        failure to a generic K8sUnavailableError.
+
+        This is deliberately paranoid: decrypting/parsing a cluster's stored
+        credentials can fail in several library-specific ways (bad Fernet
+        token, invalid YAML/JSON, a malformed kubeconfig dict rejected by
+        the kubernetes client's own config loader, ...), and every one of
+        those exceptions' messages can embed a fragment of the *decrypted*
+        secret. None of that text may ever reach a log line or an API
+        response -- only the cluster name and the exception's class name are
+        logged, at most.
+        """
+        try:
+            return self._build_unsafe(cluster)
+        except K8sUnavailableError:
+            # Already a deliberate, safe-to-surface message (e.g. "unknown
+            # auth kind") -- pass it through as-is rather than re-wrapping.
+            raise
+        except Exception as exc:
+            # Broad on purpose: covers cryptography.fernet.InvalidToken,
+            # yaml.YAMLError, json.JSONDecodeError, KeyError (missing
+            # expected field in decrypted JSON), and the kubernetes client's
+            # own config.ConfigException, among others -- all of which can
+            # carry decrypted credential material in their message.
+            logger.warning(
+                "failed to build k8s client for cluster '%s': %s",
+                cluster.name,
+                type(exc).__name__,
+            )
+            raise K8sUnavailableError(
+                f"cluster '{cluster.name}' credentials/config invalid"
+            ) from exc
+
+    def _build_unsafe(self, cluster: Cluster) -> tuple[ApiClient, str | None]:
         if cluster.k8s_auth_kind == "incluster":
             config.load_incluster_config()
-            return ApiClient()
+            return ApiClient(), None
 
         if cluster.k8s_auth_kind == "kubeconfig":
             if cluster.credentials_encrypted:
                 kubeconfig_dict = yaml.safe_load(decrypt_str(cluster.credentials_encrypted))
-                return config.new_client_from_config_dict(kubeconfig_dict)
+                return config.new_client_from_config_dict(kubeconfig_dict), None
             # Dev default: no stored credentials means "use whatever the
             # host's default kubeconfig/current-context points at".
-            return config.new_client_from_config()
+            return config.new_client_from_config(), None
 
         if cluster.k8s_auth_kind == "token":
             if not cluster.credentials_encrypted:
@@ -110,15 +184,17 @@ class K8sClientFactory:
             configuration.api_key_prefix["authorization"] = "Bearer"
             configuration.api_key["authorization"] = creds["token"]
             ca_cert = creds.get("ca_cert")
+            ca_path: str | None = None
             if ca_cert:
-                configuration.ssl_ca_cert = _write_ca_cert(cluster.id, ca_cert)
+                ca_path = _write_ca_cert(ca_cert)
+                configuration.ssl_ca_cert = ca_path
             else:
                 # No CA provided: accept an unverified TLS connection rather
                 # than fail closed. This is a deliberate dev/self-signed-
                 # cluster accommodation -- clusters with a real CA should
                 # always supply ca_cert.
                 configuration.verify_ssl = False
-            return ApiClient(configuration)
+            return ApiClient(configuration), ca_path
 
         raise K8sUnavailableError(
             f"unknown k8s_auth_kind '{cluster.k8s_auth_kind}' for cluster '{cluster.name}'"
@@ -146,6 +222,8 @@ class K8sClientFactory:
                     label_selector=_label_selector(team_id),
                 )
             except ApiException as exc:
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
             return result.get("items", [])
 
@@ -165,6 +243,8 @@ class K8sClientFactory:
             except ApiException as exc:
                 if exc.status == 404:
                     return None
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
 
         return await asyncio.to_thread(_call)
@@ -184,6 +264,8 @@ class K8sClientFactory:
                 if exc.status == 409:
                     name = body.get("metadata", {}).get("name", "?")
                     raise RuleConflictError(f"rule '{name}' already exists") from exc
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
 
         return await asyncio.to_thread(_call)
@@ -197,13 +279,21 @@ class K8sClientFactory:
                 f"rule '{name}' is not managed by kam for this team"
             )
 
+        try:
+            resource_version = existing["metadata"]["resourceVersion"]
+        except KeyError as exc:
+            raise K8sUnavailableError(
+                f"rule '{name}' has no resourceVersion; refusing to replace"
+            ) from exc
+
+        # Copy rather than mutate the caller's body: build_prometheus_rule's
+        # manifest is only ever fed to one call site today, but this
+        # function has no business rewriting a dict handed to it by
+        # someone else.
+        body = {**body, "metadata": {**body.get("metadata", {}), "resourceVersion": resource_version}}
+
         def _call() -> dict[str, Any]:
             api = self._co_api(cluster)
-            # Carry over resourceVersion for optimistic-concurrency; without
-            # it the API server rejects the replace as a conflict.
-            body.setdefault("metadata", {})["resourceVersion"] = existing["metadata"][
-                "resourceVersion"
-            ]
             try:
                 return api.replace_namespaced_custom_object(
                     group=RULE_GROUP,
@@ -214,6 +304,14 @@ class K8sClientFactory:
                     body=body,
                 )
             except ApiException as exc:
+                if exc.status == 409:
+                    # The resourceVersion precondition failed: someone else
+                    # wrote this rule between our read and this write.
+                    raise RuleUpdateConflictError(
+                        f"rule '{name}' was modified concurrently"
+                    ) from exc
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
 
         return await asyncio.to_thread(_call)
@@ -225,8 +323,18 @@ class K8sClientFactory:
                 f"rule '{name}' is not managed by kam for this team"
             )
 
+        try:
+            resource_version = existing["metadata"]["resourceVersion"]
+        except KeyError as exc:
+            raise K8sUnavailableError(
+                f"rule '{name}' has no resourceVersion; refusing to delete"
+            ) from exc
+
         def _call() -> None:
             api = self._co_api(cluster)
+            delete_options = client.V1DeleteOptions(
+                preconditions=client.V1Preconditions(resource_version=resource_version)
+            )
             try:
                 api.delete_namespaced_custom_object(
                     group=RULE_GROUP,
@@ -234,8 +342,22 @@ class K8sClientFactory:
                     namespace=cluster.rules_namespace,
                     plural=RULE_PLURAL,
                     name=name,
+                    body=delete_options,
                 )
             except ApiException as exc:
+                if exc.status == 409:
+                    # Precondition failed: the rule was modified (its
+                    # resourceVersion moved on) between our read and this
+                    # delete.
+                    raise RuleUpdateConflictError(
+                        f"rule '{name}' was modified concurrently"
+                    ) from exc
+                if exc.status == 404:
+                    # Already gone -- e.g. a concurrent delete beat us to
+                    # it. The desired end state (rule absent) is achieved.
+                    return
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
 
         await asyncio.to_thread(_call)
@@ -246,20 +368,29 @@ class K8sClientFactory:
             try:
                 result = api.list_namespace()
             except ApiException as exc:
+                raise _map_status(exc) from exc
+            except Exception as exc:
                 raise K8sUnavailableError(str(exc)) from exc
             return [item.metadata.name for item in result.items]
 
         return await asyncio.to_thread(_call)
 
 
-def _write_ca_cert(cluster_id: int, ca_cert_pem: str) -> str:
-    """Persist a token-auth cluster's CA cert to a stable per-cluster path so
-    `Configuration.ssl_ca_cert` (which wants a file path, not raw PEM) has
-    something to read.
-    """
-    import tempfile
-    from pathlib import Path
+def _write_ca_cert(ca_cert_pem: str) -> str:
+    """Write a token-auth cluster's CA cert to a fresh, freshly-created
+    0600 temp file (the k8s client wants a file path, not raw PEM).
 
-    path = Path(tempfile.gettempdir()) / f"kam-cluster-{cluster_id}-ca.pem"
-    path.write_text(ca_cert_pem)
-    return str(path)
+    Uses `mkstemp` rather than `NamedTemporaryFile` so the file is created
+    with owner-only permissions atomically at creation time, and the path
+    is unpredictable (no cluster id embedded in it). The caller
+    (`K8sClientFactory`) owns removing this file when its cache entry is
+    evicted.
+    """
+    fd, path = tempfile.mkstemp(prefix="kam-ca-", suffix=".pem")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(ca_cert_pem)
+    except BaseException:
+        os.unlink(path)
+        raise
+    return path
