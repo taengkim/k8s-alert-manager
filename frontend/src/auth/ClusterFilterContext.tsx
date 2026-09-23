@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { listClusters } from "../api/admin";
@@ -66,6 +66,26 @@ export function ClusterFilterProvider({ children }: { children: ReactNode }) {
     }
     setSearchParams(next, { replace: true });
   };
+
+  // Reconcile a stale selection against the authoritative cluster list once
+  // it's loaded: an id that no longer exists at all (the cluster was
+  // deleted -- as opposed to merely disabled, which activeClusters below
+  // already honors for an explicit pick) would otherwise silently persist
+  // in the URL/localStorage forever, sending every read view a dead
+  // cluster_id (empty results, no error) and showing a bare numeric tag in
+  // the header select. Runs whenever the fetched cluster list itself
+  // changes (first load, or a later refetch after an admin deletes a
+  // cluster elsewhere) -- not on every selectedIds change, so this can't
+  // fight a user's own in-progress selection.
+  useEffect(() => {
+    if (clustersQuery.isLoading || selectedIds.length === 0) return;
+    const existingIds = new Set(clusters.map((c) => c.id));
+    const pruned = selectedIds.filter((id) => existingIds.has(id));
+    if (pruned.length !== selectedIds.length) {
+      setSelectedIds(pruned);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clusters, clustersQuery.isLoading]);
 
   const activeClusters = useMemo(() => {
     if (selectedIds.length === 0) return clusters.filter((c) => c.enabled);
