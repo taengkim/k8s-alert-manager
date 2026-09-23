@@ -237,6 +237,32 @@ async def test_payload_is_frozen_with_app_url_and_runbook_lift(app) -> None:
         assert payload["grafana_url"] == "https://g/d"
 
 
+async def test_payload_grafana_url_falls_back_to_cluster_when_no_annotation(app) -> None:
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session, "platform")
+        cluster = Cluster(
+            name="rt-cluster-grafana",
+            display_name="rt-cluster-grafana",
+            prometheus_url="http://prom",
+            alertmanager_url="http://am",
+            grafana_url="https://cluster-grafana.example.com",
+            webhook_token_hash="hash-rt-cluster-grafana",
+        )
+        session.add(cluster)
+        await session.flush()
+        channel = await _create_channel(session, team)
+        await _create_rule(session, team, name="r1", channels=[channel])
+        event = await _create_event(session, cluster, team, alertname="HighCpu")
+
+        await route_event(session, event, "firing")
+        await session.commit()
+
+        row = (await session.execute(select(NotificationOutbox))).scalar_one()
+        assert row.payload["grafana_url"] == (
+            "https://cluster-grafana.example.com/alerting/list?queryString=HighCpu"
+        )
+
+
 async def test_disabled_rule_is_not_loaded_at_all(app) -> None:
     async with db_module.async_session_factory() as session:
         team = await _create_team(session, "platform")

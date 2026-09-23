@@ -27,10 +27,12 @@ from app.channels.base import AlertNotification
 from app.config import get_settings
 from app.models.alert import AlertEvent
 from app.models.channel import Channel
+from app.models.cluster import Cluster
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingMatcher, RoutingRule
 from app.models.team import Team
-from app.services.rules import GRAFANA_ANNOTATION, RUNBOOK_ANNOTATION
+from app.services.grafana import resolve_grafana_url
+from app.services.rules import RUNBOOK_ANNOTATION
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +270,9 @@ class RoutingOutcome:
     channels_notified: int = 0
 
 
-def _build_notification(event: AlertEvent, trigger: str, team_slug: str) -> AlertNotification:
+def _build_notification(
+    event: AlertEvent, trigger: str, team_slug: str, cluster: Cluster | None
+) -> AlertNotification:
     settings = get_settings()
     return AlertNotification(
         event_id=event.id,
@@ -284,7 +288,7 @@ def _build_notification(event: AlertEvent, trigger: str, team_slug: str) -> Aler
         team_slug=team_slug,
         app_url=f"{settings.app_base_url}/alerts/history/{event.id}",
         runbook_url=event.annotations.get(RUNBOOK_ANNOTATION),
-        grafana_url=event.annotations.get(GRAFANA_ANNOTATION),
+        grafana_url=resolve_grafana_url(event.annotations, cluster, event.alertname),
     )
 
 
@@ -339,10 +343,19 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     team = await session.get(Team, event.team_id)
     assert team is not None  # event.team_id only ever points at a real team row
 
+    # For the Grafana cluster-fallback link (see resolve_grafana_url) --
+    # event.cluster_id always points at a real row via its FK, so this is
+    # only None if the cluster was concurrently deleted between ingest and
+    # routing, in which case the fallback simply degrades to "annotation
+    # only, no cluster fallback" rather than failing the whole routing pass.
+    cluster = await session.get(Cluster, event.cluster_id)
+
     # Built once -- identical for every channel this event routes to (only
     # channel_id differs per outbox row), so there's no reason to
     # re-validate/re-serialize an AlertNotification per channel.
-    notification_payload = _build_notification(event, trigger, team.slug).model_dump(mode="json")
+    notification_payload = _build_notification(event, trigger, team.slug, cluster).model_dump(
+        mode="json"
+    )
 
     created = 0
     for channel, rule in matched_channels.values():
