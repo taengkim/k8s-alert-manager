@@ -10,7 +10,7 @@ import pytest
 
 from app.models.alert import AlertEvent
 from app.models.routing import RoutingMatcher, RoutingRule
-from app.services.routing import VerdictKind, compile_rule, evaluate
+from app.services.routing import VerdictKind, compile_rule, evaluate, evaluate_compiled
 
 
 def _event(
@@ -131,6 +131,30 @@ def test_suppress_rule_ignores_notify_on_gate_for_firing() -> None:
 def test_suppress_rule_still_gated_when_disabled() -> None:
     rule = _rule(action="suppress", enabled=False)
     assert evaluate(_event(), rule, []).kind is VerdictKind.GATED
+
+
+def test_trigger_override_wins_over_event_status() -> None:
+    # event.status="resolved" would gate this rule (notify_on_resolved
+    # defaults to False) if the gate read event.status directly -- an
+    # explicit trigger override must take precedence, since that's the
+    # whole point of the parameter (preview evaluating "as if firing"
+    # against events whose stored status may since have changed).
+    rule = _rule(notify_on_firing=True, notify_on_resolved=False)
+    event = _event(status="resolved")
+    assert evaluate(event, rule, [], trigger="firing").kind is VerdictKind.MATCHED
+    assert evaluate(event, rule, [], trigger="resolved").kind is VerdictKind.GATED
+    # Omitted -> falls back to event.status, same as before this param existed.
+    assert evaluate(event, rule, []).kind is VerdictKind.GATED
+
+
+def test_evaluate_compiled_matches_evaluate_for_the_same_inputs() -> None:
+    rule = _rule(severities=["critical"])
+    matchers = [_matcher(kind="include", target="alertname", pattern="Cpu")]
+    event = _event(alertname="HighCpuUsage", severity="critical")
+
+    compiled = compile_rule(rule, matchers)
+    assert evaluate_compiled(event, compiled).kind is VerdictKind.MATCHED
+    assert evaluate(event, rule, matchers).kind is VerdictKind.MATCHED
 
 
 # --- step 2: severities -----------------------------------------------------

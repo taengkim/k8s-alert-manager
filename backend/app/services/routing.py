@@ -164,19 +164,26 @@ def _matcher_value(event: AlertEvent, matcher: CompiledMatcher) -> str | None:
     return None
 
 
-def evaluate(event: AlertEvent, rule: RoutingRule, matchers: Sequence[RoutingMatcher]) -> Verdict:
-    """Evaluate one rule against one event, cheapest checks first.
+def evaluate_compiled(
+    event: AlertEvent, compiled: CompiledRule, *, trigger: str | None = None
+) -> Verdict:
+    """Evaluate one pre-compiled rule against one event, cheapest checks
+    first.
 
-    `trigger` for the notify_on_firing/notify_on_resolved gate is read
-    straight off `event.status` -- by the time this runs (inside
-    `route_event`, called from `on_event_transition`), the event's status
-    has already been updated to reflect the transition being routed.
+    `trigger` drives the notify_on_firing/notify_on_resolved gate; when
+    omitted it defaults to `event.status`, which is correct for
+    `route_event` (by the time that runs, inside `on_event_transition`,
+    the event's status has already been updated to reflect the transition
+    being routed -- trigger and status are the same value there). Preview
+    passes `trigger="firing"` explicitly instead: the question a preview
+    answers is "would this rule have notified when this alert fired",
+    regardless of whether the stored event has since resolved.
 
     A 'suppress' rule ignores the notify_on_firing/resolved gate entirely
     (it always evaluates, regardless of trigger) -- suppression is a "never
     notify for this" decision, not a firing-vs-resolved preference.
     """
-    compiled = compile_rule(rule, matchers)
+    effective_trigger = trigger if trigger is not None else event.status
 
     # 0. clusters filter.
     if compiled.clusters is not None and event.cluster_id not in compiled.clusters:
@@ -186,9 +193,9 @@ def evaluate(event: AlertEvent, rule: RoutingRule, matchers: Sequence[RoutingMat
     if not compiled.enabled:
         return Verdict(VerdictKind.GATED)
     if compiled.action != "suppress":
-        if event.status == "firing" and not compiled.notify_on_firing:
+        if effective_trigger == "firing" and not compiled.notify_on_firing:
             return Verdict(VerdictKind.GATED)
-        if event.status == "resolved" and not compiled.notify_on_resolved:
+        if effective_trigger == "resolved" and not compiled.notify_on_resolved:
             return Verdict(VerdictKind.GATED)
 
     # 2. severities.
@@ -230,6 +237,27 @@ def evaluate(event: AlertEvent, rule: RoutingRule, matchers: Sequence[RoutingMat
             return Verdict(VerdictKind.EXCLUDED, blocking_matcher_position=matcher.position)
 
     return Verdict(VerdictKind.MATCHED)
+
+
+def evaluate(
+    event: AlertEvent,
+    rule: RoutingRule,
+    matchers: Sequence[RoutingMatcher],
+    *,
+    trigger: str | None = None,
+) -> Verdict:
+    """Compile `rule`+`matchers` and evaluate `event` against it -- the
+    convenience entry point for one-off calls (tests, route_event's
+    per-rule loop), where compiling once per call is cheap enough:
+    Python's own `re.compile` keeps an internal cache keyed by pattern
+    string, so re-compiling an identical pattern on every call is
+    effectively free. Callers evaluating one rule against MANY events
+    (`preview_rule`) should call `compile_rule` once up front and use
+    `evaluate_compiled` directly instead of paying per-event overhead
+    (and, for `compile_rule` itself, per-event log spam on any invalid
+    pattern).
+    """
+    return evaluate_compiled(event, compile_rule(rule, matchers), trigger=trigger)
 
 
 @dataclass
@@ -287,18 +315,22 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     # no notification at all, regardless of what any notify rule would have
     # matched.
     for rule in suppress_rules:
-        if evaluate(event, rule, rule.matchers).matched:
+        if evaluate(event, rule, rule.matchers, trigger=trigger).matched:
             event.suppressed_by_rule_id = rule.id
             return RoutingOutcome(routed=False, reason="suppressed", suppressed_by_rule_id=rule.id)
 
     # Notify rules are NOT first-match-wins: every matching rule contributes
     # its channels to one union, deduped by channel id (a channel reachable
     # via two matching rules gets exactly one outbox row per trigger, via
-    # the UQ below).
+    # the UQ below). A soft-deleted channel is skipped here -- staging a
+    # notification for it would just be delivered-to-dead-letter work for
+    # the worker to do instead of never creating it at all.
     matched_channels: dict[int, tuple[Channel, RoutingRule]] = {}
     for rule in notify_rules:
-        if evaluate(event, rule, rule.matchers).matched:
+        if evaluate(event, rule, rule.matchers, trigger=trigger).matched:
             for channel in rule.channels:
+                if channel.deleted_at is not None:
+                    continue
                 matched_channels.setdefault(channel.id, (channel, rule))
 
     if not matched_channels:
@@ -307,16 +339,20 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     team = await session.get(Team, event.team_id)
     assert team is not None  # event.team_id only ever points at a real team row
 
+    # Built once -- identical for every channel this event routes to (only
+    # channel_id differs per outbox row), so there's no reason to
+    # re-validate/re-serialize an AlertNotification per channel.
+    notification_payload = _build_notification(event, trigger, team.slug).model_dump(mode="json")
+
     created = 0
     for channel, rule in matched_channels.values():
-        notification = _build_notification(event, trigger, team.slug)
         outbox = NotificationOutbox(
             alert_event_id=event.id,
             routing_rule_id=rule.id,
             channel_id=channel.id,
             team_id=event.team_id,
             trigger=trigger,
-            payload=notification.model_dump(mode="json"),
+            payload=dict(notification_payload),
         )
         try:
             async with session.begin_nested():
@@ -345,6 +381,7 @@ class PreviewResult:
     severity: str | None
     namespace: str | None
     cluster: str
+    status: str
     verdict: VerdictKind
     blocking_matcher_position: int | None = None
 
@@ -359,7 +396,17 @@ async def preview_rule(
 ) -> list[PreviewResult]:
     """Evaluate a draft rule (never persisted) against a team's most
     recent alert events, for the route editor's preview panel.
+
+    Always evaluates as `trigger="firing"`, regardless of an event's
+    current stored status -- the question this answers is "would this
+    rule have notified when this alert fired", which for a since-resolved
+    event is still "as if it had just fired", not "as if it resolved".
+    `compile_rule` is hoisted out of the per-event loop: it's identical for
+    every event this draft is evaluated against, so compiling (and
+    logging any invalid pattern) once instead of up to `limit` times.
     """
+    compiled = compile_rule(rule, matchers)
+
     result = await session.execute(
         select(AlertEvent)
         .where(AlertEvent.team_id == team_id)
@@ -370,7 +417,7 @@ async def preview_rule(
 
     previews: list[PreviewResult] = []
     for event in events:
-        verdict = evaluate(event, rule, matchers)
+        verdict = evaluate_compiled(event, compiled, trigger="firing")
         previews.append(
             PreviewResult(
                 event_id=event.id,
@@ -378,6 +425,7 @@ async def preview_rule(
                 severity=event.severity,
                 namespace=event.namespace,
                 cluster=event.cluster_name,
+                status=event.status,
                 verdict=verdict.kind,
                 blocking_matcher_position=verdict.blocking_matcher_position,
             )

@@ -71,7 +71,7 @@ async def _create_cluster(name: str = "rt-cluster") -> int:
 
 async def _create_event(
     team_id: int, cluster_id: int, *, alertname: str = "HighCpu", severity: str = "critical",
-    fingerprint: str = "fp-1",
+    fingerprint: str = "fp-1", status: str = "firing",
 ) -> int:
     async with db_module.async_session_factory() as session:
         cluster = await session.get(Cluster, cluster_id)
@@ -79,7 +79,7 @@ async def _create_event(
             cluster_id=cluster_id,
             cluster_name=cluster.name,
             fingerprint=fingerprint,
-            status="firing",
+            status=status,
             alertname=alertname,
             severity=severity,
             namespace="kam-demo",
@@ -324,6 +324,32 @@ async def test_update_route_replaces_matchers_and_channels(client: AsyncClient) 
         assert rule is not None
 
 
+async def test_update_route_by_outsider_is_403(app) -> None:
+    team_id = await _create_team("t-update-outsider")
+    channel_id = await _create_channel(team_id)
+
+    async with await _fresh_client(app) as owner:
+        await login_as(owner, username="bob")
+        bob_id = (await owner.get("/api/v1/auth/me")).json()["id"]
+        await _add_membership(team_id, bob_id, "owner")
+        create_resp = await owner.post(
+            f"/api/v1/teams/{team_id}/routes", json=_notify_body(channel_ids=[channel_id])
+        )
+        route_id = create_resp.json()["id"]
+
+    async with await _fresh_client(app) as outsider:
+        await login_as(outsider, username="dave")
+        resp = await outsider.put(
+            f"/api/v1/routes/{route_id}",
+            json=_notify_body(name="hacked", channel_ids=[channel_id]),
+        )
+        assert resp.status_code == 403
+
+    async with db_module.async_session_factory() as session:
+        rule = await session.get(RoutingRule, route_id)
+        assert rule.name != "hacked"
+
+
 async def test_delete_route_owner_only(app) -> None:
     team_id = await _create_team("t-delroute")
     channel_id = await _create_channel(team_id)
@@ -393,3 +419,29 @@ async def test_preview_reports_blocking_matcher_position(client: AsyncClient) ->
     [row] = [r for r in resp.json() if r["event_id"] == event_id]
     assert row["verdict"] == "not_included"
     assert row["blocking_matcher_position"] == 0
+
+
+async def test_preview_includes_stored_status_but_evaluates_as_firing(client: AsyncClient) -> None:
+    """Preview always evaluates as if the alert had just fired, regardless
+    of an event's actual current status -- but the response still surfaces
+    that real status so results stay interpretable.
+    """
+    team_id = await _create_team("t-preview-status")
+    cluster_id = await _create_cluster()
+    resolved_event = await _create_event(
+        team_id, cluster_id, alertname="HighCpu", fingerprint="fp-resolved", status="resolved"
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    # notify_on_firing (default True) is what a firing-trigger evaluation
+    # gates on; notify_on_resolved defaults False. If preview evaluated
+    # using the event's actual (resolved) status instead of firing, this
+    # would come back gated instead of matched.
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes/preview",
+        json=_notify_body(channel_ids=[]),
+    )
+    assert resp.status_code == 200
+    [row] = [r for r in resp.json() if r["event_id"] == resolved_event]
+    assert row["status"] == "resolved"
+    assert row["verdict"] == "matched"

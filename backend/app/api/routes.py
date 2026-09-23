@@ -155,7 +155,12 @@ async def _resolve_channels(
         )
 
     unique_ids = list(dict.fromkeys(channel_ids))
-    result = await session.execute(select(Channel).where(Channel.id.in_(unique_ids)))
+    # A soft-deleted channel is excluded here, same as any other unknown
+    # id -- it's gone from every picker, so referencing it is a validation
+    # error, not a legitimate (if unusual) request.
+    result = await session.execute(
+        select(Channel).where(Channel.id.in_(unique_ids), Channel.deleted_at.is_(None))
+    )
     by_id = {c.id: c for c in result.scalars().all()}
 
     missing = [cid for cid in unique_ids if cid not in by_id]
@@ -320,6 +325,7 @@ async def preview_routes(
             "severity": r.severity,
             "namespace": r.namespace,
             "cluster": r.cluster,
+            "status": r.status,
             "verdict": r.verdict.value,
             "blocking_matcher_position": r.blocking_matcher_position,
         }

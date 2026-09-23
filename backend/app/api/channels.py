@@ -7,6 +7,7 @@ Channel type discovery itself lives in `app/channels/registry.py`.
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -51,7 +52,14 @@ async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
 
 
 async def _get_channel_or_404(session: AsyncSession, channel_id: int) -> Channel:
-    channel = await session.get(Channel, channel_id)
+    """A soft-deleted channel is 404 here -- everywhere except the
+    notifications-history join (which needs the row to still resolve a
+    name) treats it as gone.
+    """
+    result = await session.execute(
+        select(Channel).where(Channel.id == channel_id, Channel.deleted_at.is_(None))
+    )
+    channel = result.scalar_one_or_none()
     if channel is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="channel not found")
     return channel
@@ -150,7 +158,9 @@ async def list_channels(
     _member: User = Depends(require_team_role("member")),
 ) -> list[dict[str, Any]]:
     await _get_team_or_404(session, team_id)
-    result = await session.execute(select(Channel).where(Channel.team_id == team_id))
+    result = await session.execute(
+        select(Channel).where(Channel.team_id == team_id, Channel.deleted_at.is_(None))
+    )
     return [_serialize(channel, registry) for channel in result.scalars().all()]
 
 
@@ -253,8 +263,21 @@ async def delete_channel(
     actor: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
+    """Soft-delete: sets `deleted_at` rather than removing the row.
+
+    `notification_outbox.channel_id` is a NOT NULL FK with no ondelete, so
+    a channel's row has to keep existing for as long as its delivery
+    history does -- the notifications-history join
+    (GET .../history/{id}/notifications) still resolves its name after
+    this. A soft-deleted channel drops out of every listing/picker and
+    can no longer be routed to (see route_event and the outbox worker),
+    and its name becomes reusable by a new channel (the uniqueness
+    constraint only applies among non-deleted rows).
+    """
     channel = await _get_channel_or_404(session, channel_id)
     await _require_team_role(session, channel.team_id, actor, "owner")
+
+    channel.deleted_at = datetime.now(UTC)
 
     await audit.log(
         session,
@@ -264,20 +287,7 @@ async def delete_channel(
         object_type="channel",
         object_ref=channel.name,
     )
-    await session.delete(channel)
-    try:
-        await session.commit()
-    except IntegrityError as exc:
-        # notification_outbox.channel_id is a NOT NULL FK with no ondelete
-        # (Phase 9): a channel with any delivery history (including a
-        # routing_rule_channels join row, though that FK does cascade) must
-        # keep that history, so deleting it is rejected rather than
-        # orphaning or silently losing outbox rows.
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="channel has notification history and cannot be deleted",
-        ) from exc
+    await session.commit()
 
 
 @router.post("/channels/{channel_id}/test", status_code=status.HTTP_202_ACCEPTED)

@@ -15,6 +15,8 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 
+from cryptography.fernet import InvalidToken
+from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -65,6 +67,14 @@ async def claim_batch(
             .where(NotificationOutbox.id.in_(due_ids_subquery))
             .values(status="in_progress", locked_by=worker_id, locked_at=now)
             .returning(NotificationOutbox.id)
+            # Nothing is loaded in this Session that this UPDATE could
+            # invalidate, so there's nothing to synchronize -- and leaving
+            # the default ("evaluate") composes ORM auto-synchronization
+            # with a RETURNING fetch in a way that isn't the well-trodden
+            # path on Postgres. No live-Postgres test for this branch in
+            # this repo yet (Phase 21's packaging work brings a Postgres
+            # profile); reasoned correct against SQLAlchemy 2.0's docs.
+            .execution_options(synchronize_session=False)
         )
         claimed_ids = list(claimed.scalars().all())
         await session.commit()
@@ -130,7 +140,13 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     'dead' -- never leaves it 'in_progress' on return.
     """
     channel = await session.get(Channel, row.channel_id)
-    if channel is None or not channel.enabled:
+    if channel is None:
+        await _mark_dead(session, row, "channel disabled or deleted")
+        return
+    if channel.deleted_at is not None:
+        await _mark_dead(session, row, "channel deleted")
+        return
+    if not channel.enabled:
         await _mark_dead(session, row, "channel disabled or deleted")
         return
 
@@ -142,16 +158,27 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     try:
         raw_config = json.loads(decrypt_str(channel.config_encrypted))
         config = channel_cls.config_schema(**raw_config)
+    except (InvalidToken, json.JSONDecodeError, ValidationError) as exc:
+        # The stored config itself is broken (a Fernet key rotation that
+        # left old ciphertext undecryptable, corrupted JSON, a schema that
+        # changed shape underneath an old config, ...) -- retrying can't
+        # fix bytes that never change between attempts, so this goes
+        # straight to dead instead of burning through 8 backoff attempts
+        # (~40 minutes) for something no amount of waiting will resolve.
+        await _mark_dead(session, row, f"invalid channel config: {type(exc).__name__}: {exc}")
+        return
+
+    try:
         instance = channel_cls(config)
         notification = AlertNotification(**row.payload)
         async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
             await instance.send(notification)
     except Exception as exc:  # noqa: BLE001
         # Deliberately catch-all (ChannelDeliveryError, the asyncio.timeout
-        # block's TimeoutError, and anything else a channel's send() or a
-        # bad stored config could raise): every failure mode gets the same
-        # backoff-and-retry treatment, never an unhandled exception that
-        # would kill the worker loop.
+        # block's TimeoutError, and anything else a channel's send() could
+        # raise): every transient failure mode gets the same backoff-and-
+        # retry treatment, never an unhandled exception that would kill
+        # the worker loop.
         await _mark_delivery_failure(session, row, exc)
         return
 
@@ -190,7 +217,23 @@ async def run_tick(
     async with session_factory() as session:
         rows = await claim_batch(session, worker_id, limit=limit)
         for row in rows:
-            await deliver(row, registry, session)
+            try:
+                await deliver(row, registry, session)
+            except Exception:
+                # deliver() already catches every failure mode a channel's
+                # send() can raise internally -- reaching here means
+                # something broke deliver() itself (e.g. a malformed stored
+                # payload, or the DB connection dropping mid-commit). One
+                # bad row must not stall the rest of this batch; it stays
+                # 'in_progress' and gets reclaimed by the next
+                # lease-recovery pass instead. Roll back so a session left
+                # in a failed-transaction state doesn't take every
+                # remaining row in this batch down with it too.
+                logger.exception(
+                    "outbox worker: unexpected error delivering row id=%s -- skipping",
+                    row.id,
+                )
+                await session.rollback()
         return len(rows)
 
 

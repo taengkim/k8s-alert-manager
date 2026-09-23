@@ -251,3 +251,64 @@ async def test_disabled_rule_is_not_loaded_at_all(app) -> None:
 
         assert outcome.routed is False
         assert outcome.reason == "no_match"
+
+
+async def test_route_event_with_resolved_trigger(app) -> None:
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session, "platform")
+        cluster = await _create_cluster(session)
+        channel = await _create_channel(session, team)
+        await _create_rule(
+            session,
+            team,
+            name="notify-on-resolved",
+            channels=[channel],
+            notify_on_firing=False,
+            notify_on_resolved=True,
+        )
+        event = await _create_event(session, cluster, team, status="resolved")
+
+        outcome = await route_event(session, event, "resolved")
+        await session.commit()
+
+        assert outcome.routed is True
+        assert outcome.channels_notified == 1
+
+        row = (await session.execute(select(NotificationOutbox))).scalar_one()
+        assert row.trigger == "resolved"
+        assert row.payload["trigger"] == "resolved"
+
+
+async def test_firing_and_resolved_outbox_rows_coexist_for_same_event_channel(app) -> None:
+    """The outbox UQ is on (event, channel, trigger) -- a firing routing
+    pass and a later resolved routing pass for the *same* event+channel
+    must both get their own row, not collide as duplicates.
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session, "platform")
+        cluster = await _create_cluster(session)
+        channel = await _create_channel(session, team)
+        await _create_rule(
+            session,
+            team,
+            name="notify-both",
+            channels=[channel],
+            notify_on_firing=True,
+            notify_on_resolved=True,
+        )
+        event = await _create_event(session, cluster, team, status="firing")
+
+        firing_outcome = await route_event(session, event, "firing")
+        await session.commit()
+
+        event.status = "resolved"
+        resolved_outcome = await route_event(session, event, "resolved")
+        await session.commit()
+
+        assert firing_outcome.channels_notified == 1
+        assert resolved_outcome.channels_notified == 1
+
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert {r.trigger for r in rows} == {"firing", "resolved"}
+        assert len(rows) == 2
+        assert all(r.channel_id == channel.id and r.alert_event_id == event.id for r in rows)
