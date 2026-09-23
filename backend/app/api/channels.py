@@ -265,7 +265,19 @@ async def delete_channel(
         object_ref=channel.name,
     )
     await session.delete(channel)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # notification_outbox.channel_id is a NOT NULL FK with no ondelete
+        # (Phase 9): a channel with any delivery history (including a
+        # routing_rule_channels join row, though that FK does cascade) must
+        # keep that history, so deleting it is rejected rather than
+        # orphaning or silently losing outbox rows.
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="channel has notification history and cannot be deleted",
+        ) from exc
 
 
 @router.post("/channels/{channel_id}/test", status_code=status.HTTP_202_ACCEPTED)
