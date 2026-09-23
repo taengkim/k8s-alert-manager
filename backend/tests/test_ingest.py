@@ -6,6 +6,7 @@ IntegrityError race-fallback path.
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +31,7 @@ def _alert(
     kam_team: str | None = "platform",
     severity: str | None = "Critical",
     namespace: str | None = "kam-demo",
-    starts_at: str = "2026-09-22T00:00:00Z",
+    starts_at: str | None = "2026-09-22T00:00:00Z",
     ends_at: str | None = None,
 ) -> AlertmanagerAlert:
     labels = {"alertname": alertname}
@@ -269,6 +270,11 @@ def test_offset_timestamp_normalizes_to_utc() -> None:
     assert parsed.tzinfo == UTC
 
 
+def test_malformed_timestamp_raises_value_error() -> None:
+    with pytest.raises(ValueError):
+        _parse_am_timestamp("not-a-timestamp")
+
+
 # -- C1: UTC normalization / identity dedup across offsets ----------------
 
 
@@ -381,6 +387,89 @@ async def test_batch_with_heartbeat_and_real_alert_handles_both(app) -> None:
 
         await session.refresh(cluster)
         assert cluster.heartbeat_state == "ok"
+
+
+# -- I3: per-alert isolation for bad timestamps ----------------------------
+
+
+async def test_malformed_starts_at_is_skipped_not_raised(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(alerts=[_alert(starts_at="not-a-timestamp")])
+
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.skipped == 1
+        assert result.created == 0
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert rows == []
+
+
+async def test_missing_starts_at_is_skipped(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(alerts=[_alert(starts_at=None)])
+
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.skipped == 1
+        assert result.created == 0
+
+
+async def test_zero_value_starts_at_is_skipped(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(
+            alerts=[_alert(starts_at="0001-01-01T00:00:00Z")]
+        )
+
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.skipped == 1
+        assert result.created == 0
+
+
+async def test_bad_alert_in_batch_does_not_block_good_alerts(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(
+            alerts=[
+                _alert(fingerprint="fp-good-1"),
+                _alert(fingerprint="fp-bad", starts_at="not-a-timestamp"),
+                _alert(fingerprint="fp-good-2"),
+            ]
+        )
+
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.received == 3
+        assert result.skipped == 1
+        assert result.created == 2
+
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert {r.fingerprint for r in rows} == {"fp-good-1", "fp-good-2"}
+
+
+async def test_malformed_ends_at_on_resolved_sets_none_not_skipped(app) -> None:
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        payload = AlertmanagerWebhookPayload(
+            alerts=[_alert(status="resolved", ends_at="not-a-timestamp")]
+        )
+
+        result = await ingest_webhook(session, cluster, payload)
+        await session.commit()
+
+        assert result.skipped == 0
+        assert result.created_resolved == 1
+
+        row = (await session.execute(select(AlertEvent))).scalar_one()
+        assert row.status == "resolved"
+        assert row.ends_at is None
 
 
 async def test_integrity_error_fallback_updates_existing_row(app) -> None:

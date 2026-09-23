@@ -56,8 +56,10 @@ async def test_valid_token_returns_200_with_counts(client: AsyncClient, app) -> 
         "created": 1,
         "created_resolved": 0,
         "resolved": 0,
+        "reopened": 0,
         "repeats": 0,
         "heartbeats_seen": 0,
+        "skipped": 0,
     }
 
     async with db_module.async_session_factory() as session:
@@ -128,6 +130,46 @@ async def test_unknown_fields_are_ignored(client: AsyncClient, app) -> None:
         headers={"Authorization": f"Bearer {get_settings().webhook_token}"},
     )
     assert response.status_code == 200
+
+
+async def test_batch_with_one_malformed_alert_skips_it_and_ingests_rest(
+    client: AsyncClient, app
+) -> None:
+    good_1 = dict(AM_ALERT, fingerprint="am-fp-good-1")
+    bad = dict(AM_ALERT, fingerprint="am-fp-bad", startsAt="not-a-timestamp")
+    good_2 = dict(AM_ALERT, fingerprint="am-fp-good-2")
+
+    response = await client.post(
+        "/api/v1/webhook/alertmanager",
+        json=_webhook_payload(good_1, bad, good_2),
+        headers={"Authorization": f"Bearer {get_settings().webhook_token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["received"] == 3
+    assert body["created"] == 2
+    assert body["skipped"] == 1
+
+    async with db_module.async_session_factory() as session:
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert {r.fingerprint for r in rows} == {"am-fp-good-1", "am-fp-good-2"}
+
+
+async def test_missing_starts_at_in_payload_is_skipped_not_400(
+    client: AsyncClient, app
+) -> None:
+    alert = dict(AM_ALERT)
+    del alert["startsAt"]
+
+    response = await client.post(
+        "/api/v1/webhook/alertmanager",
+        json=_webhook_payload(alert),
+        headers={"Authorization": f"Bearer {get_settings().webhook_token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skipped"] == 1
+    assert body["created"] == 0
 
 
 async def test_webhook_does_not_require_cookie_auth(client: AsyncClient, app) -> None:

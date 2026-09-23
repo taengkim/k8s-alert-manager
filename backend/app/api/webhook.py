@@ -85,6 +85,8 @@ async def receive_alertmanager_webhook(
         "created": result.created,
         "created_resolved": result.created_resolved,
         "resolved": result.resolved,
+        "reopened": result.reopened,
         "repeats": result.repeats,
         "heartbeats_seen": result.heartbeats_seen,
+        "skipped": result.skipped,
     }

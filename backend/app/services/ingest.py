@@ -38,7 +38,10 @@ class AlertmanagerAlert(BaseModel):
     status: str
     labels: dict[str, str] = {}
     annotations: dict[str, str] = {}
-    startsAt: str
+    # Optional despite AM always sending it in practice: a malformed or
+    # missing startsAt must degrade to skipping that one alert (see
+    # `_ingest_one`), not a 400 for the whole batch.
+    startsAt: str | None = None
     endsAt: str | None = None
     fingerprint: str
     generatorURL: str | None = None
@@ -64,6 +67,7 @@ class IngestResult:
     reopened: int = 0
     repeats: int = 0
     heartbeats_seen: int = 0
+    skipped: int = 0
 
 
 def _parse_am_timestamp(value: str | None) -> datetime | None:
@@ -132,6 +136,18 @@ async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: st
 async def _ingest_one(
     session: AsyncSession, cluster: Cluster, alert: AlertmanagerAlert, result: IngestResult
 ) -> None:
+    """Process one alert from a webhook batch.
+
+    Alerts are processed independently: a malformed or missing `startsAt`
+    on one alert skips just that alert (logged, counted in
+    `result.skipped`) rather than raising out of the whole batch --
+    Alertmanager retries a failed delivery forever, so a single bad alert
+    must never take the rest of a batch down with it. `startsAt` has no
+    "treat as now" fallback (a prior version defaulted to `now`, which
+    silently broke dedup by minting a fresh identity on every retry of the
+    same undated alert); a usable identity requires a real `startsAt`, so
+    a missing/zero one is always a skip, never a guess.
+    """
     now = datetime.now(UTC)
     alertname = alert.labels.get("alertname", "")
 
@@ -141,8 +157,42 @@ async def _ingest_one(
         result.heartbeats_seen += 1
         return
 
-    starts_at = _parse_am_timestamp(alert.startsAt) or now
-    ends_at = _parse_am_timestamp(alert.endsAt)
+    try:
+        starts_at = _parse_am_timestamp(alert.startsAt)
+    except ValueError:
+        logger.warning(
+            "skipping alert with malformed startsAt=%r for cluster=%s fingerprint=%s",
+            alert.startsAt,
+            cluster.id,
+            alert.fingerprint,
+        )
+        result.skipped += 1
+        return
+    if starts_at is None:
+        logger.warning(
+            "skipping alert with missing/zero-value startsAt for cluster=%s fingerprint=%s",
+            cluster.id,
+            alert.fingerprint,
+        )
+        result.skipped += 1
+        return
+
+    try:
+        ends_at = _parse_am_timestamp(alert.endsAt)
+    except ValueError:
+        # Unlike startsAt, a bad endsAt doesn't cost the alert its
+        # identity -- there's still a well-formed event to record, just
+        # without a known resolution time. `now()` would be actively
+        # wrong here (it isn't when AM says the alert resolved), so this
+        # degrades to "unresolved" (None) rather than guessing.
+        logger.warning(
+            "malformed endsAt=%r for cluster=%s fingerprint=%s; treating as unresolved",
+            alert.endsAt,
+            cluster.id,
+            alert.fingerprint,
+        )
+        ends_at = None
+
     team_id = await _resolve_team_id(session, alert.labels.get("kam_team"))
     raw_severity = alert.labels.get("severity")
     severity = raw_severity.lower() if raw_severity else None
