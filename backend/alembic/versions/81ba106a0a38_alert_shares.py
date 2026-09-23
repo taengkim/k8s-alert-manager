@@ -35,8 +35,12 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('owner_team_id', 'target_team_id', name='uq_alert_share_owner_target')
     )
+    op.create_index(
+        'ix_alert_shares_target_team_id', 'alert_shares', ['target_team_id'], unique=False
+    )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
+    op.drop_index('ix_alert_shares_target_team_id', table_name='alert_shares')
     op.drop_table('alert_shares')

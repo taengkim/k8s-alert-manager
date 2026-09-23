@@ -8,7 +8,7 @@ into the target team's own routing rules.
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -40,6 +40,12 @@ class AlertShare(Base):
     __table_args__ = (
         UniqueConstraint("owner_team_id", "target_team_id", name="uq_alert_share_owner_target"),
         CheckConstraint("owner_team_id != target_team_id", name="ck_alert_share_owner_ne_target"),
+        # The owner/target UQ above is a composite index led by owner_team_id,
+        # so it doesn't help a lookup by target_team_id alone -- and that's
+        # exactly what every read path queries by (shared_source_team_ids:
+        # "who has shared alerts with me", called on every team-scoped
+        # /live, /history, and /ack-status request).
+        Index("ix_alert_shares_target_team_id", "target_team_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
