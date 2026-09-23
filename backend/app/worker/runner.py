@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.channels.registry import ChannelRegistry
 from app.config import get_settings
+from app.db import register_sqlite_pragmas
 from app.worker.outbox import run_loop
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ async def main() -> None:
     settings = get_settings()
 
     engine = create_async_engine(settings.database_url)
+    register_sqlite_pragmas(engine)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
     registry = ChannelRegistry()

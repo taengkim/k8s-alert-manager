@@ -13,6 +13,9 @@ dist/
 # SQLite
 *.db
 *.sqlite3
+# WAL-mode side files (app.db now enables journal_mode=WAL for SQLite)
+*.db-shm
+*.db-wal
 
 # OMC / superpowers
 .omc/
