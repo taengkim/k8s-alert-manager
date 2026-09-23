@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch, downloadFile } from "./client";
 
 export type AlertEventStatus = "firing" | "resolved";
 
@@ -147,4 +147,47 @@ export interface AlertNotificationRecord {
 
 export function getAlertHistoryNotifications(eventId: number): Promise<AlertNotificationRecord[]> {
   return apiFetch<AlertNotificationRecord[]>(`/alerts/history/${eventId}/notifications`);
+}
+
+// -- export (Phase 12) --------------------------------------------------
+
+export type HistoryExportFormat = "json" | "ndjson";
+
+/** Same filter shape as `getAlertHistory`, minus pagination (an export has
+ * no page/page_size -- it always returns the whole matching set, capped
+ * server-side per `format`). */
+export type HistoryExportFilters = Omit<AlertHistoryFilters, "page" | "pageSize">;
+
+function buildHistoryExportParams(
+  filters: HistoryExportFilters,
+  format: HistoryExportFormat,
+): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filters.teamId !== undefined) params.set("team_id", String(filters.teamId));
+  for (const id of filters.clusterIds ?? []) params.append("cluster_id", String(id));
+  if (filters.status) params.set("status", filters.status);
+  if (filters.severity && filters.severity.length > 0) {
+    params.set("severity", filters.severity.join(","));
+  }
+  if (filters.namespace) params.set("namespace", filters.namespace);
+  if (filters.search) params.set("search", filters.search);
+  if (filters.fromTs) params.set("from_ts", filters.fromTs);
+  if (filters.toTs) params.set("to_ts", filters.toTs);
+  if (filters.includeTest) params.set("include_test", "true");
+  params.set("format", format);
+  return params;
+}
+
+/** Triggers a browser download of the history export (json or ndjson) --
+ * see `downloadFile` for why this isn't a plain `apiFetch` call. */
+export function downloadAlertHistoryExport(
+  filters: HistoryExportFilters,
+  format: HistoryExportFormat,
+): Promise<void> {
+  const params = buildHistoryExportParams(filters, format);
+  const extension = format === "ndjson" ? "ndjson" : "json";
+  return downloadFile(
+    `/alerts/history/export?${params.toString()}`,
+    `kam-alert-history.${extension}`,
+  );
 }

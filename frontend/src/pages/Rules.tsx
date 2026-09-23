@@ -1,13 +1,27 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
-import { Alert, App, Badge, Button, Empty, Popconfirm, Table, Tag, Tooltip, Typography } from "antd";
+import {
+  Alert,
+  App,
+  Badge,
+  Button,
+  Empty,
+  Popconfirm,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography,
+} from "antd";
 import { useNavigate } from "react-router";
+import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
-import { deleteRule, listRules } from "../api/rules";
+import { deleteRule, downloadRulesExport, listRules } from "../api/rules";
 import type { RuleOut } from "../api/rules";
 import type { Cluster } from "../api/types";
+import RuleImportModal from "../components/RuleImportModal";
 
 interface RuleRow extends RuleOut {
   cluster: Cluster;
@@ -31,10 +45,20 @@ export default function Rules() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
   const { activeClusters, isLoading: clusterLoading } = useClusterFilter();
 
   const teamId = currentTeam?.id;
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+
+  const isOwner = useMemo(() => {
+    if (!user || !currentTeam) return false;
+    if (user.is_admin) return true;
+    const membership = user.teams.find((t) => t.id === currentTeam.id);
+    return membership?.role === "owner";
+  }, [user, currentTeam]);
 
   // A team's rules live per-cluster (each is a k8s PrometheusRule on that
   // specific cluster's API server), so the ClusterFilter selection is
@@ -76,6 +100,38 @@ export default function Rules() {
     onError: (err) => {
       message.error(
         err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+      );
+    },
+  });
+
+  // With a row selection, export just those rules (grouped by cluster, since
+  // the export API is per-cluster); with none, export every currently active
+  // cluster's rules -- one file download per cluster either way.
+  const exportMutation = useMutation({
+    mutationFn: async () => {
+      if (!teamId) return;
+      if (selectedRowKeys.length > 0) {
+        const selected = rules.filter((r) =>
+          selectedRowKeys.includes(`${r.cluster.id}-${r.slug}`),
+        );
+        const slugsByCluster = new Map<number, string[]>();
+        for (const rule of selected) {
+          const slugs = slugsByCluster.get(rule.cluster.id) ?? [];
+          slugs.push(rule.slug);
+          slugsByCluster.set(rule.cluster.id, slugs);
+        }
+        for (const [clusterId, slugs] of slugsByCluster) {
+          await downloadRulesExport(teamId, clusterId, { slugs });
+        }
+      } else {
+        for (const cluster of activeClusters) {
+          await downloadRulesExport(teamId, cluster.id);
+        }
+      }
+    },
+    onError: (err) => {
+      message.error(
+        err instanceof ApiError ? `내보내기에 실패했습니다: ${err.detail}` : "내보내기에 실패했습니다",
       );
     },
   });
@@ -182,9 +238,15 @@ export default function Rules() {
             ({rules.length}건)
           </Text>
         </h2>
-        <Button type="primary" onClick={() => navigate("/rules/new")}>
-          룰 생성
-        </Button>
+        <Space>
+          <Button loading={exportMutation.isPending} onClick={() => exportMutation.mutate()}>
+            내보내기{selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}건 선택)` : ""}
+          </Button>
+          {isOwner && <Button onClick={() => setImportModalOpen(true)}>가져오기</Button>}
+          <Button type="primary" onClick={() => navigate("/rules/new")}>
+            룰 생성
+          </Button>
+        </Space>
       </div>
 
       {warnings.map((warning) => (
@@ -193,11 +255,21 @@ export default function Rules() {
 
       <Table<RuleRow>
         rowKey={(record) => `${record.cluster.id}-${record.slug}`}
+        rowSelection={{
+          selectedRowKeys,
+          onChange: (keys) => setSelectedRowKeys(keys as string[]),
+        }}
         loading={isLoading}
         dataSource={rules}
         columns={columns}
         pagination={{ pageSize: 20 }}
         locale={{ emptyText: <Empty description="룰이 없습니다" /> }}
+      />
+
+      <RuleImportModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        teamId={teamId!}
       />
     </div>
   );
