@@ -199,8 +199,12 @@ export default function TemplateEditor() {
   };
 
   const handleInsertVariable = (variable: TemplateVariable) => {
-    const snippet = variable.name.endsWith("()") ? `{{ ${variable.name} }}` : `{{ ${variable.name} }}`;
-    insertAtCursor(activeField.elementId, activeField.fieldName, form, snippet);
+    // `variable.example` is a ready-to-use Jinja snippet the backend already
+    // computes per variable (e.g. "{{ labels.pod }}", "{{ now() | datetime_format }}")
+    // -- inserting `{{ ${variable.name} }}` directly would produce a literal
+    // syntax error for placeholder-style names like "labels.<key>" (the
+    // "<key>" segment isn't a valid identifier), rejected at save time.
+    insertAtCursor(activeField.elementId, activeField.fieldName, form, variable.example);
   };
 
   if (!currentTeam) {
@@ -396,7 +400,7 @@ export default function TemplateEditor() {
                 </Text>
                 <div style={{ fontWeight: 600 }}>{previewResult.rendered.title}</div>
               </div>
-              <div>
+              <div style={{ marginBottom: previewResult.rendered.body_html ? 8 : 0 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   본문
                 </Text>
@@ -404,6 +408,21 @@ export default function TemplateEditor() {
                   {previewResult.rendered.body}
                 </pre>
               </div>
+              {previewResult.rendered.body_html && (
+                <div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    본문 (body_html, HTML 소스 -- 렌더링 없이 텍스트로 표시)
+                  </Text>
+                  {/* Deliberately rendered as plain escaped text (React's
+                      {} interpolation, not dangerouslySetInnerHTML) -- this
+                      panel shows the rendered HTML *source* for inspection,
+                      never executes it. A visual HTML preview is out of
+                      scope for this phase. */}
+                  <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
+                    {previewResult.rendered.body_html}
+                  </pre>
+                </div>
+              )}
             </>
           ) : (
             <Text type="secondary">
