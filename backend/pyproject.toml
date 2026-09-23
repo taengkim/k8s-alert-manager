@@ -16,6 +16,9 @@ dependencies = [
     "pyjwt",
     "cryptography",
     "kubernetes>=36.0.3",
+    "aiosmtplib",
+    "jinja2",
+    "email-validator",
 ]
 
 [dependency-groups]

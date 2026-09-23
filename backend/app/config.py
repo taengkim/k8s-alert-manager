@@ -27,6 +27,22 @@ class Settings(BaseSettings):
     alertmanager_url: str = "http://localhost:30093"
     webhook_token: str = "dev-webhook-token"
 
+    # SMTP connection settings for the built-in email channel. Per-channel
+    # config (recipients, subject prefix) lives in `channels.config_encrypted`
+    # instead -- these are app-wide (one mail relay per deployment), not
+    # something a channel owner configures. Defaults match the dev Mailpit
+    # container (docker-compose.dev.yml).
+    smtp_host: str = "localhost"
+    smtp_port: int = 1025
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_starttls: bool = False
+
+    # Directory scanned for third-party channel plugin `*.py` files at
+    # startup (see app/channels/registry.py). Empty string disables
+    # plugins-dir discovery entirely.
+    plugins_dir: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
