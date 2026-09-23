@@ -37,6 +37,15 @@ class UTCDateTime(TypeDecorator):
     impl = DateTime(timezone=True)
     cache_ok = True
 
+    def process_bind_param(self, value, dialect):
+        # Enforce the UTC invariant on write, not just by convention: an
+        # aware non-UTC value (e.g. a +09:00 from_ts query param) would
+        # otherwise have its offset silently dropped by SQLite, shifting
+        # the stored/compared instant.
+        if value is not None and value.tzinfo is not None:
+            value = value.astimezone(UTC)
+        return value
+
     def process_result_value(self, value, dialect):
         if value is not None and value.tzinfo is None:
             value = value.replace(tzinfo=UTC)

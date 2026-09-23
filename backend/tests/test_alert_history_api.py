@@ -333,6 +333,35 @@ async def test_search_filter_escapes_percent_as_literal(client: AsyncClient) -> 
     assert [i["alertname"] for i in body["items"]] == ["cpu%usage"]
 
 
+async def test_range_filter_normalizes_non_utc_offsets(client: AsyncClient) -> None:
+    # A +09:00-spelled from_ts must compare as the same instant as its UTC
+    # form: UTCDateTime.process_bind_param normalizes aware params to UTC
+    # before SQLite drops the offset.
+    cluster_id = await _default_cluster_id()
+    instant = datetime(2026, 9, 23, 9, 0, 0, tzinfo=UTC)
+    await _create_event(
+        cluster_id=cluster_id,
+        fingerprint="f-range",
+        alertname="RangeAlert",
+        team_id=None,
+        last_received_at=instant,
+    )
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    # 18:00+09:00 == 09:00Z — the event at exactly 09:00Z must be included.
+    response = await client.get(
+        "/api/v1/alerts/history", params={"from_ts": "2026-09-23T18:00:00+09:00"}
+    )
+    assert response.status_code == 200
+    assert [i["alertname"] for i in response.json()["items"]] == ["RangeAlert"]
+
+    # One second later in +09:00 excludes it.
+    response = await client.get(
+        "/api/v1/alerts/history", params={"from_ts": "2026-09-23T18:00:01+09:00"}
+    )
+    assert response.json()["items"] == []
+
+
 # -- detail ---------------------------------------------------------------
 
 
