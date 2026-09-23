@@ -138,6 +138,82 @@ async def test_delete_team_aborts_with_503_when_a_cluster_is_unreachable(
         assert len(team_delete_rows) == 0
 
 
+async def test_delete_team_aborts_with_503_when_cluster_drops_out_mid_loop(
+    client: AsyncClient, app
+) -> None:
+    """The pre-flight list succeeds (cluster looked reachable), but the
+    cluster stops responding partway through actually deleting the rules.
+    That must abort the whole request with 503 -- not just skip the failed
+    rule and delete the team anyway."""
+    team_id = await _create_team()
+
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.return_value = {
+        "items": [
+            _owned_rule(f"kam-t{team_id}-one", str(team_id)),
+            _owned_rule(f"kam-t{team_id}-two", str(team_id)),
+        ]
+    }
+    fake_api.get_namespaced_custom_object.side_effect = (
+        lambda **kwargs: _owned_rule(kwargs["name"], str(team_id))
+    )
+    fake_api.delete_namespaced_custom_object.side_effect = [
+        None,
+        ApiException(status=500),
+    ]
+    _patch_co_api(app, fake_api)
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.delete(f"/api/v1/teams/{team_id}")
+
+    assert response.status_code == 503
+    assert fake_api.delete_namespaced_custom_object.call_count == 2
+
+    async with db_module.async_session_factory() as session:
+        assert await session.get(Team, team_id) is not None
+
+        team_delete_rows = (
+            await session.execute(select(AuditLog).where(AuditLog.action == "team.delete"))
+        ).scalars().all()
+        assert len(team_delete_rows) == 0
+
+
+async def test_delete_team_continues_past_rule_specific_failures(
+    client: AsyncClient, app
+) -> None:
+    """A rule-specific failure (here: a bad request on one particular
+    delete call) says nothing about the cluster's health -- it shouldn't
+    block cleanup of the rest or the team deletion itself."""
+    team_id = await _create_team()
+
+    fake_api = MagicMock()
+    fake_api.list_namespaced_custom_object.return_value = {
+        "items": [
+            _owned_rule(f"kam-t{team_id}-one", str(team_id)),
+            _owned_rule(f"kam-t{team_id}-two", str(team_id)),
+        ]
+    }
+    fake_api.get_namespaced_custom_object.side_effect = (
+        lambda **kwargs: _owned_rule(kwargs["name"], str(team_id))
+    )
+    fake_api.delete_namespaced_custom_object.side_effect = [
+        ApiException(status=400),
+        None,
+    ]
+    _patch_co_api(app, fake_api)
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    response = await client.delete(f"/api/v1/teams/{team_id}")
+
+    assert response.status_code == 204
+    assert fake_api.delete_namespaced_custom_object.call_count == 2
+
+    async with db_module.async_session_factory() as session:
+        assert await session.get(Team, team_id) is None
+
+
 async def test_delete_team_with_no_rules_still_deletes_the_team(
     client: AsyncClient, app
 ) -> None:

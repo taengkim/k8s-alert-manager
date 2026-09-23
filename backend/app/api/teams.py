@@ -168,11 +168,20 @@ async def delete_team(
     invisible to anyone (the rules list is always team-scoped). So every
     enabled cluster's rules for this team are deleted first.
 
-    This is all-or-nothing: if any enabled cluster can't be reached, nothing
-    is deleted (not the rules on other clusters, not the team) -- an admin
-    should not be able to delete a team while quietly leaving unreachable
-    orphaned rules behind on some cluster with no owner left to clean them
-    up later.
+    Reachability is checked up front (every enabled cluster's rules are
+    listed before any delete is attempted): if any cluster can't be
+    reached, nothing is deleted at all -- not the rules on other clusters,
+    not the team.
+
+    Once cleanup is underway, a per-rule failure that means "this
+    particular rule couldn't be deleted for a rule-specific reason"
+    (already foreign/unmanaged, a concurrent-modification conflict, a bad
+    request) is logged and skipped so it doesn't block the rest. But if the
+    *cluster itself* stops responding partway through (K8sUnavailableError)
+    or something unexpected happens, the whole operation aborts with 503
+    and the team row is left intact -- an admin should never end up with
+    the team gone but rules silently left behind because a cluster dropped
+    out mid-loop.
     """
     team = await _get_team_or_404(session, team_id)
 
@@ -182,17 +191,18 @@ async def delete_team(
         .all()
     )
 
+    unreachable_detail = (
+        "클러스터 {name}에 접근할 수 없어 팀을 삭제할 수 없습니다 (규칙 정리 필요)"
+    )
+
     rules_by_cluster: list[tuple[Cluster, list[dict[str, Any]]]] = []
     for cluster in clusters:
         try:
             raw_rules = await k8s.list_rules(cluster, team.id)
-        except K8sUnavailableError as exc:
+        except (K8sUnavailableError, K8sBadRequestError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=(
-                    f"클러스터 {cluster.name}에 접근할 수 없어 팀을 삭제할 수 없습니다 "
-                    "(규칙 정리 필요)"
-                ),
+                detail=unreachable_detail.format(name=cluster.name),
             ) from exc
         rules_by_cluster.append((cluster, raw_rules))
 
@@ -203,16 +213,9 @@ async def delete_team(
                 continue
             try:
                 await k8s.delete_rule(cluster, name, team.id)
-            except (
-                RuleForbiddenError,
-                RuleUpdateConflictError,
-                K8sBadRequestError,
-                K8sUnavailableError,
-            ):
-                # Every one of these was just listed via the team-scoped
-                # label selector, so this should always succeed; don't let
-                # one rule's failure (e.g. a race with someone else
-                # deleting it, or the cluster going away mid-loop) block
+            except (RuleForbiddenError, RuleUpdateConflictError, K8sBadRequestError):
+                # Rule-specific: this one couldn't be deleted, but it says
+                # nothing about the cluster's health, so don't let it block
                 # cleanup of the rest.
                 logger.warning(
                     "failed to delete rule '%s' on cluster '%s' during team "
@@ -222,6 +225,34 @@ async def delete_team(
                     team.slug,
                 )
                 continue
+            except K8sUnavailableError as exc:
+                # The cluster itself dropped out mid-loop. We never call
+                # session.commit() until every rule (and the team) is
+                # processed, so raising here rolls back every audit row
+                # staged so far along with it -- the team row itself is
+                # untouched. (Any rules whose k8s-side delete already
+                # succeeded in earlier loop iterations stay deleted; only
+                # their audit trail is lost. That asymmetry is accepted:
+                # k8s and this DB aren't in one transaction.)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=unreachable_detail.format(name=cluster.name),
+                ) from exc
+            except Exception as exc:
+                # Genuinely unexpected -- fail safe the same way as a
+                # cluster outage rather than continuing with the team
+                # half-cleaned-up.
+                logger.exception(
+                    "unexpected error deleting rule '%s' on cluster '%s' "
+                    "during team '%s' deletion",
+                    name,
+                    cluster.name,
+                    team.slug,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=unreachable_detail.format(name=cluster.name),
+                ) from exc
 
             await audit.log(
                 session,
