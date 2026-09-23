@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Alert, App, Button, Drawer, Form, Input, Segmented, Select, Space, Typography } from "antd";
 import { useTeam } from "../auth/TeamContext";
-import { useDefaultCluster } from "../api/useDefaultCluster";
+import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
 import { createRule, getRule, updateRule, validateExpr } from "../api/rules";
 import type { RuleMode, RuleWriteInput, Severity } from "../api/rules";
@@ -125,7 +125,17 @@ export default function RuleEditor() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { currentTeam } = useTeam();
-  const { cluster } = useDefaultCluster();
+  const { clusters } = useClusterFilter();
+  const enabledClusters = useMemo(() => clusters.filter((c) => c.enabled), [clusters]);
+  const [searchParams] = useSearchParams();
+  // Edit mode arrives via /rules/:slug/edit?cluster=<id> (see Rules.tsx's
+  // navigation) since a rule lives on exactly one cluster's k8s API --
+  // create mode has no such context, so the field starts unselected and the
+  // user must pick one (first field in the form).
+  const [clusterId, setClusterId] = useState<number | undefined>(() => {
+    const fromQuery = Number(searchParams.get("cluster"));
+    return Number.isFinite(fromQuery) && fromQuery > 0 ? fromQuery : undefined;
+  });
   const [form] = Form.useForm<FormValues>();
   const [serverError, setServerError] = useState<string | null>(null);
   const [exprValidation, setExprValidation] = useState<ValidateStatus | null>(null);
@@ -143,7 +153,6 @@ export default function RuleEditor() {
   const [promqlExpr, setPromqlExpr] = useState("");
 
   const teamId = currentTeam?.id;
-  const clusterId = cluster?.id;
 
   const builderGeneratedExpr = generateBuilderExpr(cleanBuilderState(builderState));
   const currentExpr = mode === "builder" ? builderGeneratedExpr : promqlExpr;
@@ -244,6 +253,10 @@ export default function RuleEditor() {
 
   const handleFinish = (values: FormValues) => {
     setServerError(null);
+    if (!clusterId) {
+      setServerError("클러스터를 선택하세요");
+      return;
+    }
     if (mode === "builder" && !builderState.metric) {
       setServerError("메트릭을 선택하세요");
       return;
@@ -293,6 +306,20 @@ export default function RuleEditor() {
       {serverError && (
         <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
       )}
+
+      <div style={{ maxWidth: 400, marginBottom: 16 }}>
+        <div style={{ marginBottom: 4 }}>
+          <Text strong>클러스터</Text>
+        </div>
+        <Select
+          style={{ width: "100%" }}
+          placeholder="클러스터를 선택하세요"
+          disabled={isEdit}
+          value={clusterId}
+          onChange={setClusterId}
+          options={enabledClusters.map((c) => ({ value: c.id, label: c.display_name }))}
+        />
+      </div>
 
       <Form<FormValues>
         form={form}
@@ -399,7 +426,12 @@ export default function RuleEditor() {
         </Form.Item>
 
         <Space>
-          <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={saveMutation.isPending}
+            disabled={!clusterId}
+          >
             저장
           </Button>
           <Button onClick={() => navigate("/rules")}>취소</Button>
