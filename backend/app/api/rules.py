@@ -5,7 +5,7 @@ mode -- a guided threshold builder is Phase 5).
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,16 +19,26 @@ from app.services.k8s import (
     MANAGED_BY_LABEL,
     MANAGED_BY_VALUE,
     TEAM_ID_LABEL,
+    K8sBadRequestError,
     K8sClientFactory,
     K8sUnavailableError,
     RuleConflictError,
     RuleForbiddenError,
+    RuleUpdateConflictError,
 )
 from app.services.prometheus import PrometheusClient, PrometheusUnavailableError
-from app.services.rules import RuleWrite, build_prometheus_rule, parse_prometheus_rule
+from app.services.rules import (
+    RULE_SLUG_RE,
+    RuleWrite,
+    build_prometheus_rule,
+    parse_prometheus_rule,
+    rule_object_name,
+)
 
 router = APIRouter(prefix="/api/v1/teams/{team_id}/rules", tags=["rules"])
 validate_router = APIRouter(prefix="/api/v1/rules", tags=["rules"])
+
+SlugPath = Path(pattern=RULE_SLUG_RE)
 
 
 class ValidateRequest(BaseModel):
@@ -85,6 +95,8 @@ async def list_rules(
 
     try:
         raw_rules = await k8s.list_rules(cluster, team.id)
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -138,6 +150,8 @@ async def create_rule(
         created = await k8s.create_rule(cluster, manifest)
     except RuleConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -160,7 +174,7 @@ async def create_rule(
 @router.get("/{slug}")
 async def get_rule(
     team_id: int,
-    slug: str,
+    slug: str = SlugPath,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
@@ -168,7 +182,7 @@ async def get_rule(
 ) -> dict[str, Any]:
     team = await _get_team_or_404(session, team_id)
     cluster = await _get_cluster_or_404(session, cluster_id)
-    name = f"kam-{team.slug}-{slug}"
+    name = rule_object_name(team.id, slug)
 
     obj = await _get_owned_rule_or_404(k8s, cluster, name, team.id)
     return parse_prometheus_rule(obj)
@@ -177,8 +191,8 @@ async def get_rule(
 @router.put("/{slug}")
 async def update_rule(
     team_id: int,
-    slug: str,
     body: RuleWrite,
+    slug: str = SlugPath,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
@@ -187,7 +201,7 @@ async def update_rule(
 ) -> dict[str, Any]:
     team = await _get_team_or_404(session, team_id)
     cluster = await _get_cluster_or_404(session, cluster_id)
-    name = f"kam-{team.slug}-{slug}"
+    name = rule_object_name(team.id, slug)
 
     # 404 for a genuinely absent rule; the ownership guard below (re-checked
     # independently inside k8s.replace_rule) is what turns "exists but not
@@ -210,6 +224,10 @@ async def update_rule(
         updated = await k8s.replace_rule(cluster, name, team.id, manifest)
     except RuleForbiddenError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuleUpdateConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="동시 수정 충돌") from exc
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -232,7 +250,7 @@ async def update_rule(
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rule(
     team_id: int,
-    slug: str,
+    slug: str = SlugPath,
     cluster_id: int = Query(...),
     session: AsyncSession = Depends(get_session),
     k8s: K8sClientFactory = Depends(get_k8s_factory),
@@ -240,7 +258,7 @@ async def delete_rule(
 ) -> None:
     team = await _get_team_or_404(session, team_id)
     cluster = await _get_cluster_or_404(session, cluster_id)
-    name = f"kam-{team.slug}-{slug}"
+    name = rule_object_name(team.id, slug)
 
     await _get_owned_rule_or_404(k8s, cluster, name, team.id, forbidden_as_404=True)
 
@@ -248,6 +266,10 @@ async def delete_rule(
         await k8s.delete_rule(cluster, name, team.id)
     except RuleForbiddenError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RuleUpdateConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="동시 수정 충돌") from exc
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
@@ -283,6 +305,8 @@ async def _get_owned_rule_or_404(
     """
     try:
         obj = await k8s.get_rule(cluster, name)
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)

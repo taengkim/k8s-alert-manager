@@ -8,7 +8,7 @@ from app.api.deps import get_current_user, get_k8s_factory
 from app.db import get_session
 from app.models.cluster import Cluster
 from app.models.user import User
-from app.services.k8s import K8sClientFactory, K8sUnavailableError
+from app.services.k8s import K8sBadRequestError, K8sClientFactory, K8sUnavailableError
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["clusters"])
 namespaces_router = APIRouter(prefix="/api/v1", tags=["clusters"])
@@ -49,6 +49,8 @@ async def list_namespaces(
 
     try:
         return await k8s.list_namespaces(cluster)
+    except K8sBadRequestError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except K8sUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
