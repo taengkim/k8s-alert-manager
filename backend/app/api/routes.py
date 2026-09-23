@@ -53,6 +53,11 @@ class RouteWrite(BaseModel):
     enabled: bool = True
     notify_on_firing: bool = True
     notify_on_resolved: bool = False
+    # Phase 14: when true, this rule also evaluates against alerts shared
+    # into this team via a 'view_notify' AlertShare (see
+    # app.services.routing.route_event's view_notify fan-out). Has no
+    # effect on this team's own alerts either way.
+    include_shared: bool = False
     severities: list[str] | None = None
     namespaces_include: list[str] | None = None
     namespaces_exclude: list[str] | None = None
@@ -223,6 +228,7 @@ def _serialize(rule: RoutingRule) -> dict[str, Any]:
         "enabled": rule.enabled,
         "notify_on_firing": rule.notify_on_firing,
         "notify_on_resolved": rule.notify_on_resolved,
+        "include_shared": rule.include_shared,
         "severities": rule.severities,
         "namespaces_include": rule.namespaces_include,
         "namespaces_exclude": rule.namespaces_exclude,
@@ -278,6 +284,7 @@ async def create_route(
         enabled=body.enabled,
         notify_on_firing=body.notify_on_firing,
         notify_on_resolved=body.notify_on_resolved,
+        include_shared=body.include_shared,
         severities=body.severities,
         namespaces_include=body.namespaces_include,
         namespaces_exclude=body.namespaces_exclude,
@@ -381,6 +388,7 @@ async def update_route(
     rule.enabled = body.enabled
     rule.notify_on_firing = body.notify_on_firing
     rule.notify_on_resolved = body.notify_on_resolved
+    rule.include_shared = body.include_shared
     rule.severities = body.severities
     rule.namespaces_include = body.namespaces_include
     rule.namespaces_exclude = body.namespaces_exclude
