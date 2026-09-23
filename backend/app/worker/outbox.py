@@ -15,7 +15,6 @@ import random
 import time
 from datetime import UTC, datetime, timedelta
 
-from cryptography.fernet import InvalidToken
 from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -158,14 +157,29 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     try:
         raw_config = json.loads(decrypt_str(channel.config_encrypted))
         config = channel_cls.config_schema(**raw_config)
-    except (InvalidToken, json.JSONDecodeError, ValidationError) as exc:
-        # The stored config itself is broken (a Fernet key rotation that
-        # left old ciphertext undecryptable, corrupted JSON, a schema that
-        # changed shape underneath an old config, ...) -- retrying can't
-        # fix bytes that never change between attempts, so this goes
-        # straight to dead instead of burning through 8 backoff attempts
-        # (~40 minutes) for something no amount of waiting will resolve.
+    except (json.JSONDecodeError, ValidationError) as exc:
+        # The stored config's JSON/schema itself is broken (corrupted JSON,
+        # or a schema that changed shape underneath an old config) --
+        # retrying can't fix bytes that never change between attempts, so
+        # this goes straight to dead instead of burning through 8 backoff
+        # attempts (~40 minutes) for something no amount of waiting will
+        # resolve.
+        #
+        # `cryptography.fernet.InvalidToken` (decrypt failure) is
+        # deliberately NOT included here, even though it also means
+        # "this config will never successfully decrypt as-is": it usually
+        # means the *key* is wrong (KAM_SECRET_KEY rotated or
+        # misconfigured on this process), which is an operator-fixable
+        # misconfiguration rather than corrupted data. Fast-deading it
+        # would take down the entire pending queue in a single tick the
+        # moment a key issue hits; falling through to the `except
+        # Exception` below (the normal retry-then-dead-after-8-attempts
+        # path) instead gives an operator ~40 minutes to fix the key
+        # before anything is permanently lost.
         await _mark_dead(session, row, f"invalid channel config: {type(exc).__name__}: {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        await _mark_delivery_failure(session, row, exc)
         return
 
     try:
@@ -213,28 +227,44 @@ async def run_tick(
     *,
     limit: int = 20,
 ) -> int:
-    """Claim and deliver one batch. Returns how many rows were claimed."""
-    async with session_factory() as session:
-        rows = await claim_batch(session, worker_id, limit=limit)
-        for row in rows:
-            try:
+    """Claim one batch, then deliver each row in its own session.
+
+    Each row gets a fresh session (re-fetched by id) rather than sharing
+    one across the whole batch: `Session.rollback()` -- needed to recover
+    from a row whose delivery broke outside `deliver()`'s own try/except --
+    expires every object still attached to that session, so a shared
+    session would leave the *other*, perfectly fine claimed rows in this
+    batch expired too. Their next attribute access would then attempt an
+    implicit lazy-refresh outside of any awaited call, which raises
+    `MissingGreenlet` under SQLAlchemy's asyncio extension -- silently
+    skipping the rest of the batch instead of actually delivering it. A
+    per-row session sidesteps this entirely: one row's failure can't touch
+    any other row's ORM state.
+    """
+    async with session_factory() as claim_session:
+        claimed_ids = [row.id for row in await claim_batch(claim_session, worker_id, limit=limit)]
+
+    for row_id in claimed_ids:
+        try:
+            async with session_factory() as session:
+                row = await session.get(NotificationOutbox, row_id)
+                if row is None:
+                    continue
                 await deliver(row, registry, session)
-            except Exception:
-                # deliver() already catches every failure mode a channel's
-                # send() can raise internally -- reaching here means
-                # something broke deliver() itself (e.g. a malformed stored
-                # payload, or the DB connection dropping mid-commit). One
-                # bad row must not stall the rest of this batch; it stays
-                # 'in_progress' and gets reclaimed by the next
-                # lease-recovery pass instead. Roll back so a session left
-                # in a failed-transaction state doesn't take every
-                # remaining row in this batch down with it too.
-                logger.exception(
-                    "outbox worker: unexpected error delivering row id=%s -- skipping",
-                    row.id,
-                )
-                await session.rollback()
-        return len(rows)
+        except Exception:
+            # deliver() already catches every failure mode a channel's
+            # send() can raise internally -- reaching here means
+            # something broke outside that (e.g. a malformed stored
+            # payload, or the DB connection dropping mid-commit). This
+            # row's session is simply discarded on the way out of the
+            # `async with` block (closing it implicitly rolls back), and
+            # the row stays 'in_progress' for the next lease-recovery pass
+            # to reclaim -- it never touches any other row's session.
+            logger.exception(
+                "outbox worker: unexpected error delivering row id=%s -- skipping",
+                row_id,
+            )
+    return len(claimed_ids)
 
 
 async def run_loop(

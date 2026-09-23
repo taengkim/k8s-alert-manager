@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 import app.db as db_module
-import app.worker.outbox as outbox_module
 from app.channels.base import (
     AlertNotification,
     ChannelDeliveryError,
@@ -407,10 +406,13 @@ async def test_deliver_invalid_stored_config_marks_dead_without_incrementing_att
         assert "invalid channel config" in row.last_error
 
 
-async def test_deliver_corrupted_ciphertext_marks_dead_without_retry(app) -> None:
-    """A config_encrypted value that isn't valid Fernet ciphertext at all
-    (e.g. a secret_key rotation left it undecryptable) is the same "never
-    going to succeed" class of failure as a bad schema -- dead immediately.
+async def test_deliver_corrupted_ciphertext_retries_instead_of_fast_dead(app) -> None:
+    """Undecryptable ciphertext usually means the *key* is wrong (a
+    rotated/misconfigured KAM_SECRET_KEY on this process), not corrupted
+    data -- that's an operator-fixable misconfiguration, so it must go
+    through the normal backoff-and-retry path (giving ~40 minutes to fix
+    the key) rather than fast-deading and wiping out the whole pending
+    queue the moment a key issue hits.
     """
     registry = _registry_with()
     async with db_module.async_session_factory() as session:
@@ -423,42 +425,57 @@ async def test_deliver_corrupted_ciphertext_marks_dead_without_retry(app) -> Non
 
         await deliver(row, registry, session)
 
-        assert row.status == "dead"
-        assert row.attempts == 0
-        assert "invalid channel config" in row.last_error
+        assert row.status == "pending"
+        assert row.attempts == 1
+        assert "InvalidToken" in row.last_error
 
 
 async def test_run_tick_one_bad_row_does_not_block_the_rest_of_the_batch(app) -> None:
     """A failure that escapes deliver() entirely (not one of the failure
     modes it catches internally) must not stop run_tick from delivering
-    the other rows in the same batch.
+    the other rows in the same batch -- regardless of claim order. The
+    poison row is created (and thus claimed) FIRST here specifically to
+    prove that: each row gets its own delivery session, so the poisoned
+    row's session breaking can't expire or otherwise disturb the good
+    row's ORM state in a shared session.
+
+    `registry.get(channel.type)` is the injection point -- it's the one
+    lookup in deliver() genuinely outside any try/except, so raising there
+    is the realistic way to simulate something breaking deliver() itself
+    rather than a channel-level failure it already handles (every failure
+    mode reachable from decrypting/validating a config or calling send()
+    is deliberately caught internally, by design).
     """
-    fake_cls, sent, _fail_queue = _make_fake_channel_type()
-    registry = _registry_with(fake_cls)
+    good_cls, sent, _good_fail_queue = _make_fake_channel_type("good-fake")
+    bad_cls, _bad_sent, _bad_fail_queue = _make_fake_channel_type("bad-fake")
+    registry = _registry_with(good_cls, bad_cls)
 
     async with db_module.async_session_factory() as session:
-        team, cluster, channel_good = await _setup(session, channel_type=fake_cls.type_name)
-        channel_bad = await _create_channel(session, team, type_=fake_cls.type_name, name="bad")
-        event_good = await _create_event(session, cluster, team, fingerprint="fp-good")
+        team, cluster, channel_good = await _setup(session, channel_type=good_cls.type_name)
+        channel_bad = await _create_channel(session, team, type_=bad_cls.type_name, name="bad")
         event_bad = await _create_event(session, cluster, team, fingerprint="fp-bad")
+        event_good = await _create_event(session, cluster, team, fingerprint="fp-good")
+        # Explicitly ordered so the bad row is claimed (and thus attempted)
+        # before the good one -- claim_batch orders by next_attempt_at.
+        bad_row = await _create_outbox_row(
+            session,
+            team,
+            channel_bad,
+            event_bad,
+            next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
         good_row = await _create_outbox_row(session, team, channel_good, event_good)
-        bad_row = await _create_outbox_row(session, team, channel_bad, event_bad)
         await session.commit()
         good_id, bad_id = good_row.id, bad_row.id
-        bad_encrypted = channel_bad.config_encrypted
 
-    real_decrypt = outbox_module.decrypt_str
+    real_get = registry.get
 
-    def flaky_decrypt(token: str) -> str:
-        if token == bad_encrypted:
-            # Deliberately not one of deliver()'s fast-pathed config-error
-            # types -- simulates something breaking deliver() itself
-            # (e.g. a DB blip), which the function has no internal catch
-            # for.
+    def flaky_get(type_name: str):
+        if type_name == bad_cls.type_name:
             raise RuntimeError("simulated unexpected failure")
-        return real_decrypt(token)
+        return real_get(type_name)
 
-    with patch.object(outbox_module, "decrypt_str", side_effect=flaky_decrypt):
+    with patch.object(registry, "get", side_effect=flaky_get):
         claimed = await run_tick(db_module.async_session_factory, registry, "worker-1")
 
     assert claimed == 2
@@ -467,9 +484,11 @@ async def test_run_tick_one_bad_row_does_not_block_the_rest_of_the_batch(app) ->
         good_row = await session.get(NotificationOutbox, good_id)
         bad_row = await session.get(NotificationOutbox, bad_id)
         assert good_row.status == "delivered"
-        # run_tick's per-row guard caught the escaped exception and rolled
-        # back, leaving the bad row claimed (in_progress) for the next
+        # run_tick's per-row session isolated the escaped exception,
+        # leaving the bad row claimed (in_progress) for the next
         # lease-recovery pass rather than stuck mid-transaction or lost.
         assert bad_row.status == "in_progress"
+
+    assert len(sent) == 1
 
     assert len(sent) == 1
