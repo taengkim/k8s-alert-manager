@@ -8,17 +8,19 @@ import { listUsers } from "../api/admin";
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
-// The action namespaces actually written across the backend (grep
-// `action="..."` under app/ -- see app/services/audit.py's callers). Kept
-// as an explicit list rather than derived from data so the filter always
-// offers every known prefix, even one that hasn't fired yet in this
-// deployment.
+// Action namespaces written across the backend (grep `action="..."` under
+// app/ -- see app/services/audit.py's callers). Kept as an explicit list
+// rather than derived from data so the filter always offers every known
+// prefix, even one that hasn't fired yet in this deployment -- there's no
+// enforcement tying this list to the backend, though, so a newly added
+// action prefix still needs to be added here by hand.
 const ACTION_PREFIXES: { value: string; label: string }[] = [
   { value: "alert.", label: "알럿" },
   { value: "auth.", label: "인증" },
   { value: "channel.", label: "채널" },
   { value: "cluster.", label: "클러스터" },
   { value: "history.", label: "이력" },
+  { value: "report.", label: "리포트" },
   { value: "retention.", label: "보관 정책" },
   { value: "route.", label: "라우트" },
   { value: "rule.", label: "규칙" },

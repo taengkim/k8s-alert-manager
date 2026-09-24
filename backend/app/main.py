@@ -61,6 +61,21 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     logger.info("starting %s", settings.app_name)
 
+    # Both defaults are fine for local dev but sign/authenticate real
+    # requests if left unchanged in any other deployment -- warn loudly
+    # rather than fail startup, since a misconfigured-but-running app is
+    # still easier to fix forward than one that refuses to boot.
+    if settings.secret_key == "dev-secret-change-me":
+        logger.warning(
+            "KAM_SECRET_KEY is set to the insecure default 'dev-secret-change-me' -- "
+            "set KAM_SECRET_KEY to a unique secret before deploying outside local dev"
+        )
+    if settings.webhook_token == "dev-webhook-token":
+        logger.warning(
+            "KAM_WEBHOOK_TOKEN is set to the insecure default 'dev-webhook-token' -- "
+            "set KAM_WEBHOOK_TOKEN to a unique secret before deploying outside local dev"
+        )
+
     # Shared client for outbound calls to per-cluster Alertmanager/Prometheus
     # instances, reused across requests instead of reconnecting each time.
     app.state.http_client = httpx.AsyncClient()

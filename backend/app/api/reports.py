@@ -9,6 +9,7 @@ member-readable -- same RBAC split as `app/api/channels.py` and
 trigger outside the schedule's own cadence.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -30,6 +31,8 @@ from app.models.user import User
 from app.services import audit
 from app.services import reports as reports_service
 from app.services.reports import REPORT_TEMPLATE_KIND
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["reports"])
 
@@ -378,6 +381,9 @@ async def run_report_now(
             )
             queued_channels += 1
     except Exception as exc:  # noqa: BLE001 -- surfaced to the caller below.
+        logger.exception(
+            "report run-now failed for schedule '%s' (team %s)", schedule.name, schedule.team_id
+        )
         error = f"{type(exc).__name__}: {exc}"
 
     schedule.last_run_at = now
@@ -394,8 +400,13 @@ async def run_report_now(
     await session.commit()
 
     if error is not None:
+        # Deliberately NOT `error` (which embeds the raw exception message)
+        # -- that can leak internal details (stack traces, DB error text,
+        # SMTP config) into a client-facing response. The detailed text is
+        # still recorded above, in last_status and the audit log, for
+        # whoever is actually debugging this.
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"report generation failed: {error}"
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="리포트 생성에 실패했습니다"
         )
     return {"queued_channels": queued_channels}
 

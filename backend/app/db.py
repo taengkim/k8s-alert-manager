@@ -96,4 +96,4 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 # Import model modules so they register on Base.metadata (needed for both
 # create_all in tests and Alembic autogenerate). Placed at the bottom to
 # avoid a circular import, since model modules do `from app.db import Base`.
-from app import models  # noqa: F401
+from app import models  # noqa: E402,F401

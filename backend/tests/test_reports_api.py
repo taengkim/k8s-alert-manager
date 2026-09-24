@@ -425,18 +425,28 @@ async def test_run_now_member_forbidden(app) -> None:
         assert resp.status_code == 403
 
 
-async def test_run_now_failure_records_error_status_and_returns_502(app) -> None:
+async def test_run_now_failure_records_error_status_and_returns_502(app, caplog) -> None:
     team_id = await _create_team("rep-run-now-fail")
     channel_id = await _create_channel(team_id)
     schedule_id = await _create_schedule(team_id, channel_id)
 
     async with _owner_client(app, team_id, "bob") as owner:
-        with patch(
-            "app.api.reports.reports_service.build_report_data",
-            side_effect=RuntimeError("stats down"),
+        with (
+            patch(
+                "app.api.reports.reports_service.build_report_data",
+                side_effect=RuntimeError("stats down"),
+            ),
+            caplog.at_level("ERROR", logger="app.api.reports"),
         ):
             resp = await owner.post(f"/api/v1/reports/{schedule_id}/run-now")
         assert resp.status_code == 502
+        assert any("run-now failed" in rec.message for rec in caplog.records)
+        # The exception message must NOT leak into the client-facing detail
+        # -- only the fixed, sanitized string. The detailed text still goes
+        # into last_status (checked below) and the audit log for whoever is
+        # actually debugging this.
+        assert "stats down" not in resp.json()["detail"]
+        assert resp.json()["detail"] == "리포트 생성에 실패했습니다"
 
         after = (await owner.get(f"/api/v1/reports/{schedule_id}")).json()
         assert after["last_status"].startswith("error:")

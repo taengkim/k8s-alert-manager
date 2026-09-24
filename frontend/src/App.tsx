@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { App as AntApp, Dropdown, Layout, Menu, Switch, Tooltip } from "antd";
+import { Alert, App as AntApp, Dropdown, Layout, Menu, Switch, Tooltip } from "antd";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
 import { TeamProvider } from "./auth/TeamContext";
-import { ClusterFilterProvider } from "./auth/ClusterFilterContext";
+import { ClusterFilterProvider, useClusterFilter } from "./auth/ClusterFilterContext";
 import TeamSwitcher from "./components/TeamSwitcher";
 import ClusterFilterSelect from "./components/ClusterFilterSelect";
 import {
@@ -17,7 +17,6 @@ import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
 import Login from "./pages/Login";
-import Placeholder from "./pages/Placeholder";
 import RouteEditor from "./pages/RouteEditor";
 import RoutesPage from "./pages/Routes";
 import RuleEditor from "./pages/RuleEditor";
@@ -71,6 +70,7 @@ function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { message } = AntApp.useApp();
+  const { isError: clustersError } = useClusterFilter();
   const [webNotify, setWebNotify] = useState(isWebNotifyEnabled);
 
   const handleToggleWebNotify = async (checked: boolean) => {
@@ -152,6 +152,14 @@ function AppLayout() {
           </div>
         </Header>
         <Content style={{ padding: 24 }}>
+          {clustersError && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="클러스터 목록을 불러오지 못했습니다 — 표시된 목록이 불완전할 수 있습니다"
+            />
+          )}
           <Outlet />
         </Content>
       </Layout>
@@ -192,25 +200,6 @@ export default function App() {
             <Route path="/routes/:id/edit" element={<RouteEditor />} />
             <Route path="/shares" element={<Shares />} />
             <Route path="/stats" element={<Stats />} />
-            {sections
-              .filter(
-                (section) =>
-                  section.key !== "alerts" &&
-                  section.key !== "rules" &&
-                  section.key !== "silences" &&
-                  section.key !== "channels" &&
-                  section.key !== "templates" &&
-                  section.key !== "routes" &&
-                  section.key !== "shares" &&
-                  section.key !== "stats",
-              )
-              .map((section) => (
-                <Route
-                  key={section.key}
-                  path={section.path}
-                  element={<Placeholder title={section.label} />}
-                />
-              ))}
             <Route path="/team" element={<TeamSettings />} />
             <Route path="/admin" element={<Admin />} />
           </Route>

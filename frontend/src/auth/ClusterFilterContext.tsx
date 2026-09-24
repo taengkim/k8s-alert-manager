@@ -11,6 +11,11 @@ interface ClusterFilterContextValue {
   /** Every cluster the current user can see (admin or not). */
   clusters: Cluster[];
   isLoading: boolean;
+  /** True once the clusters fetch has failed -- `clusters` (and everything
+   * derived from it below) falls back to whatever was last loaded
+   * successfully, or `[]` on a first-load failure, so callers that care
+   * should surface this rather than silently rendering an incomplete list. */
+  isError: boolean;
   /** Empty means "All" -- every enabled cluster, unfiltered. */
   selectedIds: number[];
   setSelectedIds: (ids: number[]) => void;
@@ -101,6 +106,7 @@ export function ClusterFilterProvider({ children }: { children: ReactNode }) {
       value={{
         clusters,
         isLoading: clustersQuery.isLoading,
+        isError: clustersQuery.isError,
         selectedIds,
         setSelectedIds,
         activeClusters,
