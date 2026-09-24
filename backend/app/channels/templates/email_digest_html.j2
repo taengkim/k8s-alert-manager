@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <body style="font-family: sans-serif; color: #1a1a1a;">
+    <p>{{ count }}건의 알럿이 다이제스트로 묶여 발송되었습니다 (팀: {{ team }}).</p>
+    <table cellpadding="6" cellspacing="0" style="border-collapse: collapse; border: 1px solid #ddd;">
+      <tr>
+        <th style="border: 1px solid #ddd; text-align: left;">알럿명</th>
+        <th style="border: 1px solid #ddd; text-align: left;">Severity</th>
+        <th style="border: 1px solid #ddd; text-align: left;">Namespace</th>
+        <th style="border: 1px solid #ddd; text-align: left;">Cluster</th>
+        <th style="border: 1px solid #ddd; text-align: left;">시각</th>
+      </tr>
+      {% for item in items %}
+      <tr>
+        <td style="border: 1px solid #ddd;">
+          {% if item.app_url %}<a href="{{ item.app_url }}">{{ item.alertname }}</a>{% else %}{{ item.alertname }}{% endif %}
+        </td>
+        <td style="border: 1px solid #ddd;">{{ item.severity or "-" }}</td>
+        <td style="border: 1px solid #ddd;">{{ item.namespace or "-" }}</td>
+        <td style="border: 1px solid #ddd;">{{ item.cluster }}</td>
+        <td style="border: 1px solid #ddd;">{{ item.starts_at | datetime_format }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </body>
+</html>

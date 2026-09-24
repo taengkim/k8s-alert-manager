@@ -17,6 +17,13 @@ Routing, the outbox queue, and retry scheduling are Phase 9 -- a channel here
 only needs to know how to deliver *one* notification. A `send()` failure
 raises `ChannelDeliveryError`; the outbox worker is what decides whether/when
 to retry.
+
+Phase 16 adds `send_batch()` for a channel's storm-control digest sends
+(many alerts bundled into one outbox row) -- NOT breaking: it has a default
+implementation (a plain per-item `send()` loop), so a third-party channel
+written before this phase keeps working unchanged, just without a genuine
+"one summary message" digest experience until it overrides `send_batch()`
+itself.
 """
 
 from abc import ABC, abstractmethod
@@ -137,6 +144,33 @@ class NotificationChannel(ABC):
         formatted per `msg` (this channel's resolved+rendered template
         output). Raise `ChannelDeliveryError` on failure.
         """
+
+    async def send_batch(
+        self, notifications: list[AlertNotification], msgs: list[RenderedMessage]
+    ) -> None:
+        """Deliver a digest batch (Phase 16): `notifications` and `msgs` are
+        parallel lists of the same length, one already-resolved/rendered
+        message per notification the channel's storm control bundled
+        together (see `app.worker.scheduler._dispatch_digest_flush` and
+        `app/worker/outbox.py`'s `deliver()`, which calls this instead of
+        `send()` for an `is_digest` outbox row).
+
+        Default implementation, kept for third-party channel backward
+        compatibility (a plugin written before this phase never overrode
+        this method): delivers each item individually via `send()`, in
+        order, same one-at-a-time behavior as if storm control didn't
+        exist. Raises (stopping partway through the batch) on the first
+        `ChannelDeliveryError`, same as this method's own callers already
+        expect from a single `send()` failure -- the outbox worker retries
+        the whole row, not just the remaining items.
+
+        A channel that wants a genuine digest experience -- one message
+        summarizing all N alerts, rather than N separate sends -- should
+        override this instead (see `app/channels/email.py`'s `EmailChannel`
+        for the built-in example).
+        """
+        for notification, msg in zip(notifications, msgs, strict=True):
+            await self.send(notification, msg)
 
     async def send_test(self) -> None:
         """Send a synthetic test notification, rendered from this channel

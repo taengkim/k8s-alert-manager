@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.channels.base import AlertNotification
+from app.channels.base import AlertNotification, RenderedMessage
 from app.channels.registry import ChannelRegistry
 from app.models.channel import Channel
 from app.models.outbox import NotificationOutbox
@@ -145,6 +145,12 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     """Deliver one claimed row. Always resolves the row to a terminal-ish
     state and commits -- 'delivered', 'pending' (scheduled for retry), or
     'dead' -- never leaves it 'in_progress' on return.
+
+    Phase 16: a digest aggregate row (`row.is_digest`) goes through
+    `send_batch()` instead of `send()` -- see the branch below. Everything
+    else about this row's lifecycle (claim, retry/backoff, dead-lettering,
+    lease recovery) is identical to a normal row; only which channel method
+    gets called, and what gets rendered for it, differs.
     """
     channel = await session.get(Channel, row.channel_id)
     if channel is None:
@@ -190,9 +196,9 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
         await _mark_delivery_failure(session, row, exc)
         return
 
+    fallback_note: str | None = None
     try:
         instance = channel_cls(config)
-        notification = AlertNotification(**row.payload)
 
         # Template resolution + rendering happens here, at delivery time,
         # not back when route_event staged this row -- row.payload is a
@@ -205,25 +211,66 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
             if row.routing_rule_id is not None
             else None
         )
-        template_strs = await resolve_template(
-            session,
-            rule.template_id if rule is not None else None,
-            channel.template_id,
-        )
-        if template_strs is None:
-            template_strs = channel_cls.default_templates or APP_DEFAULT_TEMPLATES
-        outcome = await render(template_strs, notification)
 
-        async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
-            await instance.send(notification, outcome.message)
+        if row.is_digest:
+            # Phase 16: a digest aggregate row has no routing_rule_id of its
+            # own (rule is None, per row.routing_rule_id being NULL -- see
+            # app.worker.scheduler._dispatch_digest_flush) and no single
+            # AlertNotification -- row.payload["notifications"] is a list of
+            # each parked row's own frozen payload instead. Every item
+            # shares one template resolution (channel's own template, or
+            # its type's/the app's default -- there's no per-rule override
+            # to consult since there's no rule), but each still gets its
+            # own render pass (a template can reference per-item fields
+            # like alertname/severity).
+            notifications = [
+                AlertNotification(**item) for item in row.payload["notifications"]
+            ]
+            template_strs = await resolve_template(session, None, channel.template_id)
+            if template_strs is None:
+                template_strs = channel_cls.default_templates or APP_DEFAULT_TEMPLATES
+            msgs: list[RenderedMessage] = []
+            fell_back = 0
+            for notification in notifications:
+                outcome = await render(template_strs, notification)
+                msgs.append(outcome.message)
+                if outcome.fallback_used:
+                    fell_back += 1
+            if fell_back:
+                fallback_note = (
+                    f"template render failed for {fell_back}/{len(notifications)} "
+                    "digest item(s); fallback used"
+                )
+            async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
+                await instance.send_batch(notifications, msgs)
+        else:
+            notification = AlertNotification(**row.payload)
+            template_strs = await resolve_template(
+                session,
+                rule.template_id if rule is not None else None,
+                channel.template_id,
+            )
+            if template_strs is None:
+                template_strs = channel_cls.default_templates or APP_DEFAULT_TEMPLATES
+            outcome = await render(template_strs, notification)
+            if outcome.fallback_used:
+                # A broken custom template must not block the alert --
+                # render() already fell back to the default template and
+                # this still counts as delivered, but the fallback is
+                # recorded so a team notices their template is broken
+                # instead of silently getting the wrong message forever.
+                fallback_note = f"template render failed: {outcome.error}; fallback used"
+
+            async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
+                await instance.send(notification, outcome.message)
     except Exception as exc:  # noqa: BLE001
         # Deliberately catch-all (ChannelDeliveryError, the asyncio.timeout
-        # block's TimeoutError, and anything else a channel's send() could
-        # raise): every transient failure mode gets the same backoff-and-
-        # retry treatment, never an unhandled exception that would kill
-        # the worker loop. render() itself never raises (see its docstring)
-        # -- this only catches failures from send() or the channel's own
-        # construction.
+        # block's TimeoutError, and anything else a channel's send()/
+        # send_batch() could raise): every transient failure mode gets the
+        # same backoff-and-retry treatment, never an unhandled exception
+        # that would kill the worker loop. render() itself never raises
+        # (see its docstring) -- this only catches failures from send()/
+        # send_batch() or the channel's own construction.
         await _mark_delivery_failure(session, row, exc)
         return
 
@@ -231,13 +278,8 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
     row.delivered_at = datetime.now(UTC)
     row.locked_by = None
     row.locked_at = None
-    if outcome.fallback_used:
-        # A broken custom template must not block the alert -- render()
-        # already fell back to the default template and this still counts
-        # as delivered, but the fallback is recorded so a team notices their
-        # template is broken instead of silently getting the wrong message
-        # forever.
-        row.last_error = f"template render failed: {outcome.error}; fallback used"[:500]
+    if fallback_note:
+        row.last_error = fallback_note[:500]
 
     # Phase 15: a successful 'firing' delivery through a rule with
     # renotify_interval_minutes set starts (or keeps alive) the unresolved
