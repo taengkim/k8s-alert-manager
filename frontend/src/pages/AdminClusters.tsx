@@ -506,7 +506,11 @@ export default function AdminClusters() {
           <Form.Item name="heartbeat_timeout_seconds" label="타임아웃 (초)">
             <InputNumber style={{ width: "100%" }} min={1} />
           </Form.Item>
-          <Form.Item name="heartbeat_team_id" label="귀속 팀">
+          <Form.Item
+            name="heartbeat_team_id"
+            label="귀속 팀"
+            help="미설정 시 알림 없음(배너/이력만)"
+          >
             <Select
               allowClear
               placeholder="선택 안 함"

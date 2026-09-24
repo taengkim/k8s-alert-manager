@@ -24,6 +24,7 @@ import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { getAckStatus, getLiveAlerts } from "../api/alerts";
 import type { AckStatusMatch, LiveAlert } from "../api/alerts";
+import { listClusters } from "../api/admin";
 import type { MatcherInput } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
 
@@ -65,6 +66,21 @@ export default function Alerts() {
 
   const teamId = currentTeam?.id;
   const noTeamSelected = !isAdmin && teams.length === 0;
+
+  // Phase 17: a dedicated, 30s-polled read of GET /clusters for the missing-
+  // heartbeat banner below -- shares its ["clusters"] cache with
+  // useClusterFilter's own query (same key, same fetcher), but adds its own
+  // independent refetch cadence on top so the banner notices a cluster
+  // going missing (or recovering) without the user having to reload.
+  const heartbeatQuery = useQuery({
+    queryKey: ["clusters"],
+    queryFn: listClusters,
+    refetchInterval: 30_000,
+  });
+  const missingClusters = useMemo(
+    () => (heartbeatQuery.data ?? []).filter((c) => c.heartbeat_state === "missing"),
+    [heartbeatQuery.data],
+  );
 
   // Silence creation needs a numeric cluster_id, but the live-alerts
   // fan-out only carries the cluster's name (it spans every enabled
@@ -234,6 +250,15 @@ export default function Alerts() {
           </Button>
         </div>
       </div>
+
+      {missingClusters.length > 0 && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`클러스터 ${missingClusters.map((c) => c.display_name).join(", ")}의 모니터링 수신이 끊겼습니다`}
+        />
+      )}
 
       {errors.map((err) => (
         <Alert
