@@ -420,3 +420,27 @@ async def test_maybe_run_retention_sweep_runs_after_24h_restart_safe(app) -> Non
 
     summary = await maybe_run_retention_sweep(db_module.async_session_factory)
     assert summary is not None
+
+
+# -- get_int_setting: non-positive stored values fall back to default -------
+
+
+async def test_get_int_setting_falls_back_to_default_for_zero_or_negative(app) -> None:
+    """A stored `0` or negative value must not silently become "purge
+    everything older than negative-N days" -- get_int_setting treats it the
+    same as an unset/malformed value: fall back to `default`.
+    """
+    from app.services.settings import get_int_setting, set_setting
+
+    async with db_module.async_session_factory() as session:
+        await set_setting(session, "retention.alert_events_days", "0")
+        await session.commit()
+        assert await get_int_setting(session, "retention.alert_events_days", 90) == 90
+
+        await set_setting(session, "retention.alert_events_days", "-5")
+        await session.commit()
+        assert await get_int_setting(session, "retention.alert_events_days", 90) == 90
+
+        await set_setting(session, "retention.alert_events_days", "30")
+        await session.commit()
+        assert await get_int_setting(session, "retention.alert_events_days", 90) == 30

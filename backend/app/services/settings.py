@@ -22,18 +22,23 @@ async def get_setting(session: AsyncSession, key: str) -> str | None:
 
 
 async def get_int_setting(session: AsyncSession, key: str, default: int) -> int:
-    """Falls back to `default` both when the key is unset and when a stored
-    value somehow isn't a valid int (e.g. hand-edited in the database) --
-    a malformed setting must degrade to "use the default", not break every
-    caller that reads it.
+    """Falls back to `default` when the key is unset, when a stored value
+    somehow isn't a valid int (e.g. hand-edited in the database), AND when
+    it parses but isn't a positive integer -- every caller of this so far
+    (`app.services.retention`'s purge windows) treats "N" as "N days", so a
+    stored `0` or negative value must not silently become "purge
+    everything older than negative-N days" (i.e. everything). A malformed
+    or out-of-range setting must degrade to "use the default", not break
+    (or worse, run away with) whatever reads it.
     """
     raw = await get_setting(session, key)
     if raw is None:
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         return default
+    return value if value >= 1 else default
 
 
 async def set_setting(session: AsyncSession, key: str, value: str) -> None:
