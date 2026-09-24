@@ -614,4 +614,21 @@ export const en: Record<keyof typeof ko, string> = {
   "team.previewLoadError": "Couldn't load the preview",
   "team.sendSuccess": "Report sent to {count} channels",
   "team.sendError": "Failed to send",
+
+  // -- audit --
+  "audit.actionAuth": "Auth",
+  "audit.actionHistory": "History",
+  "audit.actionRetention": "Retention policy",
+  "audit.actionRoute": "Route",
+  "audit.actionRule": "Rule",
+  "audit.actionRulesBulk": "Rule bulk actions",
+  "audit.actionSettings": "Settings",
+  "audit.timeColumn": "Time",
+  "audit.systemUser": "System",
+  "audit.actionColumn": "Action",
+  "audit.objectColumn": "Object",
+  "audit.detailColumn": "Detail",
+  "audit.detailPopoverTitle": "Detail",
+  "audit.actionTypePlaceholder": "Action type",
+  "audit.empty": "No audit logs",
 };

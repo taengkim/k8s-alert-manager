@@ -617,4 +617,21 @@ export const ko = {
   "team.previewLoadError": "미리보기를 불러오지 못했습니다",
   "team.sendSuccess": "{count}개 채널로 리포트를 발송했습니다",
   "team.sendError": "발송에 실패했습니다",
+
+  // -- audit --
+  "audit.actionAuth": "인증",
+  "audit.actionHistory": "이력",
+  "audit.actionRetention": "보관 정책",
+  "audit.actionRoute": "라우트",
+  "audit.actionRule": "규칙",
+  "audit.actionRulesBulk": "규칙 일괄 작업",
+  "audit.actionSettings": "설정",
+  "audit.timeColumn": "시각",
+  "audit.systemUser": "시스템",
+  "audit.actionColumn": "작업",
+  "audit.objectColumn": "대상",
+  "audit.detailColumn": "상세",
+  "audit.detailPopoverTitle": "상세 정보",
+  "audit.actionTypePlaceholder": "작업 종류",
+  "audit.empty": "감사 로그가 없습니다",
 } as const;
