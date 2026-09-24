@@ -27,6 +27,7 @@ import type { AckStatusMatch, LiveAlert } from "../api/alerts";
 import { listClusters } from "../api/admin";
 import type { MatcherInput } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
+import { severityColor, severityTagStyle } from "../theme";
 
 dayjs.extend(relativeTime);
 
@@ -40,16 +41,6 @@ const SEVERITY_OPTIONS = [
   { value: "info", label: "info" },
   { value: "none", label: "없음" },
 ];
-
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-};
-
-function severityColor(severity: string): string {
-  return SEVERITY_TAG_COLOR[severity] ?? "default";
-}
 
 export default function Alerts() {
   const { user } = useAuth();
@@ -188,7 +179,7 @@ export default function Alerts() {
       width: 110,
       render: (state: string) =>
         state === "active" ? (
-          <Badge status="processing" color="red" text="active" />
+          <Badge status="processing" color={severityColor("critical")} text="active" />
         ) : (
           <Badge status="default" text={state || "-"} />
         ),
@@ -208,7 +199,7 @@ export default function Alerts() {
       title: "심각도",
       dataIndex: "severity",
       key: "severity",
-      render: (value: string) => <Tag color={severityColor(value)}>{value || "none"}</Tag>,
+      render: (value: string) => <Tag style={severityTagStyle(value)}>{value || "none"}</Tag>,
     },
     { title: "네임스페이스", dataIndex: "namespace", key: "namespace" },
     { title: "클러스터", dataIndex: "cluster", key: "cluster" },
@@ -355,7 +346,7 @@ export default function Alerts() {
             <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
               <Descriptions.Item label="상태">{selected.state}</Descriptions.Item>
               <Descriptions.Item label="심각도">
-                <Tag color={severityColor(selected.severity)}>{selected.severity || "none"}</Tag>
+                <Tag style={severityTagStyle(selected.severity)}>{selected.severity || "none"}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="네임스페이스">{selected.namespace}</Descriptions.Item>
               {selectedAck?.acknowledged && (

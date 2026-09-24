@@ -28,6 +28,7 @@ import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
+import { severityColor, severityTagStyle } from "../theme";
 import {
   ackAlert,
   addAlertComment,
@@ -65,15 +66,6 @@ const SEVERITY_OPTIONS = [
   { value: "none", label: "없음" },
 ];
 
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-};
-
-function severityColor(severity: string | null): string {
-  return (severity && SEVERITY_TAG_COLOR[severity]) ?? "default";
-}
 
 function apiErrorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.detail : fallback;
@@ -301,7 +293,7 @@ export default function AlertHistory() {
       width: 110,
       render: (value: AlertEventStatus) =>
         value === "firing" ? (
-          <Badge status="processing" color="red" text="firing" />
+          <Badge status="processing" color={severityColor("critical")} text="firing" />
         ) : (
           <Badge status="default" text="resolved" />
         ),
@@ -322,7 +314,7 @@ export default function AlertHistory() {
       title: "심각도",
       dataIndex: "severity",
       key: "severity",
-      render: (value: string | null) => <Tag color={severityColor(value)}>{value ?? "none"}</Tag>,
+      render: (value: string | null) => <Tag style={severityTagStyle(value)}>{value ?? "none"}</Tag>,
     },
     {
       title: "네임스페이스",
@@ -519,7 +511,7 @@ export default function AlertHistory() {
             <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
               <Descriptions.Item label="상태">{selected.status}</Descriptions.Item>
               <Descriptions.Item label="심각도">
-                <Tag color={severityColor(selected.severity)}>{selected.severity ?? "none"}</Tag>
+                <Tag style={severityTagStyle(selected.severity)}>{selected.severity ?? "none"}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="네임스페이스">{selected.namespace ?? "-"}</Descriptions.Item>
               <Descriptions.Item label="클러스터">{selected.cluster_name}</Descriptions.Item>

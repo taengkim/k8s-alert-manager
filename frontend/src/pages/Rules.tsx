@@ -22,18 +22,13 @@ import { deleteRule, downloadRulesExport, listRules } from "../api/rules";
 import type { RuleOut } from "../api/rules";
 import type { Cluster } from "../api/types";
 import RuleImportModal from "../components/RuleImportModal";
+import { severityTagStyle } from "../theme";
 
 interface RuleRow extends RuleOut {
   cluster: Cluster;
 }
 
 const { Text } = Typography;
-
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-};
 
 const HEALTH_BADGE: Record<string, { status: "success" | "error" | "default"; text: string }> = {
   ok: { status: "success", text: "ok" },
@@ -163,7 +158,7 @@ export default function Rules() {
       title: "심각도",
       dataIndex: "severity",
       key: "severity",
-      render: (value: string) => <Tag color={SEVERITY_TAG_COLOR[value] ?? "default"}>{value}</Tag>,
+      render: (value: string) => <Tag style={severityTagStyle(value)}>{value}</Tag>,
     },
     {
       title: "표현식",

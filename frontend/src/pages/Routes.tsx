@@ -10,15 +10,9 @@ import { listClusters } from "../api/admin";
 import { deleteRoute, listRoutes, updateRoute } from "../api/routes";
 import type { RouteOut, RouteWriteInput } from "../api/routes";
 import TestAlertModal from "../components/TestAlertModal";
+import { severityTagStyle } from "../theme";
 
 const { Text } = Typography;
-
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-  none: "default",
-};
 
 function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {}): RouteWriteInput {
   return {
@@ -138,7 +132,7 @@ export default function Routes() {
         route.severities && route.severities.length > 0 ? (
           <Space size={4} wrap>
             {route.severities.map((s) => (
-              <Tag key={s} color={SEVERITY_TAG_COLOR[s] ?? "default"}>
+              <Tag key={s} style={severityTagStyle(s)}>
                 {s}
               </Tag>
             ))}
@@ -154,14 +148,14 @@ export default function Routes() {
         const chips: ReactNode[] = [];
         for (const ns of route.namespaces_include ?? []) {
           chips.push(
-            <Tag key={`i-${ns}`} color="blue">
+            <Tag key={`i-${ns}`} color="blue" className="kam-mono">
               {ns}
             </Tag>,
           );
         }
         for (const ns of route.namespaces_exclude ?? []) {
           chips.push(
-            <Tag key={`e-${ns}`} color="red">
+            <Tag key={`e-${ns}`} color="red" className="kam-mono">
               !{ns}
             </Tag>,
           );
