@@ -15,10 +15,11 @@ not just from a request.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import Delete, Select, and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.alert import AlertEvent
@@ -67,8 +68,8 @@ async def load_settings(session: AsyncSession) -> dict[str, int]:
 async def _delete_batches(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    select_ids,
-    delete_by_ids,
+    select_ids: Select[tuple[int]],
+    delete_by_ids: Callable[[list[int]], Delete],
 ) -> int:
     """Repeatedly select up to `BATCH_SIZE` eligible ids and delete them,
     each batch its own committed transaction -- a crash mid-purge loses at
