@@ -1,0 +1,57 @@
+# Non-secret KAM_* env (see backend/app/config.py's Settings for the
+# authoritative field list/defaults). Anything credential-shaped
+# (passwords, the app's own JWT/encryption key, the DB URL) lives in
+# secret.example.yaml instead -- copy that to secret.yaml, fill in real
+# values, and `kubectl apply -f deploy/k8s/secret.yaml` (gitignored; never
+# commit the filled-in version). See deploy/README.md for the full
+# deployment order.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kam-config
+  namespace: kam
+data:
+  KAM_APP_NAME: "kam"
+  KAM_APP_VERSION: "0.1.0"
+  KAM_JWT_TTL_HOURS: "12"
+
+  # LDAP: everything except the bind DN/password (see secret.example.yaml)
+  # -- these describe the directory's SHAPE, not a credential. Replace with
+  # your real directory's URL/DNs -- this repo has no in-cluster LDAP
+  # deployment of its own (dev/docker-compose.dev.yml's openldap is
+  # host-only, dev-only).
+  KAM_LDAP_URL: "ldap://ldap.example.org:389"
+  KAM_LDAP_USER_BASE: "ou=users,dc=example,dc=org"
+  KAM_LDAP_USER_FILTER: "(uid={username})"
+  KAM_LDAP_GROUP_BASE: "ou=groups,dc=example,dc=org"
+  KAM_LDAP_ADMIN_GROUPS: "cn=kam-admins,ou=groups,dc=example,dc=org"
+
+  # Default cluster seeded on first boot (app.services.cluster_bootstrap) --
+  # in a real deployment, register kam's own cluster explicitly instead (see
+  # deploy/README.md's cluster registration section) and either leave this
+  # pointed at a real cluster or ignore/disable the seeded row afterwards.
+  # Placeholder Service DNS names -- replace with your real
+  # Prometheus/Alertmanager Service (e.g. a kube-prometheus-stack release
+  # named "kps" in namespace "monitoring" is normally reachable at
+  # kps-kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090).
+  KAM_DEFAULT_CLUSTER_NAME: "local"
+  KAM_PROMETHEUS_URL: "http://prometheus.monitoring.svc.cluster.local:9090"
+  KAM_ALERTMANAGER_URL: "http://alertmanager.monitoring.svc.cluster.local:9093"
+
+  # Base URL Alertmanager itself must be able to reach THIS Service at --
+  # used only to render the copy-paste AM receiver snippet returned once by
+  # POST/PATCH /clusters. service.yaml's ClusterIP Service DNS name, by
+  # default (adjust if Alertmanager lives in a different cluster/network).
+  KAM_WEBHOOK_BASE_URL: "http://kam.kam.svc.cluster.local"
+
+  # SMTP connection (recipients/subject live per-channel in the DB, not
+  # here). KAM_SMTP_USERNAME/PASSWORD are in secret.example.yaml. Replace
+  # with your real mail relay -- dev/docker-compose.dev.yml's Mailpit is
+  # host-only, dev-only.
+  KAM_SMTP_HOST: "smtp.example.org"
+  KAM_SMTP_PORT: "587"
+  KAM_SMTP_STARTTLS: "true"
+
+  KAM_PLUGINS_DIR: ""
+  KAM_APP_BASE_URL: "http://kam.kam.svc.cluster.local"
+  KAM_WORKER_MODE: "embedded"
