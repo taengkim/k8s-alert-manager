@@ -237,13 +237,11 @@ async def _render_one(env: SandboxedEnvironment, source: str, context: dict[str,
 
 async def _render_slots(
     template_strs: dict[str, str | None],
-    n: AlertNotification,
+    context: dict[str, Any],
     *,
     env: SandboxedEnvironment,
     html_env: SandboxedEnvironment,
 ) -> RenderedMessage:
-    context = notification_context(n)
-
     title_source = template_strs.get("title") or ""
     body_source = template_strs.get("body") or ""
     body_html_source = template_strs.get("body_html")
@@ -276,9 +274,10 @@ async def render(template_strs: dict[str, str | None], n: AlertNotification) -> 
     template), but if it somehow does, that exception propagates -- there's
     no second fallback beneath the app default.
     """
+    context = notification_context(n)
     try:
         message = await _render_slots(
-            template_strs, n, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
+            template_strs, context, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
         )
         return RenderOutcome(message=message, fallback_used=False)
     except Exception as exc:  # noqa: BLE001 -- deliberately broad, see docstring.
@@ -288,9 +287,35 @@ async def render(template_strs: dict[str, str | None], n: AlertNotification) -> 
             exc,
         )
         message = await _render_slots(
-            APP_DEFAULT_TEMPLATES, n, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
+            APP_DEFAULT_TEMPLATES, context, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
         )
         return RenderOutcome(message=message, fallback_used=True, error=type(exc).__name__)
+
+
+async def render_context(
+    template_strs: dict[str, str | None], context: dict[str, Any]
+) -> RenderedMessage:
+    """Render title/body/body_html straight from an arbitrary `context` dict
+    rather than an `AlertNotification` -- the same sandboxed engine `render()`
+    uses (shared thread pool, timeout, byte cap, header-injection stripping),
+    just without an `AlertNotification` in the loop at all.
+
+    Used by `app.services.reports` (Phase 20): a report's context (team,
+    period_start/end, summary/top_alerts/breakdowns/..., see
+    `app.services.reports.ReportData`) has nothing in common with
+    `notification_context()`'s alert-shaped fields, so it can't go through
+    `render()` itself.
+
+    Unlike `render()`, this raises on failure rather than folding a fallback
+    in -- there's no single "the app default" to fall back to here (alert
+    rendering falls back to `APP_DEFAULT_TEMPLATES`; report rendering falls
+    back to its own default report template), so each caller applies
+    whichever fallback fits its own domain (see
+    `app.services.reports.render_report`).
+    """
+    return await _render_slots(
+        template_strs, context, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
+    )
 
 
 async def resolve_template(
@@ -415,7 +440,7 @@ async def preview(
 
     try:
         message = await _render_slots(
-            template_strs, n, env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
+            template_strs, notification_context(n), env=_OPERATIONAL_ENV, html_env=_OPERATIONAL_HTML_ENV
         )
     except Exception as exc:  # noqa: BLE001 -- sandbox SecurityError, TimeoutError, etc.
         return {
