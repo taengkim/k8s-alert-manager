@@ -18,6 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.models.cluster import Cluster
 from app.security import hash_token
+from app.services.events_hub import (
+    Hub,
+    build_event_from_transition,
+    publish_after_commit,
+)
 from app.services.ingest import AlertmanagerWebhookPayload, ingest_webhook
 
 logger = logging.getLogger(__name__)
@@ -79,6 +84,12 @@ async def receive_alertmanager_webhook(
 
     result = await ingest_webhook(session, cluster, payload)
     await session.commit()
+
+    # Phase 18: publish AFTER the commit above succeeded, never before --
+    # see app.services.events_hub.publish_after_commit's docstring.
+    hub: Hub = request.app.state.events_hub
+    for transition in result.transitions:
+        publish_after_commit(hub, build_event_from_transition(transition))
 
     return {
         "received": result.received,

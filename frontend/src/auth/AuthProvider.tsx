@@ -9,6 +9,7 @@ import {
 import { login as apiLogin, logout as apiLogout, me as apiMe } from "../api/auth";
 import { onUnauthorized } from "../api/client";
 import type { CurrentUser } from "../api/types";
+import { useAlertStream } from "../api/useAlertStream";
 
 interface AuthContextValue {
   user: CurrentUser | null;
@@ -47,6 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => onUnauthorized(() => setUser(null)), []);
+
+  // Phase 18: the live alert feed connects once while logged in and closes
+  // on logout -- see useAlertStream's own docstring for why it takes
+  // `user` as a parameter instead of calling useAuth() itself.
+  useAlertStream(user);
 
   const login = useCallback(
     async (username: string, password: string) => {

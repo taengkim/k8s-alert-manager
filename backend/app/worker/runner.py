@@ -57,6 +57,14 @@ async def main() -> None:
             session_factory=session_factory,
             registry=registry,
             worker_id=worker_id,
+            # `hub` is deliberately omitted (defaults to None): this process
+            # has no SSE subscribers of its own (those live on the API
+            # process's app.state, per app/main.py's lifespan) -- a
+            # heartbeat-lost alert this worker's own sweep injects while
+            # running standalone still lands in the database exactly as
+            # normal, it just reaches any connected client via their next
+            # query refetch rather than the live feed. See
+            # app.worker.outbox.run_loop's docstring.
         )
     finally:
         await engine.dispose()

@@ -8,8 +8,9 @@ rolls back the outer session.
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -80,6 +81,31 @@ class AlertmanagerWebhookPayload(BaseModel):
     alerts: list[AlertmanagerAlert] = []
 
 
+TransitionKind = Literal["created", "resolved", "reopened"]
+
+
+@dataclass
+class AlertTransition:
+    """One firing/resolved/reopened transition recorded during a single
+    `ingest_webhook` call -- Phase 18's hook for the live SSE feed
+    (`app/services/events_hub.py`). Never emitted for a repeat delivery
+    with no status change, nor for a resolved-first row with no prior
+    firing (`result.created_resolved` -- there's no live "transition" to
+    announce for a row this app never saw firing).
+
+    Holds the actual `AlertEvent` ORM object rather than a snapshotted
+    dict: the session's `expire_on_commit=False` (see `app/db.py`) means
+    its attributes stay readable after the caller's `session.commit()`,
+    including any post-ingest mutation the caller makes before committing
+    (e.g. `app/api/alerts.py`'s `fire_test_alert` sets `event.is_test =
+    True` after `ingest_webhook` returns but before commit) -- a snapshot
+    taken here would miss that.
+    """
+
+    kind: TransitionKind
+    event: AlertEvent
+
+
 @dataclass
 class IngestResult:
     received: int = 0
@@ -90,6 +116,11 @@ class IngestResult:
     repeats: int = 0
     heartbeats_seen: int = 0
     skipped: int = 0
+    # Phase 18: populated alongside the counters above, for the caller to
+    # publish live SSE events from AFTER its own commit succeeds (see
+    # `app.services.events_hub.publish_after_commit`'s docstring for why
+    # that must happen post-commit, never here or in `on_event_transition`).
+    transitions: list[AlertTransition] = field(default_factory=list)
 
 
 def _parse_am_timestamp(value: str | None) -> datetime | None:
@@ -160,7 +191,7 @@ async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: st
 
 async def resolve_heartbeat_lost_event(
     session: AsyncSession, cluster: Cluster, now: datetime
-) -> None:
+) -> list[AlertTransition]:
     """Phase 17 recovery: whatever `app.worker.heartbeat.sweep` injected for
     a 'missing' `cluster` has now recovered -- resolve that synthetic event
     through the normal `on_event_transition` hook, exactly like any other
@@ -186,6 +217,16 @@ async def resolve_heartbeat_lost_event(
     that edge can't repeat while the previous incident is still open) --
     `.all()` rather than a single lookup is just defense in depth against a
     row surviving some other, unexpected path.
+
+    Phase 18: returns the resulting `AlertTransition`(s) (normally exactly
+    one) so each caller can publish the corresponding `alert_resolved` SSE
+    event AFTER its own commit succeeds -- this function only ever stages
+    the mutation, same "no dispatch pre-commit" contract as
+    `on_event_transition`. `_ingest_one` folds the return value into its own
+    `IngestResult.transitions`, so the webhook endpoint's existing post-
+    commit publish loop picks it up for free; `update_cluster` (the other
+    caller, which has no `IngestResult` of its own) publishes directly from
+    the returned list.
     """
     fingerprint = heartbeat_lost_fingerprint(cluster.id)
     result = await session.execute(
@@ -195,12 +236,15 @@ async def resolve_heartbeat_lost_event(
             AlertEvent.status == "firing",
         )
     )
+    transitions: list[AlertTransition] = []
     for event in result.scalars().all():
         event.status = "resolved"
         event.ends_at = now
         event.last_received_at = now
         event.receive_count += 1
         await on_event_transition(session, event, "resolved")
+        transitions.append(AlertTransition(kind="resolved", event=event))
+    return transitions
 
 
 async def _ingest_one(
@@ -233,7 +277,7 @@ async def _ingest_one(
         cluster.heartbeat_state = "ok"
         result.heartbeats_seen += 1
         if was_missing:
-            await resolve_heartbeat_lost_event(session, cluster, now)
+            result.transitions.extend(await resolve_heartbeat_lost_event(session, cluster, now))
         return
 
     try:
@@ -322,6 +366,7 @@ async def _ingest_one(
         else:
             if alert.status == "firing":
                 result.created += 1
+                result.transitions.append(AlertTransition(kind="created", event=event))
                 await on_event_transition(session, event, "firing")
             else:
                 # A resolved alert with no prior firing row on record --
@@ -337,6 +382,7 @@ async def _ingest_one(
         existing.status = "resolved"
         existing.ends_at = ends_at
         result.resolved += 1
+        result.transitions.append(AlertTransition(kind="resolved", event=existing))
         await on_event_transition(session, existing, "resolved")
     elif alert.status == "firing" and existing.status == "resolved":
         # Same identity firing again after having been resolved. AM
@@ -353,6 +399,7 @@ async def _ingest_one(
         existing.status = "firing"
         existing.ends_at = None
         result.reopened += 1
+        result.transitions.append(AlertTransition(kind="reopened", event=existing))
         await on_event_transition(session, existing, "firing")
     else:
         result.repeats += 1
