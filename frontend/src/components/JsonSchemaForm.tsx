@@ -14,6 +14,7 @@
 
 import { Form, Input, InputNumber, Select, Switch } from "antd";
 import type { JsonSchemaObject, JsonSchemaProperty } from "../api/channels";
+import { useI18n } from "../i18n";
 
 interface JsonSchemaFormProps {
   schema: JsonSchemaObject;
@@ -55,6 +56,7 @@ function scalarType(prop: JsonSchemaProperty): string | undefined {
 }
 
 export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: JsonSchemaFormProps) {
+  const { t } = useI18n();
   const required = new Set(schema.required ?? []);
 
   return (
@@ -88,7 +90,7 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
               label={label}
               initialValue={prop.default}
               tooltip={prop.description}
-              rules={[{ required: isRequired, message: `${label}을(를) 입력하세요` }]}
+              rules={[{ required: isRequired, message: t("schemaForm.required", { label }) }]}
             >
               <InputNumber style={{ width: "100%" }} />
             </Form.Item>
@@ -103,7 +105,7 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
               label={label}
               initialValue={prop.default}
               tooltip={prop.description}
-              rules={[{ required: isRequired, message: `${label}을(를) 선택하세요` }]}
+              rules={[{ required: isRequired, message: t("schemaForm.selectRequired", { label }) }]}
             >
               <Select options={prop.enum.map((v) => ({ value: v, label: String(v) }))} />
             </Form.Item>
@@ -120,11 +122,11 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
               initialValue={prop.default}
               tooltip={prop.description}
               rules={[
-                { required: isRequired, message: `${label}을(를) 입력하세요` },
+                { required: isRequired, message: t("schemaForm.required", { label }) },
                 {
                   validator: async (_, value?: unknown[]) => {
                     if (minItems && (!value || value.length < minItems)) {
-                      throw new Error(`${label}은(는) 최소 ${minItems}개 필요합니다`);
+                      throw new Error(t("schemaForm.minItems", { label, min: minItems }));
                     }
                   },
                 },
@@ -143,7 +145,7 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
               label={label}
               initialValue={prop.default}
               tooltip={prop.description}
-              rules={[{ required: isRequired, message: `${label}을(를) 입력하세요` }]}
+              rules={[{ required: isRequired, message: t("schemaForm.required", { label }) }]}
             >
               <Input placeholder={prop.format} />
             </Form.Item>
@@ -158,7 +160,7 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
             name={name}
             label={label}
             tooltip={prop.description}
-            extra="지원되지 않는 필드 타입입니다 -- JSON으로 직접 입력하세요"
+            extra={t("schemaForm.unsupportedFieldHelp")}
             getValueProps={(value) => ({
               value: isInvalidJsonValue(value)
                 ? value.raw
@@ -168,11 +170,11 @@ export default function JsonSchemaForm({ schema, namePrefix = ["config"] }: Json
             })}
             normalize={parseJsonFallback}
             rules={[
-              { required: isRequired, message: `${label}을(를) 입력하세요` },
+              { required: isRequired, message: t("schemaForm.required", { label }) },
               {
                 validator: async (_, value) => {
                   if (isInvalidJsonValue(value)) {
-                    throw new Error("올바른 JSON 형식이 아닙니다");
+                    throw new Error(t("ruleImport.invalidJson"));
                   }
                 },
               },

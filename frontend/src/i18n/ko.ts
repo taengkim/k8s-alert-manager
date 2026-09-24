@@ -96,6 +96,9 @@ export const ko = {
   "common.pending": "대기",
   "common.expired": "만료",
   "common.noPermission": "권한이 없습니다",
+  "common.updateError": "변경에 실패했습니다",
+  "common.type": "타입",
+  "common.nameRequired": "이름을 입력하세요",
 
   // -- login --
   "login.usernameLabel": "아이디",
@@ -318,4 +321,43 @@ export const ko = {
   "matcher.patternRequired": "패턴을 입력하세요",
   "matcher.invalidRegex": "올바른 정규식이 아닙니다",
   "matcher.patternPlaceholder": "정규식 패턴",
+
+  // -- channels --
+  "channels.title": "채널",
+  "channels.titleWithTeam": "채널 — {team}",
+  "channels.digestOff": "끄기",
+  "channels.digestAuto": "자동",
+  "channels.digestAlways": "항상",
+  "channels.createError": "채널 생성에 실패했습니다",
+  "channels.updateError": "채널 수정에 실패했습니다",
+  "channels.testSuccess": "테스트 알림을 발송했습니다",
+  "channels.testError": "테스트 발송에 실패했습니다",
+  "channels.deleteConfirm": "이 채널을 삭제하시겠습니까?",
+  "channels.addButton": "채널 추가",
+  "channels.editTitle": "채널 수정",
+  "channels.typeRequired": "타입을 선택하세요",
+  "channels.messageTemplateLabel": "메시지 템플릿",
+  "channels.templateHelp": "비워두면 채널 타입의 기본 템플릿(또는 앱 기본 템플릿)을 사용합니다",
+  "channels.inheritDefaultPlaceholder": "기본값 상속",
+  "channels.crossTeamEscalationLabel": "타팀 에스컬레이션 허용",
+  "channels.crossTeamEscalationHelp":
+    "켜면 다른 팀의 라우팅 규칙이 이 채널을 에스컬레이션 대상으로 선택할 수 있습니다.",
+  "channels.stormControlLabel": "폭풍 제어",
+  "channels.digestModeLabel": "다이제스트 모드",
+  "channels.digestModeHelp":
+    "자동: 시간당 발송 제한 초과 시 묶어서 발송 / 항상: 모든 알림을 항상 묶어서 발송",
+  "channels.rateLimitLabel": "시간당 발송 제한",
+  "channels.rateLimitRequiredForAuto": "자동 모드에서는 시간당 발송 제한을 입력해야 합니다",
+  "channels.unlimitedPlaceholder": "무제한",
+  "channels.digestWindowLabel": "다이제스트 대기 시간(분)",
+  "channels.digestWindowHelp": "묶인 알림을 이 시간만큼 기다렸다가 한 번에 발송합니다",
+
+  // -- schemaForm (dynamic JSON-schema-driven form fields) --
+  "schemaForm.required": "{label}을(를) 입력하세요",
+  "schemaForm.selectRequired": "{label}을(를) 선택하세요",
+  "schemaForm.minItems": "{label}은(는) 최소 {min}개 필요합니다",
+  "schemaForm.unsupportedFieldHelp": "지원되지 않는 필드 타입입니다 -- JSON으로 직접 입력하세요",
+
+  // -- templatePreview --
+  "templatePreview.popoverTitle": "미리보기 (샘플 알럿) — {name}",
 } as const;

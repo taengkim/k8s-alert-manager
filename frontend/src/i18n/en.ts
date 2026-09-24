@@ -93,6 +93,9 @@ export const en: Record<keyof typeof ko, string> = {
   "common.pending": "Pending",
   "common.expired": "Expired",
   "common.noPermission": "You don't have permission",
+  "common.updateError": "Failed to update",
+  "common.type": "Type",
+  "common.nameRequired": "Enter a name",
 
   // -- login --
   "login.usernameLabel": "Username",
@@ -315,4 +318,43 @@ export const en: Record<keyof typeof ko, string> = {
   "matcher.patternRequired": "Enter a pattern",
   "matcher.invalidRegex": "Not a valid regular expression",
   "matcher.patternPlaceholder": "Regex pattern",
+
+  // -- channels --
+  "channels.title": "Channels",
+  "channels.titleWithTeam": "Channels — {team}",
+  "channels.digestOff": "Off",
+  "channels.digestAuto": "Auto",
+  "channels.digestAlways": "Always",
+  "channels.createError": "Failed to create channel",
+  "channels.updateError": "Failed to update channel",
+  "channels.testSuccess": "Test notification sent",
+  "channels.testError": "Failed to send test",
+  "channels.deleteConfirm": "Delete this channel?",
+  "channels.addButton": "Add channel",
+  "channels.editTitle": "Edit channel",
+  "channels.typeRequired": "Select a type",
+  "channels.messageTemplateLabel": "Message template",
+  "channels.templateHelp": "Leave empty to use the channel type's default template (or the app default)",
+  "channels.inheritDefaultPlaceholder": "Inherit default",
+  "channels.crossTeamEscalationLabel": "Allow cross-team escalation",
+  "channels.crossTeamEscalationHelp":
+    "When on, other teams' routing rules can pick this channel as an escalation target.",
+  "channels.stormControlLabel": "Storm control",
+  "channels.digestModeLabel": "Digest mode",
+  "channels.digestModeHelp":
+    "Auto: batches sends once the hourly limit is exceeded / Always: always batches every notification",
+  "channels.rateLimitLabel": "Hourly send limit",
+  "channels.rateLimitRequiredForAuto": "Auto mode requires an hourly send limit",
+  "channels.unlimitedPlaceholder": "Unlimited",
+  "channels.digestWindowLabel": "Digest wait time (minutes)",
+  "channels.digestWindowHelp": "Batched notifications wait this long before being sent together",
+
+  // -- schemaForm (dynamic JSON-schema-driven form fields) --
+  "schemaForm.required": "Enter {label}",
+  "schemaForm.selectRequired": "Select {label}",
+  "schemaForm.minItems": "{label} needs at least {min}",
+  "schemaForm.unsupportedFieldHelp": "Unsupported field type -- enter JSON directly",
+
+  // -- templatePreview --
+  "templatePreview.popoverTitle": "Preview (sample alert) — {name}",
 };
