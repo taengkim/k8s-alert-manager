@@ -17,21 +17,23 @@ import {
   type StatsFilters,
   type VolumeBucket,
 } from "../api/stats";
+import { chartCategorical, palette, severity, severityColor } from "../theme";
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
-// Matches the severity Tag colors already used on the Alerts/History pages
-// (AlertHistory.tsx's SEVERITY_TAG_COLOR) -- one consistent meaning for
-// "critical/warning/info" across the whole app, not a chart-local palette.
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "#f5222d",
-  warning: "#fa8c16",
-  info: "#1677ff",
-  none: "#bfbfbf",
-};
+// Severity slices use the app-wide semantic severity tokens (same hues as
+// the Tag columns on Alerts/History); single-series ranking bars and the
+// volume area use the first categorical hue -- ranking compares magnitude,
+// not identity, so one hue is correct.
+const CHART_COLOR = chartCategorical[0];
 
-const CHART_COLOR = "#1677ff";
+// Recessive chart chrome shared by every cartesian chart on this page: the
+// data is the only assertive layer, grid/axes stay hairline + muted.
+const AXIS_LABEL = { color: palette.inkMuted, fontSize: 11 };
+const AXIS_LINE = { lineStyle: { color: palette.hairline } };
+const SPLIT_LINE = { lineStyle: { color: palette.hairline } };
+const CHART_ANIMATION = { animationDuration: 200, animationDurationUpdate: 200 };
 
 function apiErrorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.detail : fallback;
@@ -158,7 +160,7 @@ export default function Stats() {
 
   const topAlerts = topAlertsQuery.data ?? [];
   const volume = volumeQuery.data ?? [];
-  const severity = severityQuery.data ?? [];
+  const severityRows = severityQuery.data ?? [];
   const namespace = (namespaceQuery.data ?? []).slice(0, 10);
 
   return (
@@ -213,7 +215,7 @@ export default function Stats() {
               title="현재 firing"
               value={summaryQuery.data?.firing_now ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#fa8c16" }}
+              valueStyle={{ color: severity.warning, fontWeight: 600 }}
             />
           </Card>
         </Col>
@@ -232,7 +234,7 @@ export default function Stats() {
               title="전송 성공"
               value={summaryQuery.data?.delivered_in_range ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#389e0d" }}
+              valueStyle={{ color: severity.ok, fontWeight: 600 }}
             />
           </Card>
         </Col>
@@ -242,7 +244,7 @@ export default function Stats() {
               title="실패 / dead"
               value={summaryQuery.data?.failed_or_dead_in_range ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#cf1322" }}
+              valueStyle={{ color: severity.critical, fontWeight: 600 }}
             />
           </Card>
         </Col>
@@ -280,12 +282,22 @@ export default function Stats() {
                       return `${p.name}<br/>이벤트 ${p.value}건 · 수신 ${row?.receive_total ?? 0}회`;
                     },
                   },
+                  ...CHART_ANIMATION,
                   grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
-                  xAxis: { type: "value", name: "건수" },
+                  xAxis: {
+                    type: "value",
+                    name: "건수",
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
                   yAxis: {
                     type: "category",
                     inverse: true,
                     data: topAlerts.map((r) => r.alertname),
+                    axisLabel: { ...AXIS_LABEL, fontSize: 12 },
+                    axisLine: AXIS_LINE,
+                    axisTick: { show: false },
                   },
                   series: [
                     {
@@ -317,15 +329,23 @@ export default function Stats() {
                     trigger: "axis",
                     valueFormatter: (v: number) => `${v}건`,
                   },
+                  ...CHART_ANIMATION,
                   grid: { left: 48, right: 24, top: 24, bottom: 32 },
-                  xAxis: { type: "time" },
-                  yAxis: { type: "value", name: "건수", minInterval: 1 },
+                  xAxis: { type: "time", axisLabel: AXIS_LABEL, axisLine: AXIS_LINE },
+                  yAxis: {
+                    type: "value",
+                    name: "건수",
+                    minInterval: 1,
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
                   series: [
                     {
                       type: "line",
                       showSymbol: false,
                       lineStyle: { width: 2, color: CHART_COLOR },
-                      areaStyle: { color: CHART_COLOR, opacity: 0.15 },
+                      areaStyle: { color: CHART_COLOR, opacity: 0.12 },
                       data: volume.map((v) => [dayjs(v.bucket_start).valueOf(), v.firing_count]),
                     },
                   ],
@@ -339,25 +359,32 @@ export default function Stats() {
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
           <Card size="small" title="심각도별 분포" loading={severityQuery.isLoading}>
-            {severity.length === 0 ? (
+            {severityRows.length === 0 ? (
               <Empty description="데이터가 없습니다" />
             ) : (
               <ReactECharts
                 style={{ height: 280 }}
                 notMerge
                 option={{
+                  ...CHART_ANIMATION,
                   tooltip: { trigger: "item", formatter: "{b}: {c}건 ({d}%)" },
-                  legend: { bottom: 0 },
+                  legend: { bottom: 0, textStyle: { color: palette.inkMuted } },
                   series: [
                     {
                       type: "pie",
                       radius: ["45%", "70%"],
                       avoidLabelOverlap: true,
-                      label: { formatter: "{b}\n{d}%" },
-                      data: severity.map((row) => ({
+                      label: { formatter: "{b}\n{d}%", color: palette.ink },
+                      // Status colors, not the categorical palette -- a
+                      // severity slice must match the severity Tag next to it.
+                      data: severityRows.map((row) => ({
                         name: row.key,
                         value: row.count,
-                        itemStyle: { color: SEVERITY_COLOR[row.key] ?? "#8c8c8c" },
+                        itemStyle: {
+                          color: severityColor(row.key),
+                          borderColor: palette.surface,
+                          borderWidth: 2,
+                        },
                       })),
                     },
                   ],
@@ -375,10 +402,24 @@ export default function Stats() {
                 style={{ height: Math.max(240, namespace.length * 32) }}
                 notMerge
                 option={{
+                  ...CHART_ANIMATION,
                   tooltip: { trigger: "item", valueFormatter: (v: number) => `${v}건` },
                   grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
-                  xAxis: { type: "value", name: "건수" },
-                  yAxis: { type: "category", inverse: true, data: namespace.map((r) => r.key) },
+                  xAxis: {
+                    type: "value",
+                    name: "건수",
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
+                  yAxis: {
+                    type: "category",
+                    inverse: true,
+                    data: namespace.map((r) => r.key),
+                    axisLabel: { ...AXIS_LABEL, fontSize: 12 },
+                    axisLine: AXIS_LINE,
+                    axisTick: { show: false },
+                  },
                   series: [
                     {
                       type: "bar",
