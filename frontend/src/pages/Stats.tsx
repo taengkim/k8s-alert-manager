@@ -127,9 +127,20 @@ export default function Stats() {
     enabled,
   });
 
-  const rangeError = [summaryQuery, responseTimesQuery, topAlertsQuery, volumeQuery].find(
-    (q) => q.isError,
-  )?.error;
+  // All six queries share the exact same `filters` (team/cluster/range), so
+  // a range-validation error (e.g. the 90-day cap) hits every one of them
+  // identically -- watching all six here means the breakdown cards' own
+  // failures surface in this one banner too, instead of silently rendering
+  // as an empty "데이터가 없습니다" state below (which looks like "no data
+  // in this range" rather than "the request itself failed").
+  const rangeError = [
+    summaryQuery,
+    responseTimesQuery,
+    topAlertsQuery,
+    volumeQuery,
+    severityQuery,
+    namespaceQuery,
+  ].find((q) => q.isError)?.error;
 
   if (noTeamSelected) {
     return (
