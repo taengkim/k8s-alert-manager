@@ -409,6 +409,7 @@ export const ko = {
   "templates.kindColumn": "종류",
 
   // -- templateEditor --
+  "templateEditor.createTitle": "템플릿 생성",
   "templateEditor.editTitle": "템플릿 수정",
   "templateEditor.editTitleWithName": "템플릿 수정 — {name}",
   "templateEditor.updateSuccess": "템플릿이 수정되었습니다",

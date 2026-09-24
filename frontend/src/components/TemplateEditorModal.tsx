@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router";
-import { Alert, App, Button, Form, Input, List, Radio, Select, Space, Tag, Typography } from "antd";
+import { Alert, App, Button, Form, Input, List, Modal, Radio, Select, Space, Tag, Typography } from "antd";
 import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
 import { getAlertHistory } from "../api/history";
@@ -33,6 +32,13 @@ interface FormValues {
   title_template: string;
   body_template: string;
   body_html_template?: string;
+}
+
+interface TemplateEditorModalProps {
+  open: boolean;
+  onClose: () => void;
+  /** null/undefined = create mode. */
+  templateId?: number | null;
 }
 
 function toBody(values: FormValues): TemplateWriteInput {
@@ -80,11 +86,37 @@ function insertAtCursor(
   });
 }
 
-export default function TemplateEditor() {
+export default function TemplateEditorModal({ open, onClose, templateId }: TemplateEditorModalProps) {
   const { t } = useI18n();
-  const { id } = useParams<{ id: string }>();
-  const isEdit = !!id;
-  const navigate = useNavigate();
+  const isEdit = templateId != null;
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      destroyOnClose
+      width={960}
+      style={{ top: 24 }}
+      styles={{ body: { maxHeight: "calc(100vh - 160px)", overflowY: "auto" } }}
+      title={isEdit ? t("templateEditor.editTitle") : t("templateEditor.createTitle")}
+    >
+      {/* Gated on `open` so this form is a fresh component instance every
+          time it's opened -- reopening for a different template (or for
+          create, right after editing one) always starts clean. */}
+      {open && <TemplateEditorFormBody templateId={templateId ?? null} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function TemplateEditorFormBody({
+  templateId,
+  onClose,
+}: {
+  templateId: number | null;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const isEdit = templateId != null;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { currentTeam } = useTeam();
@@ -108,8 +140,8 @@ export default function TemplateEditor() {
   const isReportKind = kindValue === "report";
 
   const templateQuery = useQuery({
-    queryKey: ["template", id],
-    queryFn: () => getTemplate(Number(id)),
+    queryKey: ["template", templateId],
+    queryFn: () => getTemplate(templateId!),
     enabled: isEdit,
   });
 
@@ -194,12 +226,12 @@ export default function TemplateEditor() {
   const saveMutation = useMutation({
     mutationFn: (values: FormValues) => {
       const body = toBody(values);
-      return isEdit ? updateTemplate(Number(id), body) : createTemplate(teamId!, body);
+      return isEdit ? updateTemplate(templateId!, body) : createTemplate(teamId!, body);
     },
     onSuccess: () => {
       message.success(isEdit ? t("templateEditor.updateSuccess") : t("templateEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["templates", teamId] });
-      navigate("/templates");
+      onClose();
     },
     onError: (err) => {
       setServerError(
@@ -227,12 +259,7 @@ export default function TemplateEditor() {
   };
 
   if (!currentTeam) {
-    return (
-      <div>
-        <h2>{isEdit ? t("templateEditor.editTitle") : t("templates.createButton")}</h2>
-        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
-      </div>
-    );
+    return <Alert type="info" showIcon message={t("common.noTeamAssigned")} />;
   }
 
   const errorsBySlot = new Map<string, { lineno: number | null; message: string }[]>();
@@ -249,14 +276,8 @@ export default function TemplateEditor() {
   }));
 
   return (
-    <div style={{ display: "flex", gap: 24, alignItems: "flex-start", maxWidth: 1280 }}>
+    <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
       <div style={{ flex: "1 1 640px", minWidth: 480 }}>
-        <h2>
-          {isEdit
-            ? t("templateEditor.editTitleWithName", { name: templateQuery.data?.name ?? "" })
-            : t("templates.createButton")}
-        </h2>
-
         {serverError && (
           <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
         )}
@@ -359,7 +380,7 @@ export default function TemplateEditor() {
             <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
               {t("common.save")}
             </Button>
-            <Button onClick={() => navigate("/templates")}>{t("common.cancel")}</Button>
+            <Button onClick={onClose}>{t("common.cancel")}</Button>
           </Space>
         </Form>
       </div>

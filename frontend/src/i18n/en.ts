@@ -406,6 +406,7 @@ export const en: Record<keyof typeof ko, string> = {
   "templates.kindColumn": "Kind",
 
   // -- templateEditor --
+  "templateEditor.createTitle": "Create template",
   "templateEditor.editTitle": "Edit template",
   "templateEditor.editTitleWithName": "Edit template — {name}",
   "templateEditor.updateSuccess": "Template updated",

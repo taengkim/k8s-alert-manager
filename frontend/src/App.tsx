@@ -19,7 +19,6 @@ import Silences from "./pages/Silences";
 import Stats from "./pages/Stats";
 import TeamSettings from "./pages/TeamSettings";
 import Templates from "./pages/Templates";
-import TemplateEditor from "./pages/TemplateEditor";
 import Admin from "./pages/Admin";
 
 const { Sider, Content } = Layout;
@@ -140,8 +139,11 @@ export default function App() {
             <Route path="/silences" element={<Silences />} />
             <Route path="/channels" element={<Channels />} />
             <Route path="/templates" element={<Templates />} />
-            <Route path="/templates/new" element={<TemplateEditor />} />
-            <Route path="/templates/:id/edit" element={<TemplateEditor />} />
+            {/* /templates/new and /templates/:id/edit are now handled as a
+                modal from within Templates.tsx -- these redirects only
+                exist for bookmarks/links made before that conversion. */}
+            <Route path="/templates/new" element={<Navigate to="/templates" replace />} />
+            <Route path="/templates/:id/edit" element={<Navigate to="/templates" replace />} />
             <Route path="/routes" element={<RoutesPage />} />
             {/* /routes/new and /routes/:id/edit are now handled as a modal
                 from within Routes.tsx -- these redirects only exist for
