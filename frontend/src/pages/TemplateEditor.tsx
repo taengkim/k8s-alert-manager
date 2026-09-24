@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router";
-import { Alert, App, Button, Form, Input, List, Select, Space, Tag, Typography } from "antd";
+import { Alert, App, Button, Form, Input, List, Radio, Select, Space, Tag, Typography } from "antd";
 import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
 import { getAlertHistory } from "../api/history";
@@ -23,9 +23,12 @@ const BODY_HTML_FIELD_ID = "template-editor-body-html";
 const PREVIEW_DEBOUNCE_MS = 500;
 const SAMPLE_SOURCE = "sample";
 
+type TemplateKind = "alert" | "report";
+
 interface FormValues {
   name: string;
   description?: string;
+  kind: TemplateKind;
   title_template: string;
   body_template: string;
   body_html_template?: string;
@@ -35,7 +38,7 @@ function toBody(values: FormValues): TemplateWriteInput {
   return {
     name: values.name,
     description: values.description || undefined,
-    kind: "alert",
+    kind: values.kind,
     title_template: values.title_template,
     body_template: values.body_template,
     body_html_template: values.body_html_template || undefined,
@@ -99,6 +102,8 @@ export default function TemplateEditor() {
   const titleValue = Form.useWatch("title_template", form);
   const bodyValue = Form.useWatch("body_template", form);
   const bodyHtmlValue = Form.useWatch("body_html_template", form);
+  const kindValue: TemplateKind = Form.useWatch("kind", form) ?? "alert";
+  const isReportKind = kindValue === "report";
 
   const templateQuery = useQuery({
     queryKey: ["template", id],
@@ -107,14 +112,17 @@ export default function TemplateEditor() {
   });
 
   const variablesQuery = useQuery({
-    queryKey: ["template-variables"],
-    queryFn: listTemplateVariables,
+    queryKey: ["template-variables", kindValue],
+    queryFn: () => listTemplateVariables(kindValue),
   });
 
+  // Only relevant for kind='alert' -- a report template previews against
+  // real ReportData via a schedule's own GET /reports/{id}/preview (see the
+  // Reports tab), not a sample alert event.
   const recentEventsQuery = useQuery({
     queryKey: ["template-preview-events", teamId],
     queryFn: () => getAlertHistory({ teamId, includeTest: true, pageSize: 20 }),
-    enabled: !!teamId,
+    enabled: !!teamId && !isReportKind,
   });
 
   useEffect(() => {
@@ -123,6 +131,7 @@ export default function TemplateEditor() {
     form.setFieldsValue({
       name: t.name,
       description: t.description ?? undefined,
+      kind: (t.kind as TemplateKind) ?? "alert",
       title_template: t.title_template,
       body_template: t.body_template,
       body_html_template: t.body_html_template ?? undefined,
@@ -138,6 +147,14 @@ export default function TemplateEditor() {
     const requestId = ++latestRequestId.current;
     const handle = setTimeout(() => {
       void (async () => {
+        if (isReportKind) {
+          // No sample AlertNotification makes sense for a report template
+          // -- preview it via a real schedule's own GET /reports/{id}/preview
+          // (see the Reports tab) instead.
+          setPreviewResult(null);
+          setPreviewError(null);
+          return;
+        }
         if (!titleValue && !bodyValue) {
           setPreviewResult(null);
           setPreviewError(null);
@@ -170,7 +187,7 @@ export default function TemplateEditor() {
       })();
     }, PREVIEW_DEBOUNCE_MS);
     return () => clearTimeout(handle);
-  }, [titleValue, bodyValue, bodyHtmlValue, previewSource]);
+  }, [titleValue, bodyValue, bodyHtmlValue, previewSource, isReportKind]);
 
   const saveMutation = useMutation({
     mutationFn: (values: FormValues) => {
@@ -238,7 +255,12 @@ export default function TemplateEditor() {
           <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
         )}
 
-        <Form<FormValues> form={form} layout="vertical" onFinish={handleFinish}>
+        <Form<FormValues>
+          form={form}
+          layout="vertical"
+          onFinish={handleFinish}
+          initialValues={{ kind: "alert" }}
+        >
           <Form.Item
             name="name"
             label="이름"
@@ -248,6 +270,24 @@ export default function TemplateEditor() {
           </Form.Item>
           <Form.Item name="description" label="설명">
             <Input placeholder="온콜 팀 전용 알림 형식" />
+          </Form.Item>
+          <Form.Item
+            name="kind"
+            label="종류"
+            help={
+              isEdit
+                ? "생성 후에는 종류를 변경할 수 없습니다"
+                : "리포트 템플릿은 팀 설정의 '리포트' 탭에서 스케줄에 연결해 사용합니다"
+            }
+          >
+            <Radio.Group
+              disabled={isEdit}
+              options={[
+                { label: "알럿", value: "alert" },
+                { label: "리포트", value: "report" },
+              ]}
+              optionType="button"
+            />
           </Form.Item>
 
           <Form.Item
@@ -351,87 +391,98 @@ export default function TemplateEditor() {
         />
 
         <Title level={5}>실시간 미리보기</Title>
-        <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }}>
-          <Select
-            style={{ width: "100%" }}
-            value={previewSource}
-            onChange={setPreviewSource}
-            options={[{ value: SAMPLE_SOURCE, label: "샘플 알럿" }, ...eventOptions]}
-            loading={recentEventsQuery.isLoading}
-          />
-        </Space>
-
-        {previewError && (
-          <Alert type="error" showIcon message={previewError} style={{ marginBottom: 12 }} />
-        )}
-
-        {previewResult?.warnings && previewResult.warnings.length > 0 && (
+        {isReportKind ? (
           <Alert
-            type="warning"
+            type="info"
             showIcon
-            message="미정의 변수"
-            description={
-              <Space size={4} wrap>
-                {previewResult.warnings.map((w) => (
-                  <Tag key={w} color="gold">
-                    {w}
-                  </Tag>
-                ))}
-              </Space>
-            }
-            style={{ marginBottom: 12 }}
+            message="리포트 템플릿은 여기서 미리보기할 수 없습니다"
+            description="샘플 알럿이 아닌 실제 통계 데이터를 기준으로 렌더링되므로, 팀 설정의 '리포트' 탭에서 스케줄을 만든 뒤 그 스케줄의 미리보기 기능을 사용하세요."
           />
-        )}
+        ) : (
+          <>
+            <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }}>
+              <Select
+                style={{ width: "100%" }}
+                value={previewSource}
+                onChange={setPreviewSource}
+                options={[{ value: SAMPLE_SOURCE, label: "샘플 알럿" }, ...eventOptions]}
+                loading={recentEventsQuery.isLoading}
+              />
+            </Space>
 
-        <div
-          style={{
-            border: "1px solid #d9d9d9",
-            borderRadius: 6,
-            padding: 12,
-            minHeight: 200,
-            opacity: previewLoading ? 0.6 : 1,
-          }}
-        >
-          {previewResult?.rendered ? (
-            <>
-              <div style={{ marginBottom: 8 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  제목
+            {previewError && (
+              <Alert type="error" showIcon message={previewError} style={{ marginBottom: 12 }} />
+            )}
+
+            {previewResult?.warnings && previewResult.warnings.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="미정의 변수"
+                description={
+                  <Space size={4} wrap>
+                    {previewResult.warnings.map((w) => (
+                      <Tag key={w} color="gold">
+                        {w}
+                      </Tag>
+                    ))}
+                  </Space>
+                }
+                style={{ marginBottom: 12 }}
+              />
+            )}
+
+            <div
+              style={{
+                border: "1px solid #d9d9d9",
+                borderRadius: 6,
+                padding: 12,
+                minHeight: 200,
+                opacity: previewLoading ? 0.6 : 1,
+              }}
+            >
+              {previewResult?.rendered ? (
+                <>
+                  <div style={{ marginBottom: 8 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      제목
+                    </Text>
+                    <div style={{ fontWeight: 600 }}>{previewResult.rendered.title}</div>
+                  </div>
+                  <div style={{ marginBottom: previewResult.rendered.body_html ? 8 : 0 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      본문
+                    </Text>
+                    <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
+                      {previewResult.rendered.body}
+                    </pre>
+                  </div>
+                  {previewResult.rendered.body_html && (
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        본문 (body_html, HTML 소스 -- 렌더링 없이 텍스트로 표시)
+                      </Text>
+                      {/* Deliberately rendered as plain escaped text (React's
+                          {} interpolation, not dangerouslySetInnerHTML) -- this
+                          panel shows the rendered HTML *source* for inspection,
+                          never executes it. A visual HTML preview is out of
+                          scope for this phase. */}
+                      <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
+                        {previewResult.rendered.body_html}
+                      </pre>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <Text type="secondary">
+                  {previewResult && previewResult.errors.length > 0
+                    ? "템플릿 오류로 미리보기를 표시할 수 없습니다."
+                    : "제목/본문을 입력하면 미리보기가 표시됩니다."}
                 </Text>
-                <div style={{ fontWeight: 600 }}>{previewResult.rendered.title}</div>
-              </div>
-              <div style={{ marginBottom: previewResult.rendered.body_html ? 8 : 0 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  본문
-                </Text>
-                <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
-                  {previewResult.rendered.body}
-                </pre>
-              </div>
-              {previewResult.rendered.body_html && (
-                <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    본문 (body_html, HTML 소스 -- 렌더링 없이 텍스트로 표시)
-                  </Text>
-                  {/* Deliberately rendered as plain escaped text (React's
-                      {} interpolation, not dangerouslySetInnerHTML) -- this
-                      panel shows the rendered HTML *source* for inspection,
-                      never executes it. A visual HTML preview is out of
-                      scope for this phase. */}
-                  <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
-                    {previewResult.rendered.body_html}
-                  </pre>
-                </div>
               )}
-            </>
-          ) : (
-            <Text type="secondary">
-              {previewResult && previewResult.errors.length > 0
-                ? "템플릿 오류로 미리보기를 표시할 수 없습니다."
-                : "제목/본문을 입력하면 미리보기가 표시됩니다."}
-            </Text>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
