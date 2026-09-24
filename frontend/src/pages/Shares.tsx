@@ -34,38 +34,27 @@ import type {
   ShareMode,
 } from "../api/shares";
 import MatcherListEditor from "../components/MatcherListEditor";
+import { useI18n } from "../i18n";
 
 const { Text } = Typography;
-
-const MODE_OPTIONS: { value: ShareMode; label: string }[] = [
-  { value: "view", label: "보기만" },
-  { value: "view_notify", label: "보기+알림" },
-];
-
-function modeLabel(mode: ShareMode): string {
-  return mode === "view_notify" ? "보기+알림" : "보기만";
-}
 
 function modeColor(mode: ShareMode): string {
   return mode === "view_notify" ? "green" : "blue";
 }
 
-function matcherSummary(matchers: ShareMatcher[] | null): string {
-  return !matchers || matchers.length === 0 ? "전체" : `매처 ${matchers.length}개`;
-}
-
 export default function Shares() {
+  const { t } = useI18n();
   const { currentTeam, teams } = useTeam();
 
   if (teams.length === 0 || !currentTeam) {
     return (
       <div>
-        <h2>공유</h2>
+        <h2>{t("shares.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -73,11 +62,11 @@ export default function Shares() {
 
   return (
     <div>
-      <h2>공유 — {currentTeam.name}</h2>
+      <h2>{t("shares.titleWithTeam", { team: currentTeam.name })}</h2>
       <Tabs
         items={[
-          { key: "outgoing", label: "보내는 공유", children: <OutgoingTab teamId={currentTeam.id} /> },
-          { key: "incoming", label: "받는 공유", children: <IncomingTab teamId={currentTeam.id} /> },
+          { key: "outgoing", label: t("shares.outgoingTab"), children: <OutgoingTab teamId={currentTeam.id} /> },
+          { key: "incoming", label: t("shares.incomingTab"), children: <IncomingTab teamId={currentTeam.id} /> },
         ]}
       />
     </div>
@@ -91,6 +80,18 @@ interface FormValues {
 }
 
 function OutgoingTab({ teamId }: { teamId: number }) {
+  const { t } = useI18n();
+  const MODE_OPTIONS: { value: ShareMode; label: string }[] = [
+    { value: "view", label: t("shares.modeViewOnly") },
+    { value: "view_notify", label: t("shares.modeViewNotify") },
+  ];
+  const modeLabel = (mode: ShareMode): string =>
+    mode === "view_notify" ? t("shares.modeViewNotify") : t("shares.modeViewOnly");
+  const matcherSummary = (matchers: ShareMatcher[] | null): string =>
+    !matchers || matchers.length === 0
+      ? t("common.all")
+      : t("shares.matcherSummaryCount", { count: matchers.length });
+
   const { user } = useAuth();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -134,11 +135,11 @@ function OutgoingTab({ teamId }: { teamId: number }) {
         matchers: values.matchers?.length ? values.matchers : undefined,
       }),
     onSuccess: () => {
-      message.success("공유가 생성되었습니다");
+      message.success(t("shares.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["shares-outgoing", teamId] });
       closeModal();
     },
-    onError: (err) => setFormError(err instanceof ApiError ? err.detail : "공유 생성에 실패했습니다"),
+    onError: (err) => setFormError(err instanceof ApiError ? err.detail : t("shares.createError")),
   });
 
   const updateMutation = useMutation({
@@ -148,22 +149,22 @@ function OutgoingTab({ teamId }: { teamId: number }) {
         matchers: values.matchers?.length ? values.matchers : null,
       }),
     onSuccess: () => {
-      message.success("공유가 수정되었습니다");
+      message.success(t("shares.updateSuccess"));
       queryClient.invalidateQueries({ queryKey: ["shares-outgoing", teamId] });
       closeModal();
     },
-    onError: (err) => setFormError(err instanceof ApiError ? err.detail : "공유 수정에 실패했습니다"),
+    onError: (err) => setFormError(err instanceof ApiError ? err.detail : t("shares.updateError")),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteShare(id),
     onSuccess: () => {
-      message.success("공유가 삭제되었습니다");
+      message.success(t("shares.deleteSuccess"));
       queryClient.invalidateQueries({ queryKey: ["shares-outgoing", teamId] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -200,18 +201,18 @@ function OutgoingTab({ teamId }: { teamId: number }) {
 
   const columns = [
     {
-      title: "대상 팀",
+      title: t("shares.targetTeamColumn"),
       key: "target",
       render: (_: unknown, s: OutgoingShare) => `${s.target_team_name} (${s.target_team_slug})`,
     },
     {
-      title: "모드",
+      title: t("shares.modeColumn"),
       dataIndex: "mode",
       key: "mode",
       render: (mode: ShareMode) => <Tag color={modeColor(mode)}>{modeLabel(mode)}</Tag>,
     },
     {
-      title: "범위",
+      title: t("shares.scopeColumn"),
       key: "matchers",
       render: (_: unknown, s: OutgoingShare) => <Tag>{matcherSummary(s.matchers)}</Tag>,
     },
@@ -223,14 +224,14 @@ function OutgoingTab({ teamId }: { teamId: number }) {
             render: (_: unknown, s: OutgoingShare) => (
               <Space>
                 <Button size="small" onClick={() => openEdit(s)}>
-                  수정
+                  {t("common.edit")}
                 </Button>
                 <Popconfirm
-                  title="이 공유를 삭제하시겠습니까?"
+                  title={t("shares.deleteConfirm")}
                   onConfirm={() => deleteMutation.mutate(s.id)}
                 >
                   <Button size="small" danger loading={deleteMutation.isPending}>
-                    삭제
+                    {t("common.delete")}
                   </Button>
                 </Popconfirm>
               </Space>
@@ -244,7 +245,7 @@ function OutgoingTab({ teamId }: { teamId: number }) {
     <div>
       {isOwner && (
         <Button type="primary" onClick={openCreate} style={{ marginBottom: 16 }}>
-          공유 생성
+          {t("shares.createButton")}
         </Button>
       )}
       <Table<OutgoingShare>
@@ -253,10 +254,10 @@ function OutgoingTab({ teamId }: { teamId: number }) {
         dataSource={sharesQuery.data ?? []}
         columns={columns}
         pagination={false}
-        locale={{ emptyText: <Empty description="공유가 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("shares.emptyOutgoing")} /> }}
       />
       <Modal
-        title={editing ? "공유 수정" : "공유 생성"}
+        title={editing ? t("shares.editTitle") : t("shares.createButton")}
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
@@ -273,8 +274,8 @@ function OutgoingTab({ teamId }: { teamId: number }) {
         >
           <Form.Item
             name="target_team_id"
-            label="대상 팀"
-            rules={[{ required: true, message: "대상 팀을 선택하세요" }]}
+            label={t("shares.targetTeamColumn")}
+            rules={[{ required: true, message: t("shares.targetTeamRequired") }]}
           >
             <Select
               disabled={!!editing}
@@ -282,20 +283,17 @@ function OutgoingTab({ teamId }: { teamId: number }) {
               optionFilterProp="label"
               loading={teamsQuery.isLoading}
               options={targetOptions}
-              placeholder="공유할 팀 선택"
+              placeholder={t("shares.targetTeamPlaceholder")}
             />
           </Form.Item>
-          <Form.Item name="mode" label="모드" rules={[{ required: true }]}>
+          <Form.Item name="mode" label={t("shares.modeColumn")} rules={[{ required: true }]}>
             <Radio.Group options={MODE_OPTIONS} optionType="button" />
           </Form.Item>
-          <Text type="secondary">
-            보기만: 대상 팀의 대시보드/이력에만 표시됩니다. 보기+알림: 대상 팀의 include_shared
-            라우팅 규칙도 이 알럿에 반응해 알림을 보낼 수 있습니다.
-          </Text>
+          <Text type="secondary">{t("shares.modeExplanation")}</Text>
           <div style={{ marginTop: 16, marginBottom: 8 }}>
-            <Text strong>공유 범위 (매처)</Text>
+            <Text strong>{t("shares.scopeMatchersTitle")}</Text>
             <div>
-              <Text type="secondary">비워두면 이 팀의 모든 알럿을 공유합니다.</Text>
+              <Text type="secondary">{t("shares.scopeMatchersHint")}</Text>
             </div>
           </div>
           <MatcherListEditor name="matchers" form={form} />
@@ -306,6 +304,14 @@ function OutgoingTab({ teamId }: { teamId: number }) {
 }
 
 function IncomingTab({ teamId }: { teamId: number }) {
+  const { t } = useI18n();
+  const modeLabel = (mode: ShareMode): string =>
+    mode === "view_notify" ? t("shares.modeViewNotify") : t("shares.modeViewOnly");
+  const matcherSummary = (matchers: ShareMatcher[] | null): string =>
+    !matchers || matchers.length === 0
+      ? t("common.all")
+      : t("shares.matcherSummaryCount", { count: matchers.length });
+
   const sharesQuery = useQuery({
     queryKey: ["shares-incoming", teamId],
     queryFn: () => listIncomingShares(teamId),
@@ -313,18 +319,18 @@ function IncomingTab({ teamId }: { teamId: number }) {
 
   const columns = [
     {
-      title: "보낸 팀",
+      title: t("shares.ownerTeamColumn"),
       key: "owner",
       render: (_: unknown, s: IncomingShare) => `${s.owner_team_name} (${s.owner_team_slug})`,
     },
     {
-      title: "모드",
+      title: t("shares.modeColumn"),
       dataIndex: "mode",
       key: "mode",
       render: (mode: ShareMode) => <Tag color={modeColor(mode)}>{modeLabel(mode)}</Tag>,
     },
     {
-      title: "범위",
+      title: t("shares.scopeColumn"),
       key: "matchers",
       render: (_: unknown, s: IncomingShare) => <Tag>{matcherSummary(s.matchers)}</Tag>,
     },
@@ -337,7 +343,7 @@ function IncomingTab({ teamId }: { teamId: number }) {
       dataSource={sharesQuery.data ?? []}
       columns={columns}
       pagination={false}
-      locale={{ emptyText: <Empty description="받은 공유가 없습니다" /> }}
+      locale={{ emptyText: <Empty description={t("shares.emptyIncoming")} /> }}
     />
   );
 }

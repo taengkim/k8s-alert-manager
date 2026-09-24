@@ -496,4 +496,33 @@ export const ko = {
   "routeEditor.previewScopeHint": "최근 알럿 이력 최대 200건에 이 규칙을 평가합니다.",
   "routeEditor.previewStatusHint":
     "\"현재 상태\"는 이력에 기록된 실제 상태이며, 판정은 항상 이 알럿이 firing으로 들어왔을 때를 기준으로 평가합니다.",
+
+  // -- shares --
+  "shares.title": "공유",
+  "shares.titleWithTeam": "공유 — {team}",
+  "shares.modeViewOnly": "보기만",
+  "shares.modeViewNotify": "보기+알림",
+  "shares.matcherSummaryCount": "매처 {count}개",
+  "shares.outgoingTab": "보내는 공유",
+  "shares.incomingTab": "받는 공유",
+  "shares.createSuccess": "공유가 생성되었습니다",
+  "shares.createError": "공유 생성에 실패했습니다",
+  "shares.updateSuccess": "공유가 수정되었습니다",
+  "shares.updateError": "공유 수정에 실패했습니다",
+  "shares.deleteSuccess": "공유가 삭제되었습니다",
+  "shares.targetTeamColumn": "대상 팀",
+  "shares.modeColumn": "모드",
+  "shares.scopeColumn": "범위",
+  "shares.deleteConfirm": "이 공유를 삭제하시겠습니까?",
+  "shares.createButton": "공유 생성",
+  "shares.emptyOutgoing": "공유가 없습니다",
+  "shares.editTitle": "공유 수정",
+  "shares.targetTeamRequired": "대상 팀을 선택하세요",
+  "shares.targetTeamPlaceholder": "공유할 팀 선택",
+  "shares.modeExplanation":
+    "보기만: 대상 팀의 대시보드/이력에만 표시됩니다. 보기+알림: 대상 팀의 include_shared 라우팅 규칙도 이 알럿에 반응해 알림을 보낼 수 있습니다.",
+  "shares.scopeMatchersTitle": "공유 범위 (매처)",
+  "shares.scopeMatchersHint": "비워두면 이 팀의 모든 알럿을 공유합니다.",
+  "shares.ownerTeamColumn": "보낸 팀",
+  "shares.emptyIncoming": "받은 공유가 없습니다",
 } as const;

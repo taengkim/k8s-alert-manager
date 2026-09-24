@@ -493,4 +493,33 @@ export const en: Record<keyof typeof ko, string> = {
   "routeEditor.previewScopeHint": "Evaluates this rule against up to the 200 most recent alert history entries.",
   "routeEditor.previewStatusHint":
     "\"Current status\" is the actual status recorded in history; the verdict is always evaluated as if this alert had just come in as firing.",
+
+  // -- shares --
+  "shares.title": "Shares",
+  "shares.titleWithTeam": "Shares — {team}",
+  "shares.modeViewOnly": "View only",
+  "shares.modeViewNotify": "View + notify",
+  "shares.matcherSummaryCount": "{count} matchers",
+  "shares.outgoingTab": "Outgoing shares",
+  "shares.incomingTab": "Incoming shares",
+  "shares.createSuccess": "Share created",
+  "shares.createError": "Failed to create share",
+  "shares.updateSuccess": "Share updated",
+  "shares.updateError": "Failed to update share",
+  "shares.deleteSuccess": "Share deleted",
+  "shares.targetTeamColumn": "Target team",
+  "shares.modeColumn": "Mode",
+  "shares.scopeColumn": "Scope",
+  "shares.deleteConfirm": "Delete this share?",
+  "shares.createButton": "Create share",
+  "shares.emptyOutgoing": "No shares",
+  "shares.editTitle": "Edit share",
+  "shares.targetTeamRequired": "Select a target team",
+  "shares.targetTeamPlaceholder": "Select a team to share with",
+  "shares.modeExplanation":
+    "View only: shows up only in the target team's dashboard/history. View + notify: the target team's include_shared routing rules can also react to this alert and send notifications.",
+  "shares.scopeMatchersTitle": "Share scope (matchers)",
+  "shares.scopeMatchersHint": "Leave empty to share all of this team's alerts.",
+  "shares.ownerTeamColumn": "Sending team",
+  "shares.emptyIncoming": "No incoming shares",
 };
