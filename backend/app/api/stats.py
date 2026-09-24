@@ -3,6 +3,13 @@ notification_outbox), backing the Stats page. Every route shares
 app.api.deps.resolve_team_scope's semantics with /alerts -- non-admins must
 supply a `team_id` they belong to, admins may omit it for the unscoped
 all-teams view.
+
+Note this is *authorization* scoping only, not *visibility* scoping: unlike
+/alerts' own /live and /history, a team's stats here never widen to include
+another team's alerts shared into it via Phase 14's AlertShare (view/
+view_notify) -- see app.services.stats's module docstring. A team member
+authorized to view shared-in alerts on /live still only ever sees their own
+team's incidents reflected in these aggregates.
 """
 
 from datetime import UTC, datetime, timedelta

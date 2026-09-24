@@ -10,6 +10,17 @@ same team/cluster scoping: `team_id=None` means "every team" (the admin
 unscoped view), a concrete id means "only that team's events". Callers
 resolve+authorize `team_id` themselves via `app.api.deps.resolve_team_scope`
 before calling in here -- this module trusts whatever it's given.
+
+Deliberately narrower than /alerts' own team scoping: Phase 14's AlertShare
+widening (a team's /live and /history additionally show a *view*/
+*view_notify*-shared owner team's matching alerts -- see
+app.api.alerts._load_shared_scopes_by_slug/`shared_owner_team_ids`) is NOT
+applied here. `AlertEvent.team_id == team_id` alone decides membership in
+every aggregate below, full stop -- a team's stats describe its own team's
+incidents only, never another team's shared-in ones, even if that same team
+would see those alerts on /live. Phase 20's weekly report inherits this
+same "own incidents only" semantics by construction, since it calls these
+functions unchanged.
 """
 
 from __future__ import annotations
