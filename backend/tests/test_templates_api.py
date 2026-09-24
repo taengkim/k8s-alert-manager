@@ -242,19 +242,41 @@ async def test_create_template_syntax_error_422_with_position(client: AsyncClien
 
 
 async def test_create_template_unsupported_kind_422(client: AsyncClient) -> None:
+    """'report' is a supported kind as of Phase 20 (see
+    test_create_template_report_kind below) -- this now exercises a kind
+    that's still genuinely unsupported.
+    """
     team_id = await _create_team("tpl-kind")
     await login_as(client, username="alice", group_dns=[ADMIN_DN])
 
     resp = await client.post(
         f"/api/v1/teams/{team_id}/templates",
         json={
-            "name": "report-kind",
-            "kind": "report",
+            "name": "bogus-kind",
+            "kind": "bogus",
             "title_template": "ok",
             "body_template": "ok",
         },
     )
     assert resp.status_code == 422
+
+
+async def test_create_template_report_kind(client: AsyncClient) -> None:
+    """Phase 20: 'report' is a valid kind alongside 'alert'."""
+    team_id = await _create_team("tpl-report-kind")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/templates",
+        json={
+            "name": "weekly-report",
+            "kind": "report",
+            "title_template": "[KAM] {{ team }} report",
+            "body_template": "events: {{ summary.events_in_range }}",
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["kind"] == "report"
 
 
 async def test_create_template_duplicate_name_409(client: AsyncClient) -> None:

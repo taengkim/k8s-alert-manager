@@ -10,7 +10,7 @@ sidebar renders.
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -26,15 +26,17 @@ from app.models.team import Team, TeamMembership
 from app.models.template import MAX_TEMPLATE_LENGTH, MessageTemplate
 from app.models.user import User
 from app.services import audit
+from app.services.reports import REPORT_TEMPLATE_KIND, report_template_variables
 from app.services.routing import build_notification_for_event
 from app.services.templating import preview as render_preview
 from app.services.templating import template_variables, validate_template_strings
 
 router = APIRouter(prefix="/api/v1", tags=["templates"])
 
-# Only 'alert' is usable today -- see app/models/template.py's docstring for
-# why the column itself has no DB-level CHECK constraint.
-SUPPORTED_KINDS = {"alert"}
+# 'alert' (Phase 13) + 'report' (Phase 20, REPORT_TEMPLATE_KIND) -- see
+# app/models/template.py's docstring for why the column itself has no
+# DB-level CHECK constraint.
+SUPPORTED_KINDS = {"alert", REPORT_TEMPLATE_KIND}
 
 
 class TemplateWrite(BaseModel):
@@ -296,8 +298,22 @@ async def preview_template(
 
 @router.get("/templates/variables")
 async def get_template_variables(
+    kind: str = Query(default="alert"),
     _user: User = Depends(get_current_user),
 ) -> list[dict[str, str]]:
+    """The editor's variable-reference sidebar. `kind='report'` (Phase 20)
+    returns `ReportData`'s own fields (see `app.services.reports`) instead
+    of `AlertNotification`'s -- an 'alert'-kind and a 'report'-kind template
+    render against entirely different contexts (see
+    `app.services.reports.render_report` vs.
+    `app.services.templating.render`), so the reference list has to match
+    whichever kind is actually being edited. An unrecognized `kind` falls
+    back to the alert variable list rather than 422ing -- this is a UI
+    reference aid, not a validation gate (kind validation itself happens in
+    `_validate_body` at save time).
+    """
+    if kind == REPORT_TEMPLATE_KIND:
+        return report_template_variables()
     return template_variables()
 
 
