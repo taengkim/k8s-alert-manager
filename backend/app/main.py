@@ -17,6 +17,7 @@ from app.api.channels import router as channels_router
 from app.api.channels import types_router as channel_types_router
 from app.api.clusters import namespaces_router
 from app.api.clusters import router as clusters_router
+from app.api.events import router as events_router
 from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
 from app.api.routes import router as routes_router
@@ -35,6 +36,7 @@ from app.channels.registry import ChannelRegistry
 from app.config import get_settings
 from app.services.cluster_bootstrap import ensure_default_cluster
 from app.services.cluster_health import ClusterHealthCache
+from app.services.events_hub import Hub
 from app.services.k8s import K8sClientFactory
 from app.worker.outbox import run_loop
 
@@ -58,6 +60,13 @@ async def lifespan(app: FastAPI):
     # ClusterHealthCache docstring) -- one instance per app, same rationale
     # as k8s_factory above.
     app.state.cluster_health_cache = ClusterHealthCache()
+
+    # Phase 18 live SSE feed's broadcast hub. Exists unconditionally --
+    # unlike the embedded outbox worker below, there's no "off" mode for
+    # this (see app/api/events.py's docstring): the test app fixture uses
+    # it the same way a real deployment does, just with nothing but tests
+    # publishing to it.
+    app.state.events_hub = Hub()
 
     # Discovered once at startup: built-in channels + entry-point/plugins-dir
     # third-party channels (see app/channels/registry.py). discover() already
@@ -127,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(metrics_router)
     app.include_router(silences_router)
     app.include_router(webhook_router)
+    app.include_router(events_router)
     app.include_router(channel_types_router)
     app.include_router(channels_router)
     app.include_router(routes_team_router)
