@@ -72,6 +72,14 @@ async def claim_due_actions(
     for signature symmetry with `claim_batch` and folded into this
     function's own log lines, should claiming ever need to be debugged
     across multiple worker processes.
+
+    Resets `due_at` to `now` as part of the claim itself: `due_at` is this
+    module's lease clock (see the module docstring), and a row that was
+    significantly overdue when claimed (e.g. after the worker was down for
+    a while) would otherwise still read as "due `lease_timeout` ago" the
+    instant it's claimed -- making `recover_stale_claims` immediately treat
+    a freshly-claimed row as an abandoned one and bounce it straight back
+    to 'pending' before dispatch ever gets a chance to run.
     """
     now = datetime.now(UTC)
     dialect = session.get_bind().dialect.name
@@ -87,7 +95,7 @@ async def claim_due_actions(
         claimed = await session.execute(
             update(ScheduledAction)
             .where(ScheduledAction.id.in_(due_ids_subquery))
-            .values(status="claimed")
+            .values(status="claimed", due_at=now)
             .returning(ScheduledAction.id)
             .execution_options(synchronize_session=False)
         )
@@ -109,6 +117,7 @@ async def claim_due_actions(
     rows = list(result.scalars().all())
     for row in rows:
         row.status = "claimed"
+        row.due_at = now
     await session.commit()
     logger.debug("scheduler worker %s claimed %d action(s)", worker_id, len(rows))
     return rows
@@ -209,7 +218,29 @@ async def _dispatch_escalation(action: ScheduledAction, session: AsyncSession) -
     if rule is None or not rule.enabled or not rule.escalation_enabled:
         raise _Skip("rule gone, disabled, or escalation turned off since scheduling")
 
-    channels = [c for c in rule.escalation_channels if c.deleted_at is None]
+    # Re-check cross-team consent at dispatch time, not just at save time:
+    # a channel's team may have revoked allow_cross_team_escalation between
+    # when this rule selected it and now (app/api/channels.py's
+    # update_channel already strips the join row when that happens, but
+    # this is a defense-in-depth re-check against any row that predates
+    # that cleanup, or a direct DB edit).
+    allowed_channels: list[Channel] = []
+    revoked_ids: list[int] = []
+    for c in rule.escalation_channels:
+        if c.deleted_at is not None:
+            continue
+        if c.team_id == rule.team_id or c.allow_cross_team_escalation:
+            allowed_channels.append(c)
+        else:
+            revoked_ids.append(c.id)
+    if revoked_ids:
+        logger.warning(
+            "escalation dispatch: skipping channel(s) %s for rule=%s -- "
+            "cross-team escalation no longer allowed",
+            revoked_ids,
+            rule.id,
+        )
+    channels = allowed_channels
     if not channels:
         raise _Skip("no (remaining) escalation channels")
 

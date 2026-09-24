@@ -157,6 +157,35 @@ async def test_claim_due_actions_claims_only_due_pending_rows(app) -> None:
         assert due.status == "claimed"
 
 
+async def test_claim_resets_due_at_so_overdue_action_is_not_immediately_recoverable(app) -> None:
+    """A `ScheduledAction` that was significantly overdue when claimed (e.g.
+    after the worker was down for a while) must not immediately look like
+    an abandoned claim to `recover_stale_claims` -- `claim_due_actions`
+    resets `due_at` to the claim time itself, since that's this module's
+    lease clock (see the module docstring).
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session)
+        cluster = await _create_cluster(session)
+        event = await _create_event(session, cluster, team)
+        rule = await _create_rule(session, team)
+        very_overdue = datetime.now(UTC) - timedelta(minutes=10)
+        action = await _create_action(
+            session, kind="escalation", event=event, rule=rule, due_at=very_overdue
+        )
+        await session.commit()
+
+        claimed = await claim_due_actions(session, "worker-1", limit=50)
+        assert len(claimed) == 1
+        assert claimed[0].due_at > very_overdue + timedelta(minutes=9)
+
+        recovered = await recover_stale_claims(session, lease_timeout=timedelta(minutes=5))
+        assert recovered == 0
+
+        await session.refresh(action)
+        assert action.status == "claimed"
+
+
 async def test_recover_stale_claims_restores_abandoned_claim(app) -> None:
     async with db_module.async_session_factory() as session:
         team = await _create_team(session)
@@ -299,6 +328,72 @@ async def test_dispatch_escalation_cancelled_when_no_escalation_channels(app) ->
         await dispatch(action, session)
 
         assert action.status == "cancelled"
+
+
+async def test_dispatch_escalation_skips_channel_with_revoked_cross_team_consent(app) -> None:
+    """Defense in depth (I2a): even if a stale join row survives (e.g. it
+    predates app/api/channels.py's update_channel cleanup, or a direct DB
+    edit), dispatch itself re-checks allow_cross_team_escalation and never
+    delivers to a channel that's no longer allowed -- it just skips that
+    one channel rather than cancelling the whole escalation, as long as at
+    least one other channel is still allowed.
+    """
+    async with db_module.async_session_factory() as session:
+        owner_team = await _create_team(session, "owner-team")
+        other_team = await _create_team(session, "other-team")
+        cluster = await _create_cluster(session)
+        own_channel = await _create_channel(session, owner_team, name="own")
+        foreign_channel = await _create_channel(session, other_team, name="foreign")
+        # Simulates a rule that selected `foreign_channel` while it still
+        # allowed cross-team escalation, which has since been revoked --
+        # the join row itself is untouched here (that's exactly the stale
+        # state this defense-in-depth check guards against).
+        foreign_channel.allow_cross_team_escalation = False
+        rule = await _create_rule(
+            session,
+            owner_team,
+            escalation_enabled=True,
+            escalation_after_minutes=5,
+            escalation_channels=[own_channel, foreign_channel],
+        )
+        event = await _create_event(session, cluster, owner_team)
+        action = await _create_action(
+            session, kind="escalation", event=event, rule=rule, due_at=datetime.now(UTC), status="claimed"
+        )
+        await session.commit()
+
+        await dispatch(action, session)
+
+        assert action.status == "done"
+        rows = (await session.execute(select(NotificationOutbox))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].channel_id == own_channel.id
+
+
+async def test_dispatch_escalation_cancelled_when_all_channels_revoked(app) -> None:
+    async with db_module.async_session_factory() as session:
+        owner_team = await _create_team(session, "owner-team-2")
+        other_team = await _create_team(session, "other-team-2")
+        cluster = await _create_cluster(session)
+        foreign_channel = await _create_channel(session, other_team, name="foreign-2")
+        foreign_channel.allow_cross_team_escalation = False
+        rule = await _create_rule(
+            session,
+            owner_team,
+            escalation_enabled=True,
+            escalation_after_minutes=5,
+            escalation_channels=[foreign_channel],
+        )
+        event = await _create_event(session, cluster, owner_team)
+        action = await _create_action(
+            session, kind="escalation", event=event, rule=rule, due_at=datetime.now(UTC), status="claimed"
+        )
+        await session.commit()
+
+        await dispatch(action, session)
+
+        assert action.status == "cancelled"
+        assert (await session.execute(select(NotificationOutbox))).scalars().all() == []
 
 
 # -- dispatch: renotify --------------------------------------------------------
