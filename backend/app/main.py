@@ -107,6 +107,11 @@ async def lifespan(app: FastAPI):
                 session_factory=db_module.async_session_factory,
                 registry=app.state.channel_registry,
                 worker_id=worker_id,
+                # Phase 18: lets the heartbeat sweep publish alert_created
+                # for a synthetic heartbeat-lost alert it injects -- see
+                # run_loop's own docstring for why only this embedded path
+                # (not the standalone runner) passes one.
+                hub=app.state.events_hub,
             )
         )
 

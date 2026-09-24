@@ -25,6 +25,7 @@ from app.models.channel import Channel
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
 from app.security import decrypt_str
+from app.services.events_hub import Hub
 from app.services.templating import APP_DEFAULT_TEMPLATES, render, resolve_template
 from app.worker.heartbeat import (
     SWEEP_INTERVAL_SECONDS as HEARTBEAT_SWEEP_INTERVAL_SECONDS,
@@ -372,6 +373,7 @@ async def run_loop(
     lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT,
     scheduler_interval: float = 30.0,
     heartbeat_sweep_interval: float = HEARTBEAT_SWEEP_INTERVAL_SECONDS,
+    hub: Hub | None = None,
 ) -> None:
     """Poll for due outbox rows until `stop_event` is set.
 
@@ -398,6 +400,16 @@ async def run_loop(
     recovery, scheduler dispatch, retention, or heartbeat sweep) is logged
     and swallowed so one bad iteration never kills the loop -- the next poll
     just tries again.
+
+    Phase 18: `hub` is optional (default `None`) and passed straight through
+    to `app.worker.heartbeat.sweep` -- this module stays FastAPI-free and
+    importable by the standalone worker process either way (see
+    `app/worker/runner.py`, which intentionally never supplies one: a
+    standalone worker process has no SSE subscribers of its own to publish
+    to, so a heartbeat-lost alert it injects reaches connected clients only
+    via their next query refetch, not the live feed). The embedded worker
+    (this same loop, run as a background task from `app/main.py`'s lifespan)
+    is the only caller that passes the app's real `Hub`.
     """
     last_lease_recovery = time.monotonic() - lease_recovery_interval  # run once immediately
     last_scheduler_tick = time.monotonic() - scheduler_interval  # run once immediately
@@ -423,7 +435,7 @@ async def run_loop(
                 last_scheduler_tick = time.monotonic()
 
             if time.monotonic() - last_heartbeat_sweep >= heartbeat_sweep_interval:
-                summary = await run_heartbeat_sweep(session_factory)
+                summary = await run_heartbeat_sweep(session_factory, hub=hub)
                 if summary["went_missing"]:
                     logger.warning(
                         "heartbeat sweep: cluster(s) went missing: %s", summary["went_missing"]

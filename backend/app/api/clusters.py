@@ -41,7 +41,12 @@ from app.models.user import User
 from app.security import encrypt_str, hash_token
 from app.services import audit
 from app.services.cluster_health import ClusterHealthCache
-from app.services.ingest import resolve_heartbeat_lost_event
+from app.services.events_hub import (
+    Hub,
+    build_event_from_transition,
+    publish_after_commit,
+)
+from app.services.ingest import AlertTransition, resolve_heartbeat_lost_event
 from app.services.k8s import K8sBadRequestError, K8sClientFactory, K8sUnavailableError
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["clusters"])
@@ -57,6 +62,10 @@ AuthKind = Literal["incluster", "kubeconfig", "token"]
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.http_client
+
+
+def get_hub(request: Request) -> Hub:
+    return request.app.state.events_hub
 
 
 class ClusterCreate(BaseModel):
@@ -312,6 +321,7 @@ async def update_cluster(
     body: ClusterUpdate,
     actor: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     cluster = await _get_cluster_or_404(session, cluster_id)
     fields_set = body.model_fields_set
@@ -351,6 +361,11 @@ async def update_cluster(
             setattr(cluster, field, getattr(body, field))
             changed = True
 
+    # Phase 18: collected here (rather than published immediately) so the
+    # publish can happen AFTER this request's own `session.commit()` below
+    # succeeds -- see app.services.events_hub.publish_after_commit's
+    # docstring for why that ordering matters.
+    heartbeat_transitions: list[AlertTransition] = []
     if disabling_while_missing:
         # Reset to 'unknown' -- the same "no heartbeat history is being
         # tracked" state a cluster starts in -- and resolve the open
@@ -368,7 +383,7 @@ async def update_cluster(
         # still want Watchdog's alerts visible in history, just no longer
         # treated as a deadman switch.
         cluster.heartbeat_state = "unknown"
-        await resolve_heartbeat_lost_event(session, cluster, datetime.now(UTC))
+        heartbeat_transitions = await resolve_heartbeat_lost_event(session, cluster, datetime.now(UTC))
 
     # A kind change with no new `credentials` in the same request needs a
     # per-kind call: 'token' always requires credentials (there's no valid
@@ -440,6 +455,11 @@ async def update_cluster(
             status_code=status.HTTP_409_CONFLICT, detail="conflicting cluster field"
         ) from exc
     await session.refresh(cluster)
+
+    # Phase 18: publish AFTER the commit above succeeded, never before --
+    # see app.services.events_hub.publish_after_commit's docstring.
+    for transition in heartbeat_transitions:
+        publish_after_commit(hub, build_event_from_transition(transition))
 
     result = _serialize_cluster(cluster, is_admin=True, health=None)
     if rotated_token is not None:

@@ -27,6 +27,41 @@ inside the same transaction an alert/ack/comment change commits in, and
 every replica's listener re-publishes into its own local `Hub` on receipt.
 Not implemented here -- this module is the natural swap-in point for that
 listener once the app needs to run with more than one replica.
+
+Shared-visibility exclusion (also deliberately out of scope this phase): an
+`AlertShare` that widens a *target* team's read access to another team's
+alerts (see `app.services.sharing`) gets NO corresponding SSE fan-out here
+-- `publish()`'s team scoping only ever considers an event's own `team_id`,
+never who it might additionally be shared with. A shared-in viewer's live
+feed simply doesn't reflect a shared team's events until their own next
+periodic query refetch (same "refetch eventually corrects it" fallback as
+the multi-replica case above). Widening this would mean resolving, at
+publish time, every team a share currently fans this event's owner team out
+to (and re-checking the share's optional matcher scope) -- a real feature,
+just not one this phase's brief asked for.
+
+Subscribe-time team-scope snapshot: `subscribe()` captures `team_ids` ONCE,
+at connection time (see `app/api/events.py`, which resolves them from the
+caller's current `TeamMembership` rows). A membership change that happens
+while a client is already connected -- added to a team, removed from one,
+promoted to admin -- has no effect on that live connection's scope; it only
+takes effect on the next `subscribe()` call, i.e. the next reconnect
+(browser refresh, or EventSource's own auto-reconnect after a dropped
+connection). A logged-in session that never reconnects could in principle
+carry a stale scope indefinitely. Accepted for this phase: team membership
+changes are rare compared to alert volume, and the same staleness already
+exists for any other per-request read of "my teams" cached client-side.
+
+Standalone worker process: `app/worker/heartbeat.py`'s sweep (which injects
+a synthetic heartbeat-lost alert on an ok->missing edge) and
+`app/worker/runner.py` (the standalone `python -m app.worker.runner`
+process) both take an optional `Hub | None` and default to `None` --
+a `Hub` instance only exists on a running API process's `app.state`, so a
+worker running as its own separate OS process (no API process, no app.state)
+has none to publish through. A heartbeat-lost alert injected that way still
+lands in the database exactly as normal; it only reaches a connected
+client via that client's next periodic query refetch, not this live feed,
+until the app is run in `KAM_WORKER_MODE=embedded` (the default) instead.
 """
 
 import asyncio

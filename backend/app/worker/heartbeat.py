@@ -60,10 +60,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.cluster import Cluster
 from app.models.team import Team
+from app.services.events_hub import (
+    Hub,
+    build_event_from_transition,
+    publish_after_commit,
+)
 from app.services.ingest import (
     HEARTBEAT_LOST_ALERTNAME,
     AlertmanagerAlert,
     AlertmanagerWebhookPayload,
+    IngestResult,
     heartbeat_lost_fingerprint,
     ingest_webhook,
 )
@@ -85,7 +91,7 @@ async def _resolve_team_slug(session: AsyncSession, team_id: int | None) -> str 
     return result.scalar_one_or_none()
 
 
-async def _inject_heartbeat_lost(session: AsyncSession, cluster: Cluster, now: datetime) -> None:
+async def _inject_heartbeat_lost(session: AsyncSession, cluster: Cluster, now: datetime) -> IngestResult:
     """Fire one synthetic firing alert for `cluster` through the real ingest
     pipeline (`ingest_webhook`, the same entry point Alertmanager's own
     webhook delivery uses) -- suppress rules, templates, and storm control
@@ -98,6 +104,11 @@ async def _inject_heartbeat_lost(session: AsyncSession, cluster: Cluster, now: d
     "unassigned, routing skipped" (Phase 9 semantics): the missing cluster is
     still visible via `heartbeat_state`/the Alerts banner and alert history,
     just never routed to a channel nobody configured.
+
+    Returns `ingest_webhook`'s `IngestResult` (Phase 18: its
+    `.transitions` -- normally exactly one 'created' entry -- is what
+    `_check_and_flip_one` publishes an `alert_created` SSE event from, after
+    its own commit succeeds).
     """
     team_slug = await _resolve_team_slug(session, cluster.heartbeat_team_id)
     labels = {
@@ -120,11 +131,15 @@ async def _inject_heartbeat_lost(session: AsyncSession, cluster: Cluster, now: d
         startsAt=now.isoformat(),
         fingerprint=heartbeat_lost_fingerprint(cluster.id),
     )
-    await ingest_webhook(session, cluster, AlertmanagerWebhookPayload(alerts=[alert]))
+    return await ingest_webhook(session, cluster, AlertmanagerWebhookPayload(alerts=[alert]))
 
 
 async def _check_and_flip_one(
-    session_factory: async_sessionmaker[AsyncSession], cluster_id: int, now: datetime
+    session_factory: async_sessionmaker[AsyncSession],
+    cluster_id: int,
+    now: datetime,
+    *,
+    hub: Hub | None = None,
 ) -> str | None:
     """Evaluate exactly one candidate cluster and, if it has timed out, flip
     it to 'missing' and inject its synthetic alert -- all in a single fresh
@@ -139,6 +154,16 @@ async def _check_and_flip_one(
     concurrent change (an admin disabling this cluster, a heartbeat
     arriving) between that query and this row's own load here could have
     already moved it out of the window it was selected for.
+
+    Phase 18: `hub` is optional (default `None`, meaning "don't publish") --
+    see `sweep`'s own docstring for why. When given, an `alert_created` SSE
+    event is published AFTER this function's own `session.commit()` below
+    succeeds, from the synthetic event `_inject_heartbeat_lost` just staged
+    -- never before, same "no dispatch pre-commit" discipline as every other
+    publish site (see `app.services.events_hub.publish_after_commit`). If
+    `_inject_heartbeat_lost`/the commit itself raises, `sweep`'s per-cluster
+    try/except catches it before this ever reaches the publish call, so
+    there's nothing to publish for an injection that never actually landed.
     """
     async with session_factory() as session:
         cluster = await session.get(Cluster, cluster_id)
@@ -180,12 +205,17 @@ async def _check_and_flip_one(
             return None
 
         cluster.heartbeat_state = "missing"
-        await _inject_heartbeat_lost(session, cluster, now)
+        ingest_result = await _inject_heartbeat_lost(session, cluster, now)
         await session.commit()
+        if hub is not None:
+            for transition in ingest_result.transitions:
+                publish_after_commit(hub, build_event_from_transition(transition))
         return cluster.name
 
 
-async def sweep(session_factory: async_sessionmaker[AsyncSession]) -> SweepSummary:
+async def sweep(
+    session_factory: async_sessionmaker[AsyncSession], *, hub: Hub | None = None
+) -> SweepSummary:
     """One heartbeat sweep tick.
 
     Only clusters currently `enabled`, `heartbeat_enabled`, and
@@ -206,6 +236,15 @@ async def sweep(session_factory: async_sessionmaker[AsyncSession]) -> SweepSumma
     `_check_and_flip_one` (see that function and this module's docstring for
     why) -- a per-cluster failure is logged here and skipped, never allowed
     to propagate and abort the rest of the tick.
+
+    Phase 18: `hub` is optional and defaults to `None` -- this module stays
+    FastAPI-free and callable standalone (see the module docstring and
+    `app/worker/runner.py`), so it can't assume a `Hub` exists. Only the
+    embedded worker (`app/main.py`'s lifespan, via `app/worker/outbox.py`'s
+    `run_loop`) has one to pass; the standalone `python -m app.worker.runner`
+    process passes none, meaning a heartbeat-lost alert it injects still
+    lands in the database exactly the same way, just without a live SSE push
+    -- any connected client only picks it up on its next query refetch.
     """
     now = datetime.now(UTC)
     went_missing: list[str] = []
@@ -222,7 +261,7 @@ async def sweep(session_factory: async_sessionmaker[AsyncSession]) -> SweepSumma
 
     for cluster_id in candidate_ids:
         try:
-            name = await _check_and_flip_one(session_factory, cluster_id, now)
+            name = await _check_and_flip_one(session_factory, cluster_id, now, hub=hub)
         except Exception:
             logger.exception(
                 "heartbeat sweep: failed to process cluster id=%s -- skipping this "
