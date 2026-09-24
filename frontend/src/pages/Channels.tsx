@@ -135,6 +135,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         digest_window_minutes: values.digest_window_minutes ?? 5,
       }),
     onSuccess: () => {
+      message.success(t("common.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
       closeModal();
     },
@@ -155,6 +156,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         digest_window_minutes: values.digest_window_minutes ?? 5,
       }),
     onSuccess: () => {
+      message.success(t("common.saveSuccess"));
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
       closeModal();
     },
