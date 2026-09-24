@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Alert, App, Button, Drawer, Form, Input, Segmented, Select, Space, Typography } from "antd";
+import { monoFontFamily } from "../theme";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
@@ -376,7 +377,7 @@ export default function RuleEditor() {
           <Form.Item label="PromQL 표현식" required>
             <Input.TextArea
               rows={3}
-              style={{ fontFamily: "monospace" }}
+              style={{ fontFamily: monoFontFamily }}
               value={promqlExpr}
               onChange={(e) => {
                 setPromqlExpr(e.target.value);
