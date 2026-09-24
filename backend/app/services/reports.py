@@ -43,10 +43,25 @@ CADENCES = ("daily", "weekly", "monthly")
 # app/api/templates.py).
 REPORT_TEMPLATE_KIND = "report"
 
+# 'daily' | 'weekly' | 'monthly' -> its Korean label, for DEFAULT_REPORT_TEMPLATES'
+# title (and any custom template that wants a cadence-aware label instead of
+# hardcoding one -- see the `cadence`/`cadence_label` ReportData fields
+# below). Mirrored in the frontend's own CADENCE_LABELS
+# (frontend/src/pages/TeamSettings.tsx) for the Reports tab's schedule
+# table -- same small-enum duplication convention as e.g. Channel.digest_mode's
+# labels there.
+CADENCE_LABELS: dict[str, str] = {"daily": "일간", "weekly": "주간", "monthly": "월간"}
+
 
 class ReportData(TypedDict):
     team: str
     team_slug: str
+    # 'daily' | 'weekly' | 'monthly' -- the schedule's own cadence, plus its
+    # precomputed Korean label (cadence_label), so a template can render a
+    # cadence-appropriate phrase ("주간 리포트" vs. "일간 리포트") without
+    # having to duplicate CADENCE_LABELS' if/elif logic itself.
+    cadence: str
+    cadence_label: str
     period_start: datetime
     period_end: datetime
     timezone: str
@@ -56,9 +71,10 @@ class ReportData(TypedDict):
     breakdowns: dict[str, list[dict[str, Any]]]
     response_times: dict[str, Any]
     # Percent change in events_in_range vs. the immediately-preceding
-    # same-length period, e.g. +12.5 or -8.0. None when the previous period
-    # had zero events (a percentage relative to zero is undefined, not
-    # "infinite" or "0%").
+    # same-LENGTH period (period_end - period_start), e.g. +12.5 or -8.0.
+    # None when that previous period had zero events (a percentage relative
+    # to zero is undefined, not "infinite" or "0%"). For 'monthly' this is
+    # NOT the previous calendar month -- see build_report_data's docstring.
     delta_pct: float | None
 
 
@@ -203,6 +219,19 @@ async def build_report_data(
     is always `None`) via `app.services.stats`'s functions, unchanged -- see
     this module's docstring for the AlertShare-exclusion caveat that
     inherits from there.
+
+    `delta_pct`'s comparison baseline is the SAME-LENGTH window immediately
+    before `period_start` (`period_start - (period_end - period_start)` ..
+    `period_start`), not necessarily the previous calendar period -- for
+    `daily`/`weekly` those coincide (a fixed 1-day/7-day window either way),
+    but for `monthly` they do NOT: a 28-day February compares against the
+    preceding 28 days (Jan 4-Feb 1), not the full calendar month of January
+    (Jan 1-Feb 1, 31 days). Documented on `ReportData.delta_pct` and in
+    `REPORT_TEMPLATE_VARIABLES` -- kept this way deliberately (a real
+    "previous calendar month" comparison would need its own month-arithmetic
+    pass, for a difference that only shows up in the last few days of a
+    31-day month) rather than silently, since a monthly report's reader
+    could otherwise assume an exact calendar-month comparison.
     """
     period_start, period_end = compute_period(
         cadence=schedule.cadence, timezone=schedule.timezone, reference=reference
@@ -238,6 +267,8 @@ async def build_report_data(
     return ReportData(
         team=team.name if team is not None else str(schedule.team_id),
         team_slug=team.slug if team is not None else "",
+        cadence=schedule.cadence,
+        cadence_label=CADENCE_LABELS.get(schedule.cadence, schedule.cadence),
         period_start=period_start,
         period_end=period_end,
         timezone=schedule.timezone,
@@ -262,8 +293,13 @@ def report_template_context(data: ReportData) -> dict[str, Any]:
 # -- default template --------------------------------------------------------
 
 DEFAULT_REPORT_TEMPLATES: dict[str, str] = {
+    # No literal "[KAM] " prefix here -- a channel's own subject_prefix
+    # config already applies one on top of this title at delivery time (see
+    # app/channels/email.py's send_message()), same convention as
+    # app.services.templating.APP_DEFAULT_TEMPLATES' own title. Embedding it
+    # here too would double it up ("[KAM] [KAM] ...").
     "title": (
-        "[KAM] {{ team }} 주간 알럿 리포트 "
+        "{{ team }} {{ cadence_label }} 알럿 리포트 "
         "({{ period_start | datetime_format('%Y-%m-%d') }}~"
         "{{ period_end | datetime_format('%Y-%m-%d') }})"
     ),
@@ -347,6 +383,16 @@ REPORT_TEMPLATE_VARIABLES: list[dict[str, str]] = [
     {"name": "team", "description": "팀 이름", "example": "{{ team }}"},
     {"name": "team_slug", "description": "팀 슬러그", "example": "{{ team_slug }}"},
     {
+        "name": "cadence",
+        "description": "스케줄 주기 (daily/weekly/monthly)",
+        "example": "{{ cadence }}",
+    },
+    {
+        "name": "cadence_label",
+        "description": "주기의 한글 표기 (일간/주간/월간)",
+        "example": "{{ cadence_label }}",
+    },
+    {
         "name": "period_start",
         "description": "리포트 기간 시작 시각 (datetime_format 필터 권장)",
         "example": "{{ period_start | datetime_format('%Y-%m-%d') }}",
@@ -359,7 +405,12 @@ REPORT_TEMPLATE_VARIABLES: list[dict[str, str]] = [
     {"name": "timezone", "description": "이 스케줄의 기준 타임존", "example": "{{ timezone }}"},
     {
         "name": "delta_pct",
-        "description": "직전 동기간 대비 발생 건수 증감률(%) -- 비교 대상이 0건이면 none",
+        "description": (
+            "직전 동일 길이 구간 대비 발생 건수 증감률(%) -- 비교 대상이 0건이면 none. "
+            "월간 리포트의 경우 이 구간은 달력상 '전월'이 아니라 이번 구간과 같은 일수만큼 "
+            "거슬러 올라간 기간입니다 (예: 2월 28일치 구간이면 직전 28일이며, "
+            "1월 1일~31일 전체와는 다를 수 있습니다)."
+        ),
         "example": "{{ delta_pct }}%",
     },
     {

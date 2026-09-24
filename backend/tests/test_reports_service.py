@@ -32,6 +32,8 @@ def _make_data(**overrides) -> ReportData:
     base = ReportData(
         team="Platform",
         team_slug="platform",
+        cadence="weekly",
+        cadence_label="주간",
         period_start=datetime(2026, 1, 5, tzinfo=UTC),
         period_end=datetime(2026, 1, 12, tzinfo=UTC),
         timezone="UTC",
@@ -280,6 +282,32 @@ async def test_build_report_data_computes_delta_pct(app) -> None:
         assert data["team"] == team.name
         assert data["delta_pct"] is None
         assert data["summary"]["events_in_range"] == 0
+        assert data["cadence"] == "weekly"
+        assert data["cadence_label"] == "주간"
+
+
+@pytest.mark.parametrize(
+    ("cadence", "expected_label"),
+    [("daily", "일간"), ("weekly", "주간"), ("monthly", "월간")],
+)
+async def test_build_report_data_cadence_label_matches_schedule(app, cadence, expected_label) -> None:
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session, f"cadence-label-{cadence}")
+        schedule = ReportSchedule(
+            team_id=team.id,
+            name="s",
+            cadence=cadence,
+            weekday=0 if cadence == "weekly" else None,
+            hour=9,
+            timezone="UTC",
+            next_run_at=datetime.now(UTC),
+        )
+        session.add(schedule)
+        await session.flush()
+
+        data = await build_report_data(session, schedule, reference=datetime(2026, 3, 10, tzinfo=UTC))
+        assert data["cadence"] == cadence
+        assert data["cadence_label"] == expected_label
 
 
 # -- render_report: custom / default / fallback ----------------------------------
@@ -301,6 +329,34 @@ async def test_render_report_uses_default_template_when_none_assigned(app) -> No
         assert "2026-01-05" in message.title
         assert "HighCpu" in message.body
         assert "<table" in message.body_html
+
+
+@pytest.mark.parametrize(
+    ("cadence", "expected_label"),
+    [("daily", "일간"), ("weekly", "주간"), ("monthly", "월간")],
+)
+async def test_default_report_title_has_no_double_kam_prefix_and_is_cadence_aware(
+    app, cadence, expected_label
+) -> None:
+    """Regression: the default title must not embed a literal '[KAM] ' (the
+    channel's own subject_prefix already adds one -- see email.py's
+    send_message()), and must reflect the SCHEDULE's own cadence rather than
+    hardcoding '주간' regardless of daily/weekly/monthly.
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session, f"title-{cadence}")
+        schedule = ReportSchedule(
+            team_id=team.id, name="s", cadence=cadence,
+            weekday=0 if cadence == "weekly" else None, hour=9, timezone="UTC",
+            next_run_at=datetime.now(UTC),
+        )
+        session.add(schedule)
+        await session.flush()
+
+        data = _make_data(cadence=cadence, cadence_label=expected_label)
+        message = await render_report(session, schedule, data)
+        assert "[KAM]" not in message.title
+        assert expected_label in message.title
 
 
 async def test_render_report_uses_custom_report_kind_template(app) -> None:
