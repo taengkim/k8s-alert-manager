@@ -311,6 +311,7 @@ function UsersTab() {
       render: (value: boolean, record: AdminUser) => (
         <Switch
           checked={value}
+          loading={patchMutation.isPending && patchMutation.variables?.id === record.id}
           onChange={(checked) => patchMutation.mutate({ id: record.id, body: { is_active: checked } })}
         />
       ),
