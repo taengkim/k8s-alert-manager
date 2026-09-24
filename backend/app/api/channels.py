@@ -21,7 +21,11 @@ from app.channels.base import ChannelDeliveryError, NotificationChannel
 from app.channels.registry import ChannelRegistry
 from app.db import get_session
 from app.models.channel import Channel
-from app.models.routing import routing_rule_channels, routing_rule_escalation_channels
+from app.models.routing import (
+    RoutingRule,
+    routing_rule_channels,
+    routing_rule_escalation_channels,
+)
 from app.models.team import Team, TeamMembership
 from app.models.template import MessageTemplate
 from app.models.user import User
@@ -133,6 +137,43 @@ async def _validate_template_ownership(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="template_id must belong to this team",
         )
+
+
+async def _clear_escalation_for_emptied_rules(
+    session: AsyncSession, candidate_rule_ids: list[int]
+) -> list[int]:
+    """After removing some `routing_rule_escalation_channels` rows, clear
+    `escalation_enabled`/`escalation_after_minutes` on any rule among
+    `candidate_rule_ids` that's left with ZERO escalation channels.
+
+    Without this, a rule left with `escalation_enabled=True` and no
+    escalation channels would 422 on every future save/toggle
+    (`app/api/routes.py`'s `_validate_escalation` requires at least one
+    channel whenever escalation is enabled) -- a lockout with no UI path
+    out of it, since the route editor can't even load a channel picker
+    option for a channel that's gone. A rule that still has at least one
+    other escalation channel left is untouched. Returns the ids actually
+    cleared, for the caller's audit log detail.
+    """
+    if not candidate_rule_ids:
+        return []
+    result = await session.execute(
+        select(RoutingRule).where(
+            RoutingRule.id.in_(candidate_rule_ids),
+            RoutingRule.escalation_enabled.is_(True),
+            ~RoutingRule.id.in_(
+                select(routing_rule_escalation_channels.c.routing_rule_id).where(
+                    routing_rule_escalation_channels.c.routing_rule_id.in_(candidate_rule_ids)
+                )
+            ),
+        )
+    )
+    cleared_ids = []
+    for rule in result.scalars().all():
+        rule.escalation_enabled = False
+        rule.escalation_after_minutes = None
+        cleared_ids.append(rule.id)
+    return cleared_ids
 
 
 def _decrypt_config(channel: Channel) -> dict[str, Any]:
@@ -267,6 +308,36 @@ async def update_channel(
         channel.name = body.name
     if body.enabled is not None:
         channel.enabled = body.enabled
+
+    cleared_rule_ids: list[int] = []
+    if body.allow_cross_team_escalation is False and channel.allow_cross_team_escalation:
+        # Revoking cross-team consent: this channel is no longer a legal
+        # escalation_channel selection for any OTHER team's rule (see
+        # Channel.allow_cross_team_escalation) -- strip those join rows now,
+        # rather than leaving them to be caught only defensively at dispatch
+        # time (app/worker/scheduler.py's _dispatch_escalation also
+        # re-checks this, but a rule editor that still lists a now-illegal
+        # channel as selected is confusing on its own).
+        affected_result = await session.execute(
+            select(routing_rule_escalation_channels.c.routing_rule_id)
+            .select_from(routing_rule_escalation_channels)
+            .join(RoutingRule, RoutingRule.id == routing_rule_escalation_channels.c.routing_rule_id)
+            .where(
+                routing_rule_escalation_channels.c.channel_id == channel.id,
+                RoutingRule.team_id != channel.team_id,
+            )
+        )
+        affected_rule_ids = [row[0] for row in affected_result.all()]
+        if affected_rule_ids:
+            await session.execute(
+                delete(routing_rule_escalation_channels).where(
+                    routing_rule_escalation_channels.c.channel_id == channel.id,
+                    routing_rule_escalation_channels.c.routing_rule_id.in_(affected_rule_ids),
+                )
+            )
+            cleared_rule_ids = await _clear_escalation_for_emptied_rules(
+                session, affected_rule_ids
+            )
     if body.allow_cross_team_escalation is not None:
         channel.allow_cross_team_escalation = body.allow_cross_team_escalation
     if "template_id" in body.model_fields_set:
@@ -289,6 +360,7 @@ async def update_channel(
         action="channel.update",
         object_type="channel",
         object_ref=channel.name,
+        detail={"escalation_disabled_rule_ids": cleared_rule_ids} if cleared_rule_ids else None,
     )
     await session.commit()
     await session.refresh(channel)
@@ -319,10 +391,24 @@ async def delete_channel(
     and leaving them dangling would make GET .../routes/{id} keep reporting
     a channel_id every other endpoint now treats as nonexistent -- which
     then makes PUT-ing that same rule back (e.g. just toggling `enabled`)
-    422 on "unknown channel_ids"/"unknown escalation_channel_ids".
+    422 on "unknown channel_ids"/"unknown escalation_channel_ids". Any rule
+    left with zero escalation channels as a result also has
+    escalation_enabled cleared (see `_clear_escalation_for_emptied_rules`)
+    -- otherwise that same PUT would 422 for a different reason.
     """
     channel = await _get_channel_or_404(session, channel_id)
     await _require_team_role(session, channel.team_id, actor, "owner")
+
+    affected_escalation_rule_ids = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(routing_rule_escalation_channels.c.routing_rule_id).where(
+                    routing_rule_escalation_channels.c.channel_id == channel_id
+                )
+            )
+        ).all()
+    ]
 
     channel.deleted_at = datetime.now(UTC)
     await session.execute(
@@ -333,6 +419,15 @@ async def delete_channel(
             routing_rule_escalation_channels.c.channel_id == channel_id
         )
     )
+    cleared_rule_ids = await _clear_escalation_for_emptied_rules(
+        session, affected_escalation_rule_ids
+    )
+    if cleared_rule_ids:
+        logger.info(
+            "channel %s delete: cleared escalation_enabled on rule(s) %s (no channels left)",
+            channel_id,
+            cleared_rule_ids,
+        )
 
     await audit.log(
         session,
@@ -341,6 +436,7 @@ async def delete_channel(
         action="channel.delete",
         object_type="channel",
         object_ref=channel.name,
+        detail={"escalation_disabled_rule_ids": cleared_rule_ids} if cleared_rule_ids else None,
     )
     await session.commit()
 
