@@ -34,6 +34,7 @@ function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {})
     namespaces_exclude: route.namespaces_exclude ?? undefined,
     clusters: route.clusters ?? undefined,
     channel_ids: route.channel_ids,
+    template_id: route.template_id ?? undefined,
     escalation_enabled: route.escalation_enabled,
     escalation_after_minutes: route.escalation_after_minutes ?? undefined,
     escalation_channel_ids: route.escalation_channel_ids,
