@@ -158,15 +158,24 @@ async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: st
     await route_event(session, event, kind)
 
 
-async def _resolve_heartbeat_lost_event(
+async def resolve_heartbeat_lost_event(
     session: AsyncSession, cluster: Cluster, now: datetime
 ) -> None:
-    """Phase 17 recovery: a Watchdog heartbeat arriving while `cluster` was
-    'missing' means whatever `app.worker.heartbeat.sweep` injected for it
-    has now recovered -- resolve that synthetic event through the normal
-    `on_event_transition` hook, exactly like any other firing->resolved
-    transition (so `notify_on_resolved` rules fire a recovery notification
-    the same way they would for a real Alertmanager 'resolved' delivery).
+    """Phase 17 recovery: whatever `app.worker.heartbeat.sweep` injected for
+    a 'missing' `cluster` has now recovered -- resolve that synthetic event
+    through the normal `on_event_transition` hook, exactly like any other
+    firing->resolved transition (so `notify_on_resolved` rules fire a
+    recovery notification the same way they would for a real Alertmanager
+    'resolved' delivery).
+
+    Public (not `_`-prefixed): called from two places. `_ingest_one` below
+    calls it when an actual Watchdog heartbeat arrives while
+    `heartbeat_state == 'missing'` -- the ok->missing edge trigger's
+    counterpart on the way back. `app/api/clusters.py`'s `update_cluster`
+    also calls it directly when an admin disables a cluster (or turns its
+    `heartbeat_enabled` off) while it's 'missing': the webhook auth check
+    requires `enabled=True`, so a real heartbeat could otherwise never
+    arrive to resolve it, leaving it stuck 'missing' forever.
 
     Looks up by `status == 'firing'` rather than a specific `starts_at`
     (unlike `_get_existing`'s normal identity lookup): the caller only knows
@@ -211,7 +220,7 @@ async def _ingest_one(
 
     Phase 17: the heartbeat branch below additionally resolves this
     cluster's synthetic heartbeat-lost event (see
-    `_resolve_heartbeat_lost_event`) when the incoming heartbeat arrives
+    `resolve_heartbeat_lost_event`) when the incoming heartbeat arrives
     while `heartbeat_state == 'missing'` -- the ok->missing edge trigger's
     counterpart on the way back.
     """
@@ -224,7 +233,7 @@ async def _ingest_one(
         cluster.heartbeat_state = "ok"
         result.heartbeats_seen += 1
         if was_missing:
-            await _resolve_heartbeat_lost_event(session, cluster, now)
+            await resolve_heartbeat_lost_event(session, cluster, now)
         return
 
     try:
