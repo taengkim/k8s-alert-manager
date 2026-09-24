@@ -99,6 +99,7 @@ export const ko = {
   "common.updateError": "변경에 실패했습니다",
   "common.type": "타입",
   "common.nameRequired": "이름을 입력하세요",
+  "common.allClusters": "전체 클러스터",
 
   // -- login --
   "login.usernameLabel": "아이디",
@@ -360,4 +361,34 @@ export const ko = {
 
   // -- templatePreview --
   "templatePreview.popoverTitle": "미리보기 (샘플 알럿) — {name}",
+
+  // -- testAlert --
+  "testAlert.verdictMatched": "일치",
+  "testAlert.verdictClusterFiltered": "클러스터 필터링됨",
+  "testAlert.verdictGated": "비활성화 / 트리거 불일치",
+  "testAlert.verdictSeverityFiltered": "심각도 필터링됨",
+  "testAlert.verdictNamespaceFiltered": "네임스페이스 필터링됨",
+  "testAlert.verdictNotIncluded": "포함 조건 불일치",
+  "testAlert.verdictExcluded": "제외 조건에 매치",
+  "testAlert.modalTitle": "테스트 알럿 발사",
+  "testAlert.fireAgain": "다시 발사",
+  "testAlert.fireButton": "발사",
+  "testAlert.fireError": "테스트 알럿 발사에 실패했습니다",
+  "testAlert.extraLabelsLabel": "추가 레이블",
+  "testAlert.fireSuccess": "테스트 알럿이 발사되었습니다.",
+  "testAlert.suppressedByRule": "차단 규칙 '{name}'에 의해 알림이 차단되었습니다",
+  "testAlert.suppressedByRuleDesc":
+    "차단 규칙이 우선 적용되어, 아래에서 '{matchedLabel}'로 표시된 알림 규칙이 있어도 실제로는 아무 채널에도 전송되지 않았습니다.",
+  "testAlert.ruleEvalResultsTitle": "규칙 평가 결과",
+  "testAlert.noActiveRules": "이 팀에 활성화된 규칙이 없습니다",
+  "testAlert.ruleColumn": "규칙",
+  "testAlert.actionSuppress": "차단",
+  "testAlert.actionNotify": "알림",
+  "testAlert.resultColumn": "결과",
+  "testAlert.matchedButSuppressed": "일치 (차단됨)",
+  "testAlert.deliveredChannelsTitle": "적재된 채널",
+  "testAlert.noMatchingNotifyRules": "일치하는 알림 규칙이 없습니다",
+  "testAlert.deliveryStatusTitle": "발송 상태 (5초마다 갱신)",
+  "testAlert.deliveryStatusLoadError": "발송 상태를 불러오지 못했습니다",
+  "testAlert.noTargetChannels": "발송 대상 채널이 없습니다",
 } as const;

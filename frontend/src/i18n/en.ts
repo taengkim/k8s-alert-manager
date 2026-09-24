@@ -96,6 +96,7 @@ export const en: Record<keyof typeof ko, string> = {
   "common.updateError": "Failed to update",
   "common.type": "Type",
   "common.nameRequired": "Enter a name",
+  "common.allClusters": "All clusters",
 
   // -- login --
   "login.usernameLabel": "Username",
@@ -357,4 +358,34 @@ export const en: Record<keyof typeof ko, string> = {
 
   // -- templatePreview --
   "templatePreview.popoverTitle": "Preview (sample alert) — {name}",
+
+  // -- testAlert --
+  "testAlert.verdictMatched": "Matched",
+  "testAlert.verdictClusterFiltered": "Filtered by cluster",
+  "testAlert.verdictGated": "Disabled / trigger mismatch",
+  "testAlert.verdictSeverityFiltered": "Filtered by severity",
+  "testAlert.verdictNamespaceFiltered": "Filtered by namespace",
+  "testAlert.verdictNotIncluded": "Doesn't match include conditions",
+  "testAlert.verdictExcluded": "Matches exclude conditions",
+  "testAlert.modalTitle": "Fire test alert",
+  "testAlert.fireAgain": "Fire again",
+  "testAlert.fireButton": "Fire",
+  "testAlert.fireError": "Failed to fire test alert",
+  "testAlert.extraLabelsLabel": "Extra labels",
+  "testAlert.fireSuccess": "Test alert fired.",
+  "testAlert.suppressedByRule": "Notification blocked by suppression rule '{name}'",
+  "testAlert.suppressedByRuleDesc":
+    "A suppression rule takes priority, so even though a notify rule below is shown as '{matchedLabel}', nothing was actually sent to any channel.",
+  "testAlert.ruleEvalResultsTitle": "Rule evaluation results",
+  "testAlert.noActiveRules": "No active rules for this team",
+  "testAlert.ruleColumn": "Rule",
+  "testAlert.actionSuppress": "Suppress",
+  "testAlert.actionNotify": "Notify",
+  "testAlert.resultColumn": "Result",
+  "testAlert.matchedButSuppressed": "Matched (suppressed)",
+  "testAlert.deliveredChannelsTitle": "Channels queued",
+  "testAlert.noMatchingNotifyRules": "No matching notify rules",
+  "testAlert.deliveryStatusTitle": "Delivery status (refreshes every 5s)",
+  "testAlert.deliveryStatusLoadError": "Couldn't load delivery status",
+  "testAlert.noTargetChannels": "No target channels",
 };
