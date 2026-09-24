@@ -695,3 +695,111 @@ async def test_deliver_with_no_template_anywhere_uses_app_default(app) -> None:
 
     assert sent_messages[0].title  # app default rendered something non-empty
     assert row.last_error is None
+
+
+# -- Phase 15: deliver() -> schedule_renotify hook ---------------------------
+
+
+async def test_deliver_firing_success_on_renotify_rule_schedules_pending_action(app) -> None:
+    """A successful 'firing' delivery through a rule with
+    renotify_interval_minutes set starts the renotify loop -- see
+    app/worker/scheduler.py's schedule_renotify.
+    """
+    from sqlalchemy import select
+
+    from app.models.routing import RoutingRule
+    from app.models.scheduled import ScheduledAction
+
+    fake_cls, _sent = await _make_recording_channel_type("renotify-hook-fake")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+        rule = RoutingRule(
+            team_id=team.id,
+            name="renotify-rule",
+            action="notify",
+            channels=[channel],
+            renotify_interval_minutes=15,
+        )
+        session.add(rule)
+        await session.flush()
+
+        event = await _create_event(session, cluster, team, fingerprint="fp-renotify")
+        row = NotificationOutbox(
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel_id=channel.id,
+            team_id=team.id,
+            trigger="firing",
+            payload=AlertNotification.example().model_dump(mode="json"),
+        )
+        session.add(row)
+        await session.commit()
+
+        await deliver(row, registry, session)
+
+        assert row.status == "delivered"
+        scheduled = (
+            await session.execute(
+                select(ScheduledAction).where(
+                    ScheduledAction.alert_event_id == event.id, ScheduledAction.kind == "renotify"
+                )
+            )
+        ).scalars().all()
+        assert len(scheduled) == 1
+        assert scheduled[0].status == "pending"
+        assert scheduled[0].routing_rule_id == rule.id
+
+
+async def test_deliver_escalation_or_renotify_trigger_does_not_schedule_renotify(app) -> None:
+    """Only a plain 'firing' delivery starts/continues the renotify loop --
+    an 'escalation' or 'renotify:{id}' delivery through the SAME rule must
+    not itself schedule another cycle (that would double the cadence: the
+    real reschedule already happens in app/worker/scheduler.py's
+    _dispatch_renotify, not here).
+    """
+    from sqlalchemy import select
+
+    from app.models.routing import RoutingRule
+    from app.models.scheduled import ScheduledAction
+
+    fake_cls, _sent = await _make_recording_channel_type("renotify-hook-fake-2")
+    registry = _registry_with(fake_cls)
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session, channel_type=fake_cls.type_name)
+        rule = RoutingRule(
+            team_id=team.id,
+            name="renotify-rule-2",
+            action="notify",
+            channels=[channel],
+            renotify_interval_minutes=15,
+        )
+        session.add(rule)
+        await session.flush()
+
+        event = await _create_event(session, cluster, team, fingerprint="fp-renotify-2")
+        for trigger in ("escalation", "renotify:999"):
+            row = NotificationOutbox(
+                alert_event_id=event.id,
+                routing_rule_id=rule.id,
+                channel_id=channel.id,
+                team_id=team.id,
+                trigger=trigger,
+                payload=AlertNotification.example().model_dump(mode="json"),
+            )
+            session.add(row)
+            await session.commit()
+
+            await deliver(row, registry, session)
+            assert row.status == "delivered"
+
+        scheduled = (
+            await session.execute(
+                select(ScheduledAction).where(
+                    ScheduledAction.alert_event_id == event.id, ScheduledAction.kind == "renotify"
+                )
+            )
+        ).scalars().all()
+        assert scheduled == []
