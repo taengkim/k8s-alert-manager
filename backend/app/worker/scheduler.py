@@ -40,8 +40,10 @@ from sqlalchemy.orm import selectinload
 from app.models.alert import AlertEvent
 from app.models.channel import Channel
 from app.models.outbox import NotificationOutbox
+from app.models.report import ReportSchedule
 from app.models.routing import RoutingRule
 from app.models.scheduled import ScheduledAction
+from app.services import reports as reports_service
 from app.services.retention import purge
 from app.services.routing import build_notification_for_event, stage_outbox_row
 from app.services.settings import get_last_purge_at
@@ -51,6 +53,9 @@ logger = logging.getLogger(__name__)
 RETRY_BACKOFF = timedelta(minutes=1)
 DEFAULT_LEASE_TIMEOUT = timedelta(minutes=5)
 RETENTION_SWEEP_INTERVAL = timedelta(hours=24)
+# Phase 20: how far claim_due_reports provisionally pushes a claimed
+# schedule's next_run_at forward -- see that function's docstring.
+REPORT_CLAIM_BUMP = timedelta(hours=1)
 
 
 class _Skip(Exception):
@@ -515,3 +520,184 @@ async def maybe_run_retention_sweep(
     summary = await purge(session_factory)
     logger.info("retention: purge summary=%s", summary)
     return summary
+
+
+# -- report schedules (Phase 20) ------------------------------------------------
+#
+# Deliberately NOT a ScheduledAction kind (see app.models.report's module
+# docstring): a ReportSchedule is a standing, recurring row with no event of
+# its own to key a one-shot timer on, so it gets its own claim/dispatch
+# lifecycle here instead of trying to force it into the 'pending'->'claimed'
+# ->'done'/'cancelled' vocabulary above.
+#
+# ReportSchedule has no status/locked_by/locked_at columns to build a
+# claim+lease on (unlike ScheduledAction/NotificationOutbox) -- next_run_at
+# itself doubles as both "when is this due" and "is this currently claimed":
+# claim_due_reports provisionally pushes a claimed row's next_run_at
+# REPORT_CLAIM_BUMP into the future (long enough that the very next sweep
+# tick, 60s later, can't re-claim it; short enough that a crash mid-dispatch
+# self-heals within the hour with no separate lease-recovery pass needed).
+# dispatch_report_schedule always overwrites that provisional value with the
+# real computed next_run_at before returning, whether it succeeds or fails.
+
+
+async def claim_due_reports(
+    session: AsyncSession, worker_id: str, limit: int = 20
+) -> list[tuple[int, datetime]]:
+    """Atomically claim up to `limit` due, enabled `ReportSchedule` rows.
+
+    Returns `(schedule_id, due_at)` pairs -- `due_at` is each schedule's
+    `next_run_at` AT THE MOMENT OF CLAIM, captured before this function
+    provisionally advances it. `dispatch_report_schedule` uses `due_at` as
+    the report's period-computation reference (see
+    `app.services.reports.compute_period`), so how long a row sits claimed
+    before dispatch actually runs never changes which period gets reported.
+
+    Dialect-branched exactly like `claim_due_actions`/`app.worker.outbox
+    .claim_batch` -- see those functions' docstrings for why (Postgres `FOR
+    UPDATE SKIP LOCKED`; SQLite single-process select-then-update). Unlike
+    those two, the Postgres branch here keeps the row lock across a plain
+    SELECT ... FOR UPDATE and a follow-up UPDATE (rather than one combined
+    UPDATE ... RETURNING) specifically so it can read each row's PRE-claim
+    next_run_at -- RETURNING only ever reports the POST-update row.
+    """
+    now = datetime.now(UTC)
+    claim_until = now + REPORT_CLAIM_BUMP
+    dialect = session.get_bind().dialect.name
+
+    if dialect == "postgresql":
+        result = await session.execute(
+            select(ReportSchedule.id, ReportSchedule.next_run_at)
+            .where(ReportSchedule.enabled.is_(True), ReportSchedule.next_run_at <= now)
+            .order_by(ReportSchedule.next_run_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        rows = result.all()
+        if not rows:
+            return []
+        due_map = {schedule_id: due_at for schedule_id, due_at in rows}
+        ids = list(due_map.keys())
+        await session.execute(
+            update(ReportSchedule)
+            .where(ReportSchedule.id.in_(ids))
+            .values(next_run_at=claim_until)
+            .execution_options(synchronize_session=False)
+        )
+        await session.commit()
+        return [(schedule_id, due_map[schedule_id]) for schedule_id in ids]
+
+    result = await session.execute(
+        select(ReportSchedule)
+        .where(ReportSchedule.enabled.is_(True), ReportSchedule.next_run_at <= now)
+        .order_by(ReportSchedule.next_run_at)
+        .limit(limit)
+    )
+    rows = list(result.scalars().all())
+    pairs = [(row.id, row.next_run_at) for row in rows]
+    for row in rows:
+        row.next_run_at = claim_until
+    await session.commit()
+    logger.debug("report sweep worker %s claimed %d schedule(s)", worker_id, len(pairs))
+    return pairs
+
+
+async def dispatch_report_schedule(schedule_id: int, due_at: datetime, session: AsyncSession) -> None:
+    """Build + render one claimed report and stage an outbox row per
+    channel, then always advance `next_run_at` past whatever the claim's
+    provisional bump left it at and record `last_run_at`/`last_status` --
+    win or lose, this never leaves a schedule claimed.
+
+    A build/render/staging failure (a stats query error, an unexpected
+    exception -- render() itself never raises, see
+    `app.services.reports.render_report`) records
+    `last_status='error: ...'` and still advances `next_run_at` to the next
+    regular occurrence rather than retrying soon: unlike escalation/renotify
+    (`RETRY_BACKOFF`), a report is inherently periodic already -- retrying a
+    failed weekly report in a minute makes little sense when the next
+    scheduled one is only days away, and retrying forever would risk
+    duplicate reports once whatever caused the failure clears. An operator
+    (or the schedule's own owner) can always trigger `POST
+    /reports/{id}/run-now` to retry immediately once the underlying problem
+    is fixed.
+    """
+    result = await session.execute(
+        select(ReportSchedule)
+        .where(ReportSchedule.id == schedule_id)
+        .options(selectinload(ReportSchedule.channels))
+    )
+    schedule = result.scalar_one_or_none()
+    if schedule is None:
+        # Deleted between claim and dispatch -- nothing left to do (its
+        # provisional next_run_at bump from claim_due_reports is moot, the
+        # row is simply gone).
+        return
+
+    now = datetime.now(UTC)
+    try:
+        data = await reports_service.build_report_data(session, schedule, reference=due_at)
+        message = await reports_service.render_report(session, schedule, data)
+
+        channels = [c for c in schedule.channels if c.deleted_at is None]
+        for channel in channels:
+            session.add(
+                NotificationOutbox(
+                    alert_event_id=None,
+                    routing_rule_id=None,
+                    channel_id=channel.id,
+                    team_id=schedule.team_id,
+                    trigger="report",
+                    payload={
+                        "rendered": message.model_dump(mode="json"),
+                        "schedule_id": schedule.id,
+                        "period": {
+                            "start": data["period_start"].isoformat(),
+                            "end": data["period_end"].isoformat(),
+                        },
+                    },
+                    is_digest=False,
+                    status="pending",
+                )
+            )
+        schedule.last_status = "ok"
+        logger.info(
+            "report schedule id=%s dispatched: team=%s channels=%d",
+            schedule.id,
+            schedule.team_id,
+            len(channels),
+        )
+    except Exception as exc:  # see docstring: never retried immediately.
+        logger.exception("report schedule id=%s dispatch failed", schedule.id)
+        schedule.last_status = f"error: {type(exc).__name__}: {exc}"[:500]
+
+    schedule.last_run_at = now
+    schedule.next_run_at = reports_service.compute_next_run(
+        cadence=schedule.cadence,
+        weekday=schedule.weekday,
+        hour=schedule.hour,
+        timezone=schedule.timezone,
+        after=now,
+    )
+    await session.commit()
+
+
+async def run_report_sweep(
+    session_factory: async_sessionmaker[AsyncSession], worker_id: str, *, limit: int = 20
+) -> int:
+    """Claim one batch of due report schedules, then dispatch each in its
+    own fresh session -- same per-row-session reasoning as
+    `run_scheduler_tick`/`app.worker.outbox.run_tick`.
+    """
+    async with session_factory() as claim_session:
+        claimed = await claim_due_reports(claim_session, worker_id, limit=limit)
+
+    for schedule_id, due_at in claimed:
+        try:
+            async with session_factory() as session:
+                await dispatch_report_schedule(schedule_id, due_at, session)
+        except Exception:
+            logger.exception(
+                "report sweep worker: unexpected error dispatching schedule id=%s -- skipping",
+                schedule_id,
+            )
+    return len(claimed)
