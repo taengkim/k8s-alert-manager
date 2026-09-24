@@ -40,6 +40,7 @@ function TRIGGER_LABEL(trigger: string): string {
   if (trigger === "resolved") return "해소";
   if (trigger === "escalation") return "에스컬레이션";
   if (trigger.startsWith("renotify")) return "재알림";
+  if (trigger === "digest") return "다이제스트";
   return trigger;
 }
 
@@ -49,6 +50,10 @@ const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
   delivered: "발송 완료",
   failed: "실패",
   dead: "포기됨",
+  // Phase 16: a test alert can be parked by storm control same as any
+  // other notification (see app.services.routing.stage_outbox_row's
+  // docstring -- parking is channel-level, not trigger-specific).
+  digested: "다이제스트로 묶임",
 };
 
 const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
@@ -57,6 +62,7 @@ const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
   delivered: "green",
   failed: "orange",
   dead: "red",
+  digested: "purple",
 };
 
 interface LabelPair {

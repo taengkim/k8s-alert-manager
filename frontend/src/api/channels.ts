@@ -29,6 +29,11 @@ export interface ChannelType {
   json_schema: JsonSchemaObject;
 }
 
+/** Phase 16 storm control: 'off' (no parking), 'auto' (park once
+ * rate_limit_per_hour is exceeded in the trailing hour), 'always' (park
+ * every notification unconditionally). */
+export type DigestMode = "off" | "auto" | "always";
+
 export interface Channel {
   id: number;
   team_id: number;
@@ -42,6 +47,11 @@ export interface Channel {
   /** Phase 15: lets another team's routing rule pick this channel as an
    * escalation target (see listEscalationTargets). */
   allow_cross_team_escalation: boolean;
+  /** Phase 16: null means unlimited. Required by the backend whenever
+   * digest_mode is 'auto'. */
+  rate_limit_per_hour: number | null;
+  digest_mode: DigestMode;
+  digest_window_minutes: number;
 }
 
 export interface ChannelCreateInput {
@@ -50,6 +60,9 @@ export interface ChannelCreateInput {
   config: Record<string, unknown>;
   template_id?: number | null;
   allow_cross_team_escalation?: boolean;
+  rate_limit_per_hour?: number | null;
+  digest_mode?: DigestMode;
+  digest_window_minutes?: number;
 }
 
 export interface ChannelUpdateInput {
@@ -60,6 +73,9 @@ export interface ChannelUpdateInput {
    * Channels.tsx's update mutation. `null` explicitly clears it. */
   template_id?: number | null;
   allow_cross_team_escalation?: boolean;
+  rate_limit_per_hour?: number | null;
+  digest_mode?: DigestMode;
+  digest_window_minutes?: number;
 }
 
 /** One selectable escalation target (Phase 15): a team's own channels plus
