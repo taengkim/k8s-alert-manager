@@ -13,6 +13,7 @@ import {
   updateTemplate,
 } from "../api/templates";
 import type { TemplatePreviewResult, TemplateVariable, TemplateWriteInput } from "../api/templates";
+import { useI18n } from "../i18n";
 
 const { Text, Title, Paragraph } = Typography;
 
@@ -80,6 +81,7 @@ function insertAtCursor(
 }
 
 export default function TemplateEditor() {
+  const { t } = useI18n();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
   const navigate = useNavigate();
@@ -176,7 +178,7 @@ export default function TemplateEditor() {
           }
         } catch (err) {
           if (requestId === latestRequestId.current) {
-            setPreviewError(err instanceof ApiError ? err.detail : "미리보기에 실패했습니다");
+            setPreviewError(err instanceof ApiError ? err.detail : t("preview.loadError"));
             setPreviewResult(null);
           }
         } finally {
@@ -195,7 +197,7 @@ export default function TemplateEditor() {
       return isEdit ? updateTemplate(Number(id), body) : createTemplate(teamId!, body);
     },
     onSuccess: () => {
-      message.success(isEdit ? "템플릿이 수정되었습니다" : "템플릿이 생성되었습니다");
+      message.success(isEdit ? t("templateEditor.updateSuccess") : t("templateEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["templates", teamId] });
       navigate("/templates");
     },
@@ -204,8 +206,8 @@ export default function TemplateEditor() {
         err instanceof ApiError
           ? err.detail
           : isEdit
-            ? "템플릿 수정에 실패했습니다"
-            : "템플릿 생성에 실패했습니다",
+            ? t("templateEditor.updateError")
+            : t("templateEditor.createError"),
       );
     },
   });
@@ -227,8 +229,8 @@ export default function TemplateEditor() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>{isEdit ? "템플릿 수정" : "템플릿 생성"}</h2>
-        <Alert type="info" showIcon message="소속된 팀이 없습니다" />
+        <h2>{isEdit ? t("templateEditor.editTitle") : t("templates.createButton")}</h2>
+        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
       </div>
     );
   }
@@ -249,7 +251,11 @@ export default function TemplateEditor() {
   return (
     <div style={{ display: "flex", gap: 24, alignItems: "flex-start", maxWidth: 1280 }}>
       <div style={{ flex: "1 1 640px", minWidth: 480 }}>
-        <h2>{isEdit ? `템플릿 수정 — ${templateQuery.data?.name ?? ""}` : "템플릿 생성"}</h2>
+        <h2>
+          {isEdit
+            ? t("templateEditor.editTitleWithName", { name: templateQuery.data?.name ?? "" })
+            : t("templates.createButton")}
+        </h2>
 
         {serverError && (
           <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
@@ -263,28 +269,24 @@ export default function TemplateEditor() {
         >
           <Form.Item
             name="name"
-            label="이름"
-            rules={[{ required: true, message: "이름을 입력하세요" }]}
+            label={t("common.name")}
+            rules={[{ required: true, message: t("common.nameRequired") }]}
           >
             <Input placeholder="critical-alert-template" />
           </Form.Item>
-          <Form.Item name="description" label="설명">
-            <Input placeholder="온콜 팀 전용 알림 형식" />
+          <Form.Item name="description" label={t("common.description")}>
+            <Input placeholder={t("templateEditor.descriptionPlaceholder")} />
           </Form.Item>
           <Form.Item
             name="kind"
-            label="종류"
-            help={
-              isEdit
-                ? "생성 후에는 종류를 변경할 수 없습니다"
-                : "리포트 템플릿은 팀 설정의 '리포트' 탭에서 스케줄에 연결해 사용합니다"
-            }
+            label={t("templates.kindColumn")}
+            help={isEdit ? t("templateEditor.kindLockedHelp") : t("templateEditor.reportKindHelp")}
           >
             <Radio.Group
               disabled={isEdit}
               options={[
-                { label: "알럿", value: "alert" },
-                { label: "리포트", value: "report" },
+                { label: t("templates.kindAlert"), value: "alert" },
+                { label: t("templates.kindReport"), value: "report" },
               ]}
               optionType="button"
             />
@@ -292,11 +294,11 @@ export default function TemplateEditor() {
 
           <Form.Item
             name="title_template"
-            label="제목 (title)"
-            rules={[{ required: true, message: "제목 템플릿을 입력하세요" }]}
+            label={t("templateEditor.titleFieldLabel")}
+            rules={[{ required: true, message: t("templateEditor.titleRequired") }]}
             help={errorsBySlot.get("title")?.map((e, i) => (
               <Text type="danger" key={i} style={{ display: "block" }}>
-                {e.lineno != null ? `${e.lineno}행: ` : ""}
+                {e.lineno != null ? t("templateEditor.lineNumberPrefix", { line: e.lineno }) : ""}
                 {e.message}
               </Text>
             ))}
@@ -311,11 +313,11 @@ export default function TemplateEditor() {
 
           <Form.Item
             name="body_template"
-            label="본문 (body, 텍스트)"
-            rules={[{ required: true, message: "본문 템플릿을 입력하세요" }]}
+            label={t("templateEditor.bodyFieldLabel")}
+            rules={[{ required: true, message: t("templateEditor.bodyRequired") }]}
             help={errorsBySlot.get("body")?.map((e, i) => (
               <Text type="danger" key={i} style={{ display: "block" }}>
-                {e.lineno != null ? `${e.lineno}행: ` : ""}
+                {e.lineno != null ? t("templateEditor.lineNumberPrefix", { line: e.lineno }) : ""}
                 {e.message}
               </Text>
             ))}
@@ -330,10 +332,10 @@ export default function TemplateEditor() {
 
           <Form.Item
             name="body_html_template"
-            label="본문 (body_html, 선택)"
+            label={t("templateEditor.bodyHtmlFieldLabel")}
             help={errorsBySlot.get("body_html")?.map((e, i) => (
               <Text type="danger" key={i} style={{ display: "block" }}>
-                {e.lineno != null ? `${e.lineno}행: ` : ""}
+                {e.lineno != null ? t("templateEditor.lineNumberPrefix", { line: e.lineno }) : ""}
                 {e.message}
               </Text>
             ))}
@@ -342,7 +344,7 @@ export default function TemplateEditor() {
               id={BODY_HTML_FIELD_ID}
               rows={8}
               style={{ fontFamily: "monospace" }}
-              placeholder="비워두면 이 슬롯은 렌더링되지 않습니다"
+              placeholder={t("templateEditor.bodyHtmlPlaceholder")}
               onFocus={() =>
                 setActiveField({ elementId: BODY_HTML_FIELD_ID, fieldName: "body_html_template" })
               }
@@ -355,17 +357,17 @@ export default function TemplateEditor() {
 
           <Space>
             <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
-              저장
+              {t("common.save")}
             </Button>
-            <Button onClick={() => navigate("/templates")}>취소</Button>
+            <Button onClick={() => navigate("/templates")}>{t("common.cancel")}</Button>
           </Space>
         </Form>
       </div>
 
       <div style={{ flex: "0 0 360px", minWidth: 320 }}>
-        <Title level={5}>변수 레퍼런스</Title>
+        <Title level={5}>{t("templateEditor.variableRefTitle")}</Title>
         <Paragraph type="secondary" style={{ marginTop: -8 }}>
-          클릭하면 현재 커서 위치에 삽입됩니다.
+          {t("templateEditor.variableRefHint")}
         </Paragraph>
         <List
           size="small"
@@ -390,13 +392,13 @@ export default function TemplateEditor() {
           )}
         />
 
-        <Title level={5}>실시간 미리보기</Title>
+        <Title level={5}>{t("templateEditor.livePreviewTitle")}</Title>
         {isReportKind ? (
           <Alert
             type="info"
             showIcon
-            message="리포트 템플릿은 여기서 미리보기할 수 없습니다"
-            description="샘플 알럿이 아닌 실제 통계 데이터를 기준으로 렌더링되므로, 팀 설정의 '리포트' 탭에서 스케줄을 만든 뒤 그 스케줄의 미리보기 기능을 사용하세요."
+            message={t("templateEditor.reportPreviewUnavailable")}
+            description={t("templateEditor.reportPreviewUnavailableDesc")}
           />
         ) : (
           <>
@@ -405,7 +407,7 @@ export default function TemplateEditor() {
                 style={{ width: "100%" }}
                 value={previewSource}
                 onChange={setPreviewSource}
-                options={[{ value: SAMPLE_SOURCE, label: "샘플 알럿" }, ...eventOptions]}
+                options={[{ value: SAMPLE_SOURCE, label: t("templateEditor.sampleAlertOption") }, ...eventOptions]}
                 loading={recentEventsQuery.isLoading}
               />
             </Space>
@@ -418,7 +420,7 @@ export default function TemplateEditor() {
               <Alert
                 type="warning"
                 showIcon
-                message="미정의 변수"
+                message={t("templateEditor.undefinedVariablesTitle")}
                 description={
                   <Space size={4} wrap>
                     {previewResult.warnings.map((w) => (
@@ -445,13 +447,13 @@ export default function TemplateEditor() {
                 <>
                   <div style={{ marginBottom: 8 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      제목
+                      {t("templateEditor.renderedTitleLabel")}
                     </Text>
                     <div style={{ fontWeight: 600 }}>{previewResult.rendered.title}</div>
                   </div>
                   <div style={{ marginBottom: previewResult.rendered.body_html ? 8 : 0 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      본문
+                      {t("templateEditor.renderedBodyLabel")}
                     </Text>
                     <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "monospace" }}>
                       {previewResult.rendered.body}
@@ -460,7 +462,7 @@ export default function TemplateEditor() {
                   {previewResult.rendered.body_html && (
                     <div>
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        본문 (body_html, HTML 소스 -- 렌더링 없이 텍스트로 표시)
+                        {t("templateEditor.renderedBodyHtmlLabel")}
                       </Text>
                       {/* Deliberately rendered as plain escaped text (React's
                           {} interpolation, not dangerouslySetInnerHTML) -- this
@@ -476,8 +478,8 @@ export default function TemplateEditor() {
               ) : (
                 <Text type="secondary">
                   {previewResult && previewResult.errors.length > 0
-                    ? "템플릿 오류로 미리보기를 표시할 수 없습니다."
-                    : "제목/본문을 입력하면 미리보기가 표시됩니다."}
+                    ? t("templateEditor.previewBlockedByErrors")
+                    : t("templateEditor.previewPromptEmpty")}
                 </Text>
               )}
             </div>

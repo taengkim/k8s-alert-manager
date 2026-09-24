@@ -7,22 +7,26 @@ import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
 import { deleteTemplate, listTemplates } from "../api/templates";
 import type { MessageTemplate } from "../api/templates";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const { Text } = Typography;
 
 type KindFilter = "all" | "alert" | "report";
 
-const KIND_LABELS: Record<string, { label: string; color: string }> = {
-  alert: { label: "알럿", color: "blue" },
-  report: { label: "리포트", color: "green" },
+const KIND_LABEL_KEY: Record<string, { labelKey: TranslationKey; color: string }> = {
+  alert: { labelKey: "templates.kindAlert", color: "blue" },
+  report: { labelKey: "templates.kindReport", color: "green" },
 };
 
 function KindTag({ kind }: { kind: string }) {
-  const meta = KIND_LABELS[kind] ?? { label: kind, color: "default" };
-  return <Tag color={meta.color}>{meta.label}</Tag>;
+  const { t } = useI18n();
+  const meta = KIND_LABEL_KEY[kind];
+  return <Tag color={meta?.color ?? "default"}>{meta ? t(meta.labelKey) : kind}</Tag>;
 }
 
 export default function Templates() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -58,7 +62,7 @@ export default function Templates() {
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -66,12 +70,12 @@ export default function Templates() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>템플릿</h2>
+        <h2>{t("templates.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -82,28 +86,32 @@ export default function Templates() {
     kindFilter === "all" ? allTemplates : allTemplates.filter((t) => t.kind === kindFilter);
 
   const columns = [
-    { title: "이름", dataIndex: "name", key: "name" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
     {
-      title: "종류",
+      title: t("templates.kindColumn"),
       dataIndex: "kind",
       key: "kind",
       render: (kind: string) => <KindTag kind={kind} />,
     },
     {
-      title: "설명",
+      title: t("common.description"),
       dataIndex: "description",
       key: "description",
       render: (description: string | null) => description ?? <Text type="secondary">-</Text>,
     },
     {
-      title: "사용처",
+      title: t("templates.usageColumn"),
       key: "usage",
       render: (_: unknown, template: MessageTemplate) => (
         <Space size={4}>
-          {template.channel_count > 0 && <Tag color="blue">채널 {template.channel_count}</Tag>}
-          {template.route_count > 0 && <Tag color="purple">규칙 {template.route_count}</Tag>}
+          {template.channel_count > 0 && (
+            <Tag color="blue">{t("templates.channelUsage", { count: template.channel_count })}</Tag>
+          )}
+          {template.route_count > 0 && (
+            <Tag color="purple">{t("templates.routeUsage", { count: template.route_count })}</Tag>
+          )}
           {template.channel_count === 0 && template.route_count === 0 && (
-            <Text type="secondary">사용 안 함</Text>
+            <Text type="secondary">{t("templates.notUsed")}</Text>
           )}
         </Space>
       ),
@@ -115,19 +123,22 @@ export default function Templates() {
         isOwner ? (
           <div style={{ display: "flex", gap: 8 }}>
             <Button size="small" onClick={() => navigate(`/templates/${template.id}/edit`)}>
-              수정
+              {t("common.edit")}
             </Button>
             <Popconfirm
-              title="이 템플릿을 삭제하시겠습니까?"
+              title={t("templates.deleteConfirm")}
               description={
                 template.channel_count + template.route_count > 0
-                  ? `사용 중인 채널 ${template.channel_count}개, 규칙 ${template.route_count}개는 기본 템플릿으로 되돌아갑니다.`
+                  ? t("templates.deleteConfirmDetail", {
+                      channelCount: template.channel_count,
+                      routeCount: template.route_count,
+                    })
                   : undefined
               }
               onConfirm={() => deleteMutation.mutate(template.id)}
             >
               <Button size="small" danger loading={deleteMutation.isPending}>
-                삭제
+                {t("common.delete")}
               </Button>
             </Popconfirm>
           </div>
@@ -145,10 +156,10 @@ export default function Templates() {
           marginBottom: 16,
         }}
       >
-        <h2 style={{ margin: 0 }}>템플릿 — {currentTeam.name}</h2>
+        <h2 style={{ margin: 0 }}>{t("templates.titleWithTeam", { team: currentTeam.name })}</h2>
         {isOwner && (
           <Button type="primary" onClick={() => navigate("/templates/new")}>
-            템플릿 생성
+            {t("templates.createButton")}
           </Button>
         )}
       </div>
@@ -158,9 +169,9 @@ export default function Templates() {
         value={kindFilter}
         onChange={(value) => setKindFilter(value as KindFilter)}
         options={[
-          { label: "전체", value: "all" },
-          { label: "알럿", value: "alert" },
-          { label: "리포트", value: "report" },
+          { label: t("common.all"), value: "all" },
+          { label: t("templates.kindAlert"), value: "alert" },
+          { label: t("templates.kindReport"), value: "report" },
         ]}
       />
 
@@ -170,7 +181,7 @@ export default function Templates() {
         dataSource={templates}
         columns={columns}
         pagination={false}
-        locale={{ emptyText: <Empty description="템플릿이 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("templates.empty")} /> }}
       />
     </div>
   );
