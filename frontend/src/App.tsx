@@ -1,18 +1,13 @@
-import { useMemo, useState } from "react";
-import { Alert, App as AntApp, Dropdown, Layout, Menu, Switch, Tooltip } from "antd";
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router";
+import { useMemo } from "react";
+import { Alert, Layout, Menu } from "antd";
+import { Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
 import { TeamProvider } from "./auth/TeamContext";
 import { ClusterFilterProvider, useClusterFilter } from "./auth/ClusterFilterContext";
-import TeamSwitcher from "./components/TeamSwitcher";
-import ClusterFilterSelect from "./components/ClusterFilterSelect";
-import {
-  isWebNotifyEnabled,
-  setWebNotifyEnabled,
-  useAlertStreamStatus,
-  type AlertStreamStatus,
-} from "./api/useAlertStream";
+import StatusStrip from "./components/StatusStrip";
+import { monoFontFamily, palette } from "./theme";
+import { useI18n, type TranslationKey } from "./i18n";
 import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
@@ -29,70 +24,51 @@ import Templates from "./pages/Templates";
 import TemplateEditor from "./pages/TemplateEditor";
 import Admin from "./pages/Admin";
 
-const { Header, Sider, Content } = Layout;
+const { Sider, Content } = Layout;
 
-const sections = [
-  { key: "alerts", label: "Alerts", path: "/alerts" },
-  { key: "rules", label: "Rules", path: "/rules" },
-  { key: "silences", label: "Silences", path: "/silences" },
-  { key: "channels", label: "Channels", path: "/channels" },
-  { key: "templates", label: "템플릿", path: "/templates" },
-  { key: "routes", label: "Routes", path: "/routes" },
-  { key: "shares", label: "공유", path: "/shares" },
-  { key: "stats", label: "통계", path: "/stats" },
+const sections: { key: string; titleKey: TranslationKey; path: string }[] = [
+  { key: "alerts", titleKey: "nav.alerts", path: "/alerts" },
+  { key: "rules", titleKey: "nav.rules", path: "/rules" },
+  { key: "silences", titleKey: "nav.silences", path: "/silences" },
+  { key: "channels", titleKey: "nav.channels", path: "/channels" },
+  { key: "templates", titleKey: "nav.templates", path: "/templates" },
+  { key: "routes", titleKey: "nav.routes", path: "/routes" },
+  { key: "shares", titleKey: "nav.shares", path: "/shares" },
+  { key: "stats", titleKey: "nav.stats", path: "/stats" },
 ];
 
-const CONNECTION_LABEL: Record<AlertStreamStatus, string> = {
-  open: "실시간 연결됨",
-  connecting: "재연결 중...",
-  closed: "연결 끊김",
-};
-
-function ConnectionIndicator() {
-  const status = useAlertStreamStatus();
-  return (
-    <Tooltip title={CONNECTION_LABEL[status]}>
-      <span
-        style={{
-          display: "inline-block",
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: status === "open" ? "#52c41a" : "#999",
-        }}
-      />
-    </Tooltip>
-  );
-}
+// Path -> section title key for the StatusStrip's left-hand label. Kept next
+// to `sections`/selectedKeys below since both are derived from the same route
+// table -- most specific path first (see selectedKeys' own note on why
+// "/alerts/history" has to win over "/alerts").
+const TITLE_KEY_BY_PATH: { path: string; titleKey: TranslationKey }[] = [
+  { path: "/alerts/history", titleKey: "nav.history" },
+  ...sections.map((s) => ({ path: s.path, titleKey: s.titleKey })),
+  { path: "/team", titleKey: "nav.team" },
+  { path: "/admin", titleKey: "nav.admin" },
+];
 
 function AppLayout() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user } = useAuth();
   const location = useLocation();
-  const { message } = AntApp.useApp();
   const { isError: clustersError } = useClusterFilter();
-  const [webNotify, setWebNotify] = useState(isWebNotifyEnabled);
-
-  const handleToggleWebNotify = async (checked: boolean) => {
-    const granted = await setWebNotifyEnabled(checked);
-    setWebNotify(granted);
-    if (checked && !granted) {
-      message.warning("브라우저 알림 권한이 거부되었습니다");
-    }
-  };
+  const { t } = useI18n();
 
   const menuItems = useMemo(() => {
     const items = sections.map((section) => ({
       key: section.path,
-      label: <Link to={section.path}>{section.label}</Link>,
+      label: <Link to={section.path}>{t(section.titleKey)}</Link>,
     }));
-    items.push({ key: "/alerts/history", label: <Link to="/alerts/history">알럿 이력</Link> });
-    items.push({ key: "/team", label: <Link to="/team">팀 설정</Link> });
+    items.push({
+      key: "/alerts/history",
+      label: <Link to="/alerts/history">{t("nav.history")}</Link>,
+    });
+    items.push({ key: "/team", label: <Link to="/team">{t("nav.team")}</Link> });
     if (user?.is_admin) {
-      items.push({ key: "/admin", label: <Link to="/admin">관리자</Link> });
+      items.push({ key: "/admin", label: <Link to="/admin">{t("nav.admin")}</Link> });
     }
     return items;
-  }, [user]);
+  }, [user, t]);
 
   const selectedKeys = useMemo(() => {
     // "/alerts/history" must be checked before "/alerts" -- both match a
@@ -103,61 +79,31 @@ function AppLayout() {
     return match ? [match] : [];
   }, [location.pathname]);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login", { replace: true });
-  };
+  const sectionTitle = useMemo(() => {
+    const match = TITLE_KEY_BY_PATH.find((entry) => location.pathname.startsWith(entry.path));
+    return match ? t(match.titleKey) : t("app.title");
+  }, [location.pathname, t]);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
-      <Sider>
-        <Menu theme="dark" mode="inline" items={menuItems} selectedKeys={selectedKeys} />
+      <Sider className="kam-sider" style={{ borderRight: `1px solid ${palette.hairline}` }}>
+        <div style={{ padding: "20px 20px 16px" }}>
+          <div style={{ fontFamily: monoFontFamily, fontWeight: 600, fontSize: 18, color: palette.ink }}>
+            KAM
+          </div>
+          <div style={{ fontSize: 12, color: palette.inkMuted, marginTop: 2 }}>Alert Manager</div>
+        </div>
+        <Menu mode="inline" items={menuItems} selectedKeys={selectedKeys} />
       </Sider>
       <Layout>
-        <Header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            color: "white",
-            fontSize: 18,
-          }}
-        >
-          <span>K8s Alert Manager</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <ConnectionIndicator />
-            <ClusterFilterSelect />
-            <TeamSwitcher />
-            <Dropdown
-              menu={{
-                items: [
-                  {
-                    key: "web-notify",
-                    label: (
-                      <div
-                        style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <span>브라우저 알림</span>
-                        <Switch size="small" checked={webNotify} onChange={handleToggleWebNotify} />
-                      </div>
-                    ),
-                  },
-                  { key: "logout", label: "로그아웃", onClick: handleLogout },
-                ],
-              }}
-            >
-              <span style={{ cursor: "pointer", color: "white" }}>{user?.display_name} ▾</span>
-            </Dropdown>
-          </div>
-        </Header>
-        <Content style={{ padding: 24 }}>
+        <StatusStrip title={sectionTitle} />
+        <Content style={{ padding: 20, background: palette.paper }}>
           {clustersError && (
             <Alert
               type="error"
               showIcon
               style={{ marginBottom: 16 }}
-              message="클러스터 목록을 불러오지 못했습니다 — 표시된 목록이 불완전할 수 있습니다"
+              message={t("shell.clustersLoadError")}
             />
           )}
           <Outlet />

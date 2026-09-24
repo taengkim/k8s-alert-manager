@@ -27,6 +27,8 @@ import type { AckStatusMatch, LiveAlert } from "../api/alerts";
 import { listClusters } from "../api/admin";
 import type { MatcherInput } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
+import { severityColor, severityTagStyle } from "../theme";
+import { useI18n } from "../i18n";
 
 dayjs.extend(relativeTime);
 
@@ -34,28 +36,19 @@ const { Text, Title } = Typography;
 
 type StateFilter = "all" | "active" | "suppressed";
 
-const SEVERITY_OPTIONS = [
-  { value: "critical", label: "critical" },
-  { value: "warning", label: "warning" },
-  { value: "info", label: "info" },
-  { value: "none", label: "없음" },
-];
-
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-};
-
-function severityColor(severity: string): string {
-  return SEVERITY_TAG_COLOR[severity] ?? "default";
-}
-
 export default function Alerts() {
+  const { t } = useI18n();
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
   const { clusters, selectedIds: clusterIds } = useClusterFilter();
   const isAdmin = !!user?.is_admin;
+
+  const SEVERITY_OPTIONS = [
+    { value: "critical", label: "critical" },
+    { value: "warning", label: "warning" },
+    { value: "info", label: "info" },
+    { value: "none", label: t("common.none") },
+  ];
 
   const [severity, setSeverity] = useState<string[]>([]);
   const [namespace, setNamespace] = useState<string | undefined>(undefined);
@@ -169,12 +162,12 @@ export default function Alerts() {
   if (noTeamSelected) {
     return (
       <div>
-        <h2>알럿</h2>
+        <h2>{t("alerts.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -182,38 +175,40 @@ export default function Alerts() {
 
   const columns = [
     {
-      title: "상태",
+      title: t("common.status"),
       dataIndex: "state",
       key: "state",
       width: 110,
       render: (state: string) =>
         state === "active" ? (
-          <Badge status="processing" color="red" text="active" />
+          <Badge status="processing" color={severityColor("critical")} text="active" />
         ) : (
           <Badge status="default" text={state || "-"} />
         ),
     },
     {
-      title: "알럿명",
+      title: t("alerts.alertName"),
       dataIndex: "alertname",
       key: "alertname",
       render: (value: string, record: LiveAlert) => (
         <Space size={4}>
           {value}
-          {record.shared_from && <Tag color="blue">공유: {record.shared_from}</Tag>}
+          {record.shared_from && (
+            <Tag color="blue">{t("alerts.sharedFrom", { source: record.shared_from })}</Tag>
+          )}
         </Space>
       ),
     },
     {
-      title: "심각도",
+      title: t("common.severity"),
       dataIndex: "severity",
       key: "severity",
-      render: (value: string) => <Tag color={severityColor(value)}>{value || "none"}</Tag>,
+      render: (value: string) => <Tag style={severityTagStyle(value)}>{value || "none"}</Tag>,
     },
-    { title: "네임스페이스", dataIndex: "namespace", key: "namespace" },
-    { title: "클러스터", dataIndex: "cluster", key: "cluster" },
+    { title: t("common.namespace"), dataIndex: "namespace", key: "namespace" },
+    { title: t("common.cluster"), dataIndex: "cluster", key: "cluster" },
     {
-      title: "확인",
+      title: t("common.acknowledged"),
       key: "acknowledged",
       width: 70,
       align: "center" as const,
@@ -221,14 +216,20 @@ export default function Alerts() {
         const match = ackByKey.get(`${record.cluster}|${record.fingerprint}`);
         if (!match?.acknowledged) return <Text type="secondary">-</Text>;
         return (
-          <Tooltip title={match.assignee_username ? `담당자: ${match.assignee_username}` : "확인됨"}>
+          <Tooltip
+            title={
+              match.assignee_username
+                ? t("common.assigneeWithName", { name: match.assignee_username })
+                : t("common.acknowledgedState")
+            }
+          >
             <Tag color="success">✓</Tag>
           </Tooltip>
         );
       },
     },
     {
-      title: "시작 시각",
+      title: t("common.startedAt"),
       dataIndex: "starts_at",
       key: "starts_at",
       render: (startsAt: string) => (
@@ -250,17 +251,17 @@ export default function Alerts() {
         }}
       >
         <h2 style={{ margin: 0 }}>
-          알럿{" "}
+          {t("alerts.title")}{" "}
           <Text type="secondary" style={{ fontSize: 14, fontWeight: "normal" }}>
-            ({alerts.length}건)
+            ({t("alerts.count", { count: alerts.length })})
           </Text>
         </h2>
         <div style={{ display: "flex", gap: 8 }}>
           <Link to="/alerts/history">
-            <Button>이력 보기</Button>
+            <Button>{t("alerts.viewHistory")}</Button>
           </Link>
           <Button onClick={() => query.refetch()} loading={query.isFetching}>
-            새로고침
+            {t("common.refresh")}
           </Button>
         </div>
       </div>
@@ -270,7 +271,9 @@ export default function Alerts() {
           type="error"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`클러스터 ${missingClusters.map((c) => c.display_name).join(", ")}의 모니터링 수신이 끊겼습니다`}
+          message={t("alerts.missingHeartbeat", {
+            clusters: missingClusters.map((c) => c.display_name).join(", "),
+          })}
         />
       )}
 
@@ -280,7 +283,7 @@ export default function Alerts() {
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`클러스터 ${err.cluster} 조회 실패: ${err.message}`}
+          message={t("alerts.clusterFetchError", { cluster: err.cluster, message: err.message })}
         />
       ))}
 
@@ -288,7 +291,7 @@ export default function Alerts() {
         <Select
           mode="multiple"
           allowClear
-          placeholder="심각도"
+          placeholder={t("common.severity")}
           style={{ minWidth: 220 }}
           options={SEVERITY_OPTIONS}
           value={severity}
@@ -296,7 +299,7 @@ export default function Alerts() {
         />
         <Select
           allowClear
-          placeholder="네임스페이스"
+          placeholder={t("common.namespace")}
           style={{ minWidth: 200 }}
           options={namespaceOptions}
           value={namespace}
@@ -306,13 +309,13 @@ export default function Alerts() {
           value={stateFilter}
           onChange={setStateFilter}
           options={[
-            { label: "전체", value: "all" },
+            { label: t("common.all"), value: "all" },
             { label: "active", value: "active" },
             { label: "suppressed", value: "suppressed" },
           ]}
         />
         <Input.Search
-          placeholder="알럿명 검색"
+          placeholder={t("alerts.searchPlaceholder")}
           allowClear
           style={{ minWidth: 240 }}
           onSearch={setSearch}
@@ -329,7 +332,7 @@ export default function Alerts() {
           onClick: () => setSelected(record),
           style: { cursor: "pointer" },
         })}
-        locale={{ emptyText: <Empty description="알럿이 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("alerts.empty")} /> }}
       />
 
       <Drawer
@@ -340,11 +343,13 @@ export default function Alerts() {
         extra={
           <Space>
             {selectedAck?.event_id && (
-              <Link to={`/alerts/history?highlight=${selectedAck.event_id}`}>이력에서 보기</Link>
+              <Link to={`/alerts/history?highlight=${selectedAck.event_id}`}>
+                {t("alerts.viewInHistory")}
+              </Link>
             )}
-            <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
+            <Tooltip title={currentTeam ? undefined : t("common.noTeamAssigned")}>
               <Button disabled={!currentTeam} onClick={() => setSilenceModalOpen(true)}>
-                이 알럿 사일런스
+                {t("alerts.silenceThisAlert")}
               </Button>
             </Tooltip>
           </Space>
@@ -353,23 +358,26 @@ export default function Alerts() {
         {selected && (
           <>
             <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
-              <Descriptions.Item label="상태">{selected.state}</Descriptions.Item>
-              <Descriptions.Item label="심각도">
-                <Tag color={severityColor(selected.severity)}>{selected.severity || "none"}</Tag>
+              <Descriptions.Item label={t("common.status")}>{selected.state}</Descriptions.Item>
+              <Descriptions.Item label={t("common.severity")}>
+                <Tag style={severityTagStyle(selected.severity)}>{selected.severity || "none"}</Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="네임스페이스">{selected.namespace}</Descriptions.Item>
+              <Descriptions.Item label={t("common.namespace")}>{selected.namespace}</Descriptions.Item>
               {selectedAck?.acknowledged && (
-                <Descriptions.Item label="확인">
+                <Descriptions.Item label={t("common.acknowledged")}>
                   <Tag color="success">
-                    확인됨{selectedAck.assignee_username ? ` · 담당자: ${selectedAck.assignee_username}` : ""}
+                    {t("common.acknowledgedState")}
+                    {selectedAck.assignee_username
+                      ? ` · ${t("common.assigneeWithName", { name: selectedAck.assignee_username })}`
+                      : ""}
                   </Tag>
                 </Descriptions.Item>
               )}
-              <Descriptions.Item label="클러스터">{selected.cluster}</Descriptions.Item>
-              <Descriptions.Item label="시작 시각">
+              <Descriptions.Item label={t("common.cluster")}>{selected.cluster}</Descriptions.Item>
+              <Descriptions.Item label={t("common.startedAt")}>
                 {dayjs(selected.starts_at).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
-              <Descriptions.Item label="Silenced by">
+              <Descriptions.Item label={t("alerts.silencedBy")}>
                 {selected.silenced_by.length > 0 ? (
                   selected.silenced_by.map((id) => (
                     <Tag key={id} style={{ marginBottom: 4 }}>
@@ -382,7 +390,7 @@ export default function Alerts() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Title level={5}>레이블</Title>
+            <Title level={5}>{t("alerts.labelsTitle")}</Title>
             <div style={{ marginBottom: 24 }}>
               {Object.entries(selected.labels).map(([key, value]) => (
                 <Tag key={key} style={{ marginBottom: 4 }}>
@@ -391,7 +399,7 @@ export default function Alerts() {
               ))}
             </div>
 
-            <Title level={5}>어노테이션</Title>
+            <Title level={5}>{t("alerts.annotationsTitle")}</Title>
             <div style={{ whiteSpace: "pre-wrap", marginBottom: 24 }}>
               {Object.entries(selected.annotations).length > 0 ? (
                 Object.entries(selected.annotations).map(([key, value]) => (
@@ -408,12 +416,12 @@ export default function Alerts() {
             <Space size="middle">
               {selected.generator_url && (
                 <a href={selected.generator_url} target="_blank" rel="noreferrer">
-                  Prometheus에서 보기
+                  {t("alerts.viewInPrometheus")}
                 </a>
               )}
               {selected.grafana_url && (
                 <a href={selected.grafana_url} target="_blank" rel="noreferrer">
-                  Grafana에서 보기
+                  {t("alerts.viewInGrafana")}
                 </a>
               )}
             </Space>

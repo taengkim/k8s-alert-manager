@@ -31,8 +31,10 @@ import type { Channel, ChannelType, DigestMode } from "../api/channels";
 import { listTemplates } from "../api/templates";
 import JsonSchemaForm from "../components/JsonSchemaForm";
 import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
+import { useI18n } from "../i18n";
 
 export default function Channels() {
+  const { t } = useI18n();
   const { user } = useAuth();
   const { currentTeam } = useTeam();
 
@@ -46,12 +48,12 @@ export default function Channels() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>채널</h2>
+        <h2>{t("channels.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -59,7 +61,7 @@ export default function Channels() {
 
   return (
     <div>
-      <h2>채널 — {currentTeam.name}</h2>
+      <h2>{t("channels.titleWithTeam", { team: currentTeam.name })}</h2>
       <ChannelsTable teamId={currentTeam.id} isOwner={isOwner} />
     </div>
   );
@@ -76,18 +78,18 @@ interface ChannelFormValues {
   digest_window_minutes: number;
 }
 
-const DIGEST_MODE_OPTIONS: { label: string; value: DigestMode }[] = [
-  { label: "끄기", value: "off" },
-  { label: "자동", value: "auto" },
-  { label: "항상", value: "always" },
-];
-
 interface ChannelsTableProps {
   teamId: number;
   isOwner: boolean;
 }
 
 function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
+  const { t } = useI18n();
+  const DIGEST_MODE_OPTIONS: { label: string; value: DigestMode }[] = [
+    { label: t("channels.digestOff"), value: "off" },
+    { label: t("channels.digestAuto"), value: "auto" },
+    { label: t("channels.digestAlways"), value: "always" },
+  ];
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
@@ -137,7 +139,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
       closeModal();
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "채널 생성에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("channels.createError"));
     },
   });
 
@@ -157,7 +159,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
       closeModal();
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "채널 수정에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("channels.updateError"));
     },
   });
 
@@ -167,7 +169,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["channels", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `변경에 실패했습니다: ${err.detail}` : "변경에 실패했습니다",
+        err instanceof ApiError ? `${t("common.updateError")}: ${err.detail}` : t("common.updateError"),
       );
     },
   });
@@ -177,19 +179,19 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["channels", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
 
   const testMutation = useMutation({
     mutationFn: (id: number) => testChannel(id),
-    onSuccess: () => message.success("테스트 알림을 발송했습니다"),
+    onSuccess: () => message.success(t("channels.testSuccess")),
     onError: (err) => {
       message.error(
         err instanceof ApiError
-          ? `테스트 발송에 실패했습니다: ${err.detail}`
-          : "테스트 발송에 실패했습니다",
+          ? `${t("channels.testError")}: ${err.detail}`
+          : t("channels.testError"),
       );
     },
   });
@@ -210,15 +212,15 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
   };
 
   const columns = [
-    { title: "이름", dataIndex: "name", key: "name" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
     {
-      title: "타입",
+      title: t("common.type"),
       dataIndex: "type",
       key: "type",
       render: (type: string) => <Tag color="blue">{type}</Tag>,
     },
     {
-      title: "활성화",
+      title: t("common.enabled"),
       dataIndex: "enabled",
       key: "enabled",
       render: (enabled: boolean, record: Channel) => (
@@ -240,19 +242,19 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
             loading={testMutation.isPending && testMutation.variables === record.id}
             onClick={() => testMutation.mutate(record.id)}
           >
-            테스트
+            {t("history.testTag")}
           </Button>
           {isOwner && (
             <>
               <Button size="small" onClick={() => openEditModal(record)}>
-                수정
+                {t("common.edit")}
               </Button>
               <Popconfirm
-                title="이 채널을 삭제하시겠습니까?"
+                title={t("channels.deleteConfirm")}
                 onConfirm={() => deleteMutation.mutate(record.id)}
               >
                 <Button size="small" danger>
-                  삭제
+                  {t("common.delete")}
                 </Button>
               </Popconfirm>
             </>
@@ -271,7 +273,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
     <div>
       {isOwner && (
         <Button type="primary" onClick={openCreateModal} style={{ marginBottom: 16 }}>
-          채널 추가
+          {t("channels.addButton")}
         </Button>
       )}
       <Table<Channel>
@@ -282,7 +284,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         pagination={false}
       />
       <Modal
-        title={editing ? "채널 수정" : "채널 추가"}
+        title={editing ? t("channels.editTitle") : t("channels.addButton")}
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
@@ -315,15 +317,15 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         >
           <Form.Item
             name="name"
-            label="이름"
-            rules={[{ required: true, message: "이름을 입력하세요" }]}
+            label={t("common.name")}
+            rules={[{ required: true, message: t("common.nameRequired") }]}
           >
             <Input />
           </Form.Item>
           <Form.Item
             name="type"
-            label="타입"
-            rules={[{ required: true, message: "타입을 선택하세요" }]}
+            label={t("common.type")}
+            rules={[{ required: true, message: t("channels.typeRequired") }]}
           >
             <Select
               options={typeOptions}
@@ -340,45 +342,45 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
           )}
           <Form.Item
             name="template_id"
-            label="메시지 템플릿"
-            help="비워두면 채널 타입의 기본 템플릿(또는 앱 기본 템플릿)을 사용합니다"
+            label={t("channels.messageTemplateLabel")}
+            help={t("channels.templateHelp")}
           >
             <Select
               allowClear
               loading={templatesQuery.isLoading}
-              placeholder="기본값 상속"
+              placeholder={t("channels.inheritDefaultPlaceholder")}
               options={(templatesQuery.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
           <TemplatePreviewPopover template={selectedTemplate} />
           <Form.Item
             name="allow_cross_team_escalation"
-            label="타팀 에스컬레이션 허용"
+            label={t("channels.crossTeamEscalationLabel")}
             valuePropName="checked"
-            help="켜면 다른 팀의 라우팅 규칙이 이 채널을 에스컬레이션 대상으로 선택할 수 있습니다."
+            help={t("channels.crossTeamEscalationHelp")}
           >
             <Switch />
           </Form.Item>
 
-          <Form.Item label="폭풍 제어" style={{ marginBottom: 0 }}>
+          <Form.Item label={t("channels.stormControlLabel")} style={{ marginBottom: 0 }}>
             <Space direction="vertical" style={{ width: "100%" }} size={0}>
               <Form.Item
                 name="digest_mode"
-                label="다이제스트 모드"
-                help="자동: 시간당 발송 제한 초과 시 묶어서 발송 / 항상: 모든 알림을 항상 묶어서 발송"
+                label={t("channels.digestModeLabel")}
+                help={t("channels.digestModeHelp")}
               >
                 <Segmented options={DIGEST_MODE_OPTIONS} />
               </Form.Item>
               <Form.Item
                 name="rate_limit_per_hour"
-                label="시간당 발송 제한"
+                label={t("channels.rateLimitLabel")}
                 dependencies={["digest_mode"]}
                 rules={[
                   ({ getFieldValue }) => ({
                     validator(_, value) {
                       if (getFieldValue("digest_mode") === "auto" && (value === undefined || value === null)) {
                         return Promise.reject(
-                          new Error("자동 모드에서는 시간당 발송 제한을 입력해야 합니다"),
+                          new Error(t("channels.rateLimitRequiredForAuto")),
                         );
                       }
                       return Promise.resolve();
@@ -386,12 +388,12 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
                   }),
                 ]}
               >
-                <InputNumber min={1} style={{ width: "100%" }} placeholder="무제한" />
+                <InputNumber min={1} style={{ width: "100%" }} placeholder={t("channels.unlimitedPlaceholder")} />
               </Form.Item>
               <Form.Item
                 name="digest_window_minutes"
-                label="다이제스트 대기 시간(분)"
-                help="묶인 알림을 이 시간만큼 기다렸다가 한 번에 발송합니다"
+                label={t("channels.digestWindowLabel")}
+                help={t("channels.digestWindowHelp")}
               >
                 <InputNumber min={1} style={{ width: "100%" }} />
               </Form.Item>

@@ -6,13 +6,7 @@ import { ApiError } from "../api/client";
 import { createSilence } from "../api/silences";
 import type { MatcherInput } from "../api/silences";
 import type { Cluster } from "../api/types";
-
-const DURATION_OPTIONS = [
-  { value: "1h", label: "1시간" },
-  { value: "4h", label: "4시간" },
-  { value: "24h", label: "24시간" },
-  { value: "custom", label: "직접 지정" },
-];
+import { useI18n } from "../i18n";
 
 const DURATION_MINUTES: Record<string, number> = {
   "1h": 60,
@@ -60,6 +54,13 @@ export default function SilenceModal({
   initialClusterId,
   initialMatchers,
 }: SilenceModalProps) {
+  const { t } = useI18n();
+  const DURATION_OPTIONS = [
+    { value: "1h", label: t("preview.range1h") },
+    { value: "4h", label: t("silenceModal.duration4h") },
+    { value: "24h", label: t("preview.range24h") },
+    { value: "custom", label: t("silenceModal.durationCustom") },
+  ];
   const queryClient = useQueryClient();
   const [form] = Form.useForm<SilenceFormValues>();
 
@@ -104,7 +105,7 @@ export default function SilenceModal({
 
   return (
     <Modal
-      title="사일런스 생성"
+      title={t("silences.createButton")}
       open={open}
       onCancel={handleClose}
       onOk={() => form.submit()}
@@ -119,7 +120,7 @@ export default function SilenceModal({
           message={
             mutation.error instanceof ApiError
               ? mutation.error.detail
-              : "사일런스 생성에 실패했습니다"
+              : t("silenceModal.createError")
           }
         />
       )}
@@ -134,17 +135,17 @@ export default function SilenceModal({
         }}
         onFinish={(values) => mutation.mutate(values)}
       >
-        <Form.Item label="팀">
+        <Form.Item label={t("common.team")}>
           <Input value={`${team.name} (${team.slug})`} disabled />
         </Form.Item>
 
         <Form.Item
           name="cluster_id"
-          label="클러스터"
-          rules={[{ required: true, message: "클러스터를 선택하세요" }]}
+          label={t("common.cluster")}
+          rules={[{ required: true, message: t("ruleEditor.selectClusterPrompt") }]}
         >
           <Select
-            placeholder="클러스터를 선택하세요"
+            placeholder={t("ruleEditor.selectClusterPrompt")}
             options={clusters.map((c) => ({ value: c.id, label: c.display_name }))}
           />
         </Form.Item>
@@ -155,7 +156,7 @@ export default function SilenceModal({
             {
               validator: async (_, matchers?: MatcherInput[]) => {
                 if (!matchers || matchers.length === 0) {
-                  throw new Error("matcher를 하나 이상 입력하세요");
+                  throw new Error(t("silenceModal.matcherRequired"));
                 }
               },
             },
@@ -163,7 +164,7 @@ export default function SilenceModal({
         >
           {(fields, { add, remove }, { errors }) => (
             <>
-              <Form.Item label="Matchers" required>
+              <Form.Item label={t("silences.matchersColumn")} required>
                 {fields.map((field) => (
                   <div
                     key={field.key}
@@ -171,7 +172,7 @@ export default function SilenceModal({
                   >
                     <Form.Item
                       name={[field.name, "name"]}
-                      rules={[{ required: true, message: "레이블명" }]}
+                      rules={[{ required: true, message: t("silenceModal.matcherNameRequired") }]}
                       style={{ flex: 1, marginBottom: 0 }}
                     >
                       <Input placeholder="label" />
@@ -179,7 +180,7 @@ export default function SilenceModal({
                     <span>=</span>
                     <Form.Item
                       name={[field.name, "value"]}
-                      rules={[{ required: true, message: "값" }]}
+                      rules={[{ required: true, message: t("builder.valueLabel") }]}
                       style={{ flex: 1, marginBottom: 0 }}
                     >
                       <Input placeholder="value" />
@@ -189,7 +190,7 @@ export default function SilenceModal({
                       valuePropName="checked"
                       style={{ marginBottom: 0 }}
                     >
-                      <Switch checkedChildren="정규식" unCheckedChildren="정규식" />
+                      <Switch checkedChildren={t("silenceModal.regexToggle")} unCheckedChildren={t("silenceModal.regexToggle")} />
                     </Form.Item>
                     <Button
                       type="text"
@@ -197,20 +198,20 @@ export default function SilenceModal({
                       disabled={fields.length <= 1}
                       onClick={() => remove(field.name)}
                     >
-                      삭제
+                      {t("common.delete")}
                     </Button>
                   </div>
                 ))}
                 <Form.ErrorList errors={errors} />
                 <Button block onClick={() => add(EMPTY_MATCHER)}>
-                  matcher 추가
+                  {t("matcher.addMatcher")}
                 </Button>
               </Form.Item>
             </>
           )}
         </Form.List>
 
-        <Form.Item label="기간" required>
+        <Form.Item label={t("silences.durationColumn")} required>
           <div style={{ display: "flex", gap: 8 }}>
             <Form.Item name="durationPreset" noStyle rules={[{ required: true }]}>
               <Select options={DURATION_OPTIONS} style={{ width: 160 }} />
@@ -224,7 +225,7 @@ export default function SilenceModal({
                   <Form.Item
                     name="endsAt"
                     noStyle
-                    rules={[{ required: true, message: "만료 시각을 선택하세요" }]}
+                    rules={[{ required: true, message: t("silenceModal.endsAtRequired") }]}
                   >
                     <DatePicker showTime style={{ flex: 1 }} />
                   </Form.Item>
@@ -236,10 +237,10 @@ export default function SilenceModal({
 
         <Form.Item
           name="comment"
-          label="설명"
-          rules={[{ required: true, message: "설명을 입력하세요" }]}
+          label={t("common.description")}
+          rules={[{ required: true, message: t("silenceModal.commentRequired") }]}
         >
-          <Input.TextArea rows={2} placeholder="사일런스 사유" />
+          <Input.TextArea rows={2} placeholder={t("silenceModal.commentPlaceholder")} />
         </Form.Item>
       </Form>
     </Modal>

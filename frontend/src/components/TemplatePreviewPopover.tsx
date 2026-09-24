@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Button, Popover, Spin, Typography } from "antd";
 import { previewTemplate } from "../api/templates";
 import type { MessageTemplate } from "../api/templates";
+import { useI18n } from "../i18n";
 
 const { Text } = Typography;
 
@@ -16,6 +17,7 @@ export default function TemplatePreviewPopover({
 }: {
   template: MessageTemplate | null | undefined;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [rendered, setRendered] = useState<{ title: string; body: string } | null>(null);
@@ -40,10 +42,10 @@ export default function TemplatePreviewPopover({
         if (result.rendered) {
           setRendered(result.rendered);
         } else {
-          setError(result.errors[0]?.message ?? "미리보기에 실패했습니다");
+          setError(result.errors[0]?.message ?? t("preview.loadError"));
         }
       })
-      .catch(() => setError("미리보기에 실패했습니다"))
+      .catch(() => setError(t("preview.loadError")))
       .finally(() => setLoading(false));
   };
 
@@ -52,7 +54,7 @@ export default function TemplatePreviewPopover({
       open={open}
       onOpenChange={handleOpenChange}
       trigger="click"
-      title={`미리보기 (샘플 알럿) — ${template.name}`}
+      title={t("templatePreview.popoverTitle", { name: template.name })}
       content={
         <div style={{ maxWidth: 320 }}>
           {loading && <Spin size="small" />}
@@ -69,7 +71,7 @@ export default function TemplatePreviewPopover({
       }
     >
       <Button size="small" type="link" style={{ paddingLeft: 0 }}>
-        미리보기
+        {t("ruleEditor.previewTitle")}
       </Button>
     </Popover>
   );

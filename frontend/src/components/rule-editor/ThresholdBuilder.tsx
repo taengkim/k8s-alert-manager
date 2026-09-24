@@ -9,6 +9,7 @@ import {
 import type { MetricMetadata } from "../../api/metrics";
 import { COMPARISON_OPS, LABEL_OPS, generateBuilderExpr } from "./builderExpr";
 import type { BuilderLabelFilter, BuilderState } from "./builderExpr";
+import { useI18n } from "../../i18n";
 
 const { Text } = Typography;
 
@@ -26,6 +27,7 @@ function truncateHelp(help: string | undefined, max = 80): string {
 }
 
 export default function ThresholdBuilder({ clusterId, value, onChange }: ThresholdBuilderProps) {
+  const { t } = useI18n();
   const [form] = Form.useForm<BuilderState>();
   const [metricOptions, setMetricOptions] = useState<{ value: string }[]>([]);
   const [metricSearching, setMetricSearching] = useState(false);
@@ -104,14 +106,14 @@ export default function ThresholdBuilder({ clusterId, value, onChange }: Thresho
         // without rendering a second, nested <form> DOM element.
         component={false}
       >
-        <Form.Item label="메트릭" name="metric" rules={[{ required: true, message: "메트릭을 선택하세요" }]}>
+        <Form.Item label={t("builder.metricLabel")} name="metric" rules={[{ required: true, message: t("builder.metricRequired") }]}>
           <AutoComplete
             options={metricOptions}
             onSearch={handleMetricSearch}
             onSelect={(metric: string) => void handleMetricSelect(metric)}
-            placeholder="메트릭명 검색 (예: node_load1)"
+            placeholder={t("builder.metricSearchPlaceholder")}
             filterOption={false}
-            notFoundContent={metricSearching ? "검색 중..." : undefined}
+            notFoundContent={metricSearching ? t("builder.searching") : undefined}
           />
         </Form.Item>
         {metricMeta && (metricMeta.type || metricMeta.help) && (
@@ -120,7 +122,7 @@ export default function ThresholdBuilder({ clusterId, value, onChange }: Thresho
           </Text>
         )}
 
-        <Text strong>레이블 필터</Text>
+        <Text strong>{t("builder.labelFilterTitle")}</Text>
         <Form.List name="labels">
           {(fields, { add, remove }) => (
             <div style={{ marginTop: 8, marginBottom: 16 }}>
@@ -128,12 +130,12 @@ export default function ThresholdBuilder({ clusterId, value, onChange }: Thresho
                 <Space key={field.key} align="baseline" style={{ display: "flex", marginBottom: 8 }}>
                   <Form.Item
                     name={[field.name, "key"]}
-                    rules={[{ required: true, message: "레이블 키" }]}
+                    rules={[{ required: true, message: t("builder.labelKeyRequired") }]}
                     noStyle
                   >
                     <Select
                       style={{ width: 160 }}
-                      placeholder="레이블"
+                      placeholder={t("builder.labelPlaceholder")}
                       showSearch
                       options={labelKeyOptions.map((key) => ({ value: key, label: key }))}
                     />
@@ -141,31 +143,31 @@ export default function ThresholdBuilder({ clusterId, value, onChange }: Thresho
                   <Form.Item name={[field.name, "op"]} noStyle initialValue="=">
                     <Select style={{ width: 76 }} options={LABEL_OPS.map((op) => ({ value: op, label: op }))} />
                   </Form.Item>
-                  <Form.Item name={[field.name, "value"]} rules={[{ required: true, message: "값" }]} noStyle>
+                  <Form.Item name={[field.name, "value"]} rules={[{ required: true, message: t("builder.valueLabel") }]} noStyle>
                     <LabelValueField clusterId={clusterId} metric={value.metric} label={watchedLabels[field.name]?.key ?? ""} />
                   </Form.Item>
                   <Button danger onClick={() => remove(field.name)}>
-                    삭제
+                    {t("common.delete")}
                   </Button>
                 </Space>
               ))}
-              <Button onClick={() => add({ key: "", op: "=", value: "" })}>레이블 필터 추가</Button>
+              <Button onClick={() => add({ key: "", op: "=", value: "" })}>{t("builder.addLabelFilter")}</Button>
             </div>
           )}
         </Form.List>
 
         <Space size="middle" style={{ display: "flex", marginBottom: 8 }}>
-          <Form.Item label="비교 연산자" name="comparison" rules={[{ required: true }]}>
+          <Form.Item label={t("builder.comparisonLabel")} name="comparison" rules={[{ required: true }]}>
             <Select style={{ width: 100 }} options={COMPARISON_OPS.map((op) => ({ value: op, label: op }))} />
           </Form.Item>
-          <Form.Item label="임계값" name="threshold" rules={[{ required: true, message: "임계값을 입력하세요" }]}>
+          <Form.Item label={t("builder.thresholdLabel")} name="threshold" rules={[{ required: true, message: t("builder.thresholdRequired") }]}>
             <InputNumber style={{ width: 160 }} />
           </Form.Item>
         </Space>
       </Form>
 
       <Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
-        생성된 PromQL
+        {t("builder.generatedPromqlLabel")}
       </Text>
       <Typography.Paragraph code style={{ whiteSpace: "pre-wrap" }}>
         {generateBuilderExpr(value) || " "}
@@ -187,6 +189,7 @@ function LabelValueField({
   value?: string;
   onChange?: (value: string) => void;
 }) {
+  const { t } = useI18n();
   const [options, setOptions] = useState<{ value: string }[]>([]);
 
   useEffect(() => {
@@ -213,7 +216,7 @@ function LabelValueField({
       options={options}
       value={value}
       onChange={onChange}
-      placeholder="값"
+      placeholder={t("builder.valueLabel")}
       filterOption={(input, option) =>
         (option?.value ?? "").toLowerCase().includes(input.toLowerCase())
       }

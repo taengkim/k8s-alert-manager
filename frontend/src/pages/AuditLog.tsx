@@ -4,34 +4,10 @@ import dayjs, { type Dayjs } from "dayjs";
 import { DatePicker, Empty, Popover, Select, Space, Table, Tag, Typography } from "antd";
 import { getAuditLogs, type AuditLogEntry } from "../api/audit";
 import { listUsers } from "../api/admin";
+import { useI18n } from "../i18n";
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
-
-// Action namespaces written across the backend (grep `action="..."` under
-// app/ -- see app/services/audit.py's callers). Kept as an explicit list
-// rather than derived from data so the filter always offers every known
-// prefix, even one that hasn't fired yet in this deployment -- there's no
-// enforcement tying this list to the backend, though, so a newly added
-// action prefix still needs to be added here by hand.
-const ACTION_PREFIXES: { value: string; label: string }[] = [
-  { value: "alert.", label: "알럿" },
-  { value: "auth.", label: "인증" },
-  { value: "channel.", label: "채널" },
-  { value: "cluster.", label: "클러스터" },
-  { value: "history.", label: "이력" },
-  { value: "report.", label: "리포트" },
-  { value: "retention.", label: "보관 정책" },
-  { value: "route.", label: "라우트" },
-  { value: "rule.", label: "규칙" },
-  { value: "rules.", label: "규칙 일괄 작업" },
-  { value: "settings.", label: "설정" },
-  { value: "share.", label: "공유" },
-  { value: "silence.", label: "사일런스" },
-  { value: "team.", label: "팀" },
-  { value: "template.", label: "템플릿" },
-  { value: "user.", label: "사용자" },
-];
 
 const PREFIX_COLOR: Record<string, string> = {
   rule: "blue",
@@ -55,7 +31,33 @@ interface AuditLogProps {
 }
 
 export default function AuditLog({ fixedTeamId }: AuditLogProps) {
+  const { t } = useI18n();
   const isAdminView = fixedTeamId === undefined;
+
+  // Action namespaces written across the backend (grep `action="..."` under
+  // app/ -- see app/services/audit.py's callers). Kept as an explicit list
+  // rather than derived from data so the filter always offers every known
+  // prefix, even one that hasn't fired yet in this deployment -- there's no
+  // enforcement tying this list to the backend, though, so a newly added
+  // action prefix still needs to be added here by hand.
+  const ACTION_PREFIXES: { value: string; label: string }[] = [
+    { value: "alert.", label: t("alerts.title") },
+    { value: "auth.", label: t("audit.actionAuth") },
+    { value: "channel.", label: t("common.channel") },
+    { value: "cluster.", label: t("common.cluster") },
+    { value: "history.", label: t("audit.actionHistory") },
+    { value: "report.", label: t("team.reportsTab") },
+    { value: "retention.", label: t("audit.actionRetention") },
+    { value: "route.", label: t("audit.actionRoute") },
+    { value: "rule.", label: t("audit.actionRule") },
+    { value: "rules.", label: t("audit.actionRulesBulk") },
+    { value: "settings.", label: t("audit.actionSettings") },
+    { value: "share.", label: t("shares.title") },
+    { value: "silence.", label: t("silences.title") },
+    { value: "team.", label: t("common.team") },
+    { value: "template.", label: t("templates.title") },
+    { value: "user.", label: t("team.userLabel") },
+  ];
 
   const [action, setAction] = useState<string | undefined>(undefined);
   const [userId, setUserId] = useState<number | undefined>(undefined);
@@ -87,28 +89,28 @@ export default function AuditLog({ fixedTeamId }: AuditLogProps) {
 
   const columns = [
     {
-      title: "시각",
+      title: t("audit.timeColumn"),
       dataIndex: "created_at",
       key: "created_at",
       width: 170,
       render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm:ss"),
     },
     {
-      title: "사용자",
+      title: t("team.userLabel"),
       dataIndex: "username",
       key: "username",
       width: 140,
-      render: (value: string | null) => value ?? <Text type="secondary">시스템</Text>,
+      render: (value: string | null) => value ?? <Text type="secondary">{t("audit.systemUser")}</Text>,
     },
     {
-      title: "작업",
+      title: t("audit.actionColumn"),
       dataIndex: "action",
       key: "action",
       width: 160,
       render: (value: string) => <Tag color={actionTagColor(value)}>{value}</Tag>,
     },
     {
-      title: "대상",
+      title: t("audit.objectColumn"),
       key: "object",
       render: (_: unknown, record: AuditLogEntry) => (
         <Space size={4}>
@@ -118,20 +120,20 @@ export default function AuditLog({ fixedTeamId }: AuditLogProps) {
       ),
     },
     {
-      title: "상세",
+      title: t("audit.detailColumn"),
       key: "detail",
       width: 80,
       render: (_: unknown, record: AuditLogEntry) =>
         record.detail ? (
           <Popover
-            title="상세 정보"
+            title={t("audit.detailPopoverTitle")}
             content={
               <pre style={{ margin: 0, maxWidth: 400, maxHeight: 300, overflow: "auto" }}>
                 {JSON.stringify(record.detail, null, 2)}
               </pre>
             }
           >
-            <a>보기</a>
+            <a>{t("common.view")}</a>
           </Popover>
         ) : (
           <Text type="secondary">-</Text>
@@ -144,7 +146,7 @@ export default function AuditLog({ fixedTeamId }: AuditLogProps) {
       <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <Select
           allowClear
-          placeholder="작업 종류"
+          placeholder={t("audit.actionTypePlaceholder")}
           style={{ minWidth: 160 }}
           options={ACTION_PREFIXES}
           value={action}
@@ -154,7 +156,7 @@ export default function AuditLog({ fixedTeamId }: AuditLogProps) {
           <Select
             allowClear
             showSearch
-            placeholder="사용자"
+            placeholder={t("team.userLabel")}
             style={{ minWidth: 200 }}
             loading={usersQuery.isLoading}
             optionFilterProp="label"
@@ -185,7 +187,7 @@ export default function AuditLog({ fixedTeamId }: AuditLogProps) {
             setPageSize(nextPageSize);
           },
         }}
-        locale={{ emptyText: <Empty description="감사 로그가 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("audit.empty")} /> }}
       />
     </div>
   );

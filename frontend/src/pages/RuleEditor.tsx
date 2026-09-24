@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { Alert, App, Button, Drawer, Form, Input, Segmented, Select, Space, Typography } from "antd";
+import { monoFontFamily } from "../theme";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
@@ -11,19 +12,9 @@ import ThresholdBuilder from "../components/rule-editor/ThresholdBuilder";
 import PreviewChart from "../components/rule-editor/PreviewChart";
 import { emptyBuilderState, generateBuilderExpr, generateSelector } from "../components/rule-editor/builderExpr";
 import type { BuilderState } from "../components/rule-editor/builderExpr";
+import { useI18n } from "../i18n";
 
 const { Text, Title } = Typography;
-
-const SEVERITY_OPTIONS: { value: Severity; label: string }[] = [
-  { value: "critical", label: "critical" },
-  { value: "warning", label: "warning" },
-  { value: "info", label: "info" },
-];
-
-const MODE_OPTIONS: { value: RuleMode; label: string }[] = [
-  { value: "builder", label: "임계값 빌더" },
-  { value: "promql", label: "PromQL" },
-];
 
 // No leading or trailing hyphen, max 63 chars -- mirrors backend RULE_SLUG_RE.
 const SLUG_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -119,6 +110,16 @@ function renderYamlPreview(
 }
 
 export default function RuleEditor() {
+  const { t } = useI18n();
+  const SEVERITY_OPTIONS: { value: Severity; label: string }[] = [
+    { value: "critical", label: "critical" },
+    { value: "warning", label: "warning" },
+    { value: "info", label: "info" },
+  ];
+  const MODE_OPTIONS: { value: RuleMode; label: string }[] = [
+    { value: "builder", label: t("ruleEditor.builderModeOption") },
+    { value: "promql", label: "PromQL" },
+  ];
   const { slug } = useParams<{ slug: string }>();
   const isEdit = !!slug;
   const navigate = useNavigate();
@@ -220,7 +221,7 @@ export default function RuleEditor() {
         : createRule(teamId!, clusterId!, body);
     },
     onSuccess: () => {
-      message.success(isEdit ? "룰이 수정되었습니다" : "룰이 생성되었습니다");
+      message.success(isEdit ? t("ruleEditor.updateSuccess") : t("ruleEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["rules", teamId, clusterId] });
       navigate("/rules");
     },
@@ -230,7 +231,11 @@ export default function RuleEditor() {
         return;
       }
       setServerError(
-        err instanceof ApiError ? err.detail : isEdit ? "룰 수정에 실패했습니다" : "룰 생성에 실패했습니다",
+        err instanceof ApiError
+          ? err.detail
+          : isEdit
+            ? t("ruleEditor.updateError")
+            : t("ruleEditor.createError"),
       );
     },
   });
@@ -244,7 +249,7 @@ export default function RuleEditor() {
     } catch (err) {
       setExprValidation({
         valid: false,
-        error: err instanceof ApiError ? err.detail : "검증에 실패했습니다",
+        error: err instanceof ApiError ? err.detail : t("ruleEditor.validateError"),
       });
     } finally {
       setValidating(false);
@@ -254,15 +259,15 @@ export default function RuleEditor() {
   const handleFinish = (values: FormValues) => {
     setServerError(null);
     if (!clusterId) {
-      setServerError("클러스터를 선택하세요");
+      setServerError(t("ruleEditor.selectClusterPrompt"));
       return;
     }
     if (mode === "builder" && !builderState.metric) {
-      setServerError("메트릭을 선택하세요");
+      setServerError(t("builder.metricRequired"));
       return;
     }
     if (mode === "promql" && !promqlExpr.trim()) {
-      setServerError("표현식을 입력하세요");
+      setServerError(t("ruleEditor.exprRequired"));
       return;
     }
     saveMutation.mutate(values);
@@ -271,8 +276,8 @@ export default function RuleEditor() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>{isEdit ? "룰 수정" : "룰 생성"}</h2>
-        <Alert type="info" showIcon message="소속된 팀이 없습니다" />
+        <h2>{isEdit ? t("ruleEditor.editTitle") : t("ruleEditor.createTitle")}</h2>
+        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
       </div>
     );
   }
@@ -287,7 +292,9 @@ export default function RuleEditor() {
           marginBottom: 16,
         }}
       >
-        <h2 style={{ margin: 0 }}>{isEdit ? `룰 수정 — ${slug}` : "룰 생성"}</h2>
+        <h2 style={{ margin: 0 }}>
+          {isEdit ? t("ruleEditor.editTitleWithSlug", { slug: slug ?? "" }) : t("ruleEditor.createTitle")}
+        </h2>
         <Button
           onClick={() => {
             setPreviewValues({
@@ -299,7 +306,7 @@ export default function RuleEditor() {
             setPreviewOpen(true);
           }}
         >
-          YAML 미리보기
+          {t("ruleEditor.yamlPreviewButton")}
         </Button>
       </div>
 
@@ -309,11 +316,11 @@ export default function RuleEditor() {
 
       <div style={{ maxWidth: 400, marginBottom: 16 }}>
         <div style={{ marginBottom: 4 }}>
-          <Text strong>클러스터</Text>
+          <Text strong>{t("common.cluster")}</Text>
         </div>
         <Select
           style={{ width: "100%" }}
-          placeholder="클러스터를 선택하세요"
+          placeholder={t("ruleEditor.selectClusterPrompt")}
           disabled={isEdit}
           value={clusterId}
           onChange={setClusterId}
@@ -329,10 +336,10 @@ export default function RuleEditor() {
       >
         <Form.Item
           name="slug"
-          label="슬러그"
+          label={t("rules.slugColumn")}
           rules={[
-            { required: true, message: "슬러그를 입력하세요" },
-            { pattern: SLUG_PATTERN, message: "소문자/숫자/하이픈만 사용할 수 있습니다" },
+            { required: true, message: t("ruleEditor.slugRequired") },
+            { pattern: SLUG_PATTERN, message: t("ruleEditor.slugPattern") },
           ]}
         >
           <Input disabled={isEdit} placeholder="high-cpu" />
@@ -340,23 +347,23 @@ export default function RuleEditor() {
 
         <Form.Item
           name="alert_name"
-          label="알럿명"
+          label={t("alerts.alertName")}
           rules={[
-            { required: true, message: "알럿명을 입력하세요" },
+            { required: true, message: t("ruleEditor.alertNameRequired") },
             {
               pattern: ALERT_NAME_PATTERN,
-              message: "영문/숫자/밑줄만 사용할 수 있으며 숫자로 시작할 수 없습니다",
+              message: t("ruleEditor.alertNamePattern"),
             },
           ]}
         >
           <Input placeholder="HighCpuUsage" />
         </Form.Item>
 
-        <Form.Item name="severity" label="심각도" rules={[{ required: true }]}>
+        <Form.Item name="severity" label={t("common.severity")} rules={[{ required: true }]}>
           <Select options={SEVERITY_OPTIONS} />
         </Form.Item>
 
-        <Form.Item label="표현식 작성 방식">
+        <Form.Item label={t("ruleEditor.exprModeLabel")}>
           <Segmented value={mode} onChange={(v) => handleModeChange(v as RuleMode)} options={MODE_OPTIONS} />
         </Form.Item>
 
@@ -364,8 +371,8 @@ export default function RuleEditor() {
           <Alert
             type="warning"
             showIcon
-            message="직접 수정된 표현식 — 빌더 상태와 불일치"
-            description="PromQL 모드에서 표현식을 직접 수정했습니다. 저장 시 아래 빌더 상태로 생성된 표현식이 사용됩니다."
+            message={t("ruleEditor.divergedWarningTitle")}
+            description={t("ruleEditor.divergedWarningDesc")}
             style={{ marginBottom: 16 }}
           />
         )}
@@ -373,10 +380,10 @@ export default function RuleEditor() {
         {mode === "builder" ? (
           <ThresholdBuilder clusterId={clusterId} value={builderState} onChange={setBuilderState} />
         ) : (
-          <Form.Item label="PromQL 표현식" required>
+          <Form.Item label={t("ruleEditor.promqlExprLabel")} required>
             <Input.TextArea
               rows={3}
-              style={{ fontFamily: "monospace" }}
+              style={{ fontFamily: monoFontFamily }}
               value={promqlExpr}
               onChange={(e) => {
                 setPromqlExpr(e.target.value);
@@ -388,17 +395,17 @@ export default function RuleEditor() {
 
         <Space style={{ marginBottom: 16 }}>
           <Button onClick={handleValidate} loading={validating} disabled={!currentExpr}>
-            검증
+            {t("ruleEditor.validateButton")}
           </Button>
           {exprValidation &&
             (exprValidation.valid ? (
-              <Text type="success">유효한 표현식입니다</Text>
+              <Text type="success">{t("ruleEditor.validExpr")}</Text>
             ) : (
               <Text type="danger">{exprValidation.error}</Text>
             ))}
         </Space>
 
-        <Title level={5}>미리보기</Title>
+        <Title level={5}>{t("ruleEditor.previewTitle")}</Title>
         <div style={{ marginBottom: 24 }}>
           <PreviewChart
             clusterId={clusterId}
@@ -408,20 +415,20 @@ export default function RuleEditor() {
           />
         </div>
 
-        <Form.Item name="for" label="for" help='기간 형식, 예: "5m"'>
+        <Form.Item name="for" label="for" help={t("ruleEditor.forHelp")}>
           <Input placeholder="5m" />
         </Form.Item>
 
-        <Title level={5}>레이블</Title>
-        <KeyValueList name="labels" addLabel="레이블 추가" />
+        <Title level={5}>{t("alerts.labelsTitle")}</Title>
+        <KeyValueList name="labels" addLabel={t("ruleEditor.addLabel")} />
 
-        <Title level={5}>어노테이션</Title>
-        <KeyValueList name="annotations" addLabel="어노테이션 추가" />
+        <Title level={5}>{t("alerts.annotationsTitle")}</Title>
+        <KeyValueList name="annotations" addLabel={t("ruleEditor.addAnnotation")} />
 
-        <Form.Item name="runbook_url" label="Runbook URL">
+        <Form.Item name="runbook_url" label={t("ruleEditor.runbookUrlLabel")}>
           <Input placeholder="https://runbooks.example.com/..." />
         </Form.Item>
-        <Form.Item name="grafana_url" label="Grafana URL">
+        <Form.Item name="grafana_url" label={t("ruleEditor.grafanaUrlLabel")}>
           <Input placeholder="https://grafana.example.com/d/..." />
         </Form.Item>
 
@@ -432,14 +439,14 @@ export default function RuleEditor() {
             loading={saveMutation.isPending}
             disabled={!clusterId}
           >
-            저장
+            {t("common.save")}
           </Button>
-          <Button onClick={() => navigate("/rules")}>취소</Button>
+          <Button onClick={() => navigate("/rules")}>{t("common.cancel")}</Button>
         </Space>
       </Form>
 
       <Drawer
-        title="YAML 미리보기"
+        title={t("ruleEditor.yamlPreviewButton")}
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
         width={480}
@@ -462,6 +469,7 @@ export default function RuleEditor() {
 }
 
 function KeyValueList({ name, addLabel }: { name: "labels" | "annotations"; addLabel: string }) {
+  const { t } = useI18n();
   return (
     <Form.List name={name}>
       {(fields, { add, remove }) => (
@@ -470,20 +478,20 @@ function KeyValueList({ name, addLabel }: { name: "labels" | "annotations"; addL
             <Space key={field.key} style={{ display: "flex", marginBottom: 8 }} align="baseline">
               <Form.Item
                 name={[field.name, "key"]}
-                rules={[{ required: true, message: "키를 입력하세요" }]}
+                rules={[{ required: true, message: t("ruleEditor.keyRequired") }]}
                 noStyle
               >
                 <Input placeholder="key" />
               </Form.Item>
               <Form.Item
                 name={[field.name, "value"]}
-                rules={[{ required: true, message: "값을 입력하세요" }]}
+                rules={[{ required: true, message: t("ruleEditor.valueRequired") }]}
                 noStyle
               >
                 <Input placeholder="value" />
               </Form.Item>
               <Button danger onClick={() => remove(field.name)}>
-                삭제
+                {t("common.delete")}
               </Button>
             </Space>
           ))}

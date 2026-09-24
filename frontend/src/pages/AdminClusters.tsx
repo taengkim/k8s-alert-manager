@@ -39,6 +39,7 @@ import type {
   ComponentHealth,
   K8sAuthKind,
 } from "../api/types";
+import { useI18n } from "../i18n";
 
 dayjs.extend(relativeTime);
 
@@ -78,16 +79,17 @@ interface ClusterFormValues {
 }
 
 function ComponentDot({ label, health }: { label: string; health?: ComponentHealth }) {
+  const { t } = useI18n();
   if (!health) {
     return (
-      <Tooltip title={`${label}: 알 수 없음`}>
+      <Tooltip title={`${label}: ${t("adminClusters.healthLabelUnknown")}`}>
         <Badge status="default" />
       </Tooltip>
     );
   }
   const title = health.ok
-    ? `${label}: 정상${health.latency_ms != null ? ` (${health.latency_ms}ms)` : ""}`
-    : `${label}: 실패${health.error ? ` — ${health.error}` : ""}`;
+    ? `${label}: ${t("adminClusters.healthLabelOk")}${health.latency_ms != null ? ` (${health.latency_ms}ms)` : ""}`
+    : `${label}: ${t("adminClusters.healthLabelFail")}${health.error ? ` — ${health.error}` : ""}`;
   return (
     <Tooltip title={title}>
       <Badge status={health.ok ? "success" : "error"} />
@@ -96,6 +98,7 @@ function ComponentDot({ label, health }: { label: string; health?: ComponentHeal
 }
 
 export default function AdminClusters() {
+  const { t } = useI18n();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
 
@@ -214,7 +217,7 @@ export default function AdminClusters() {
       });
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "클러스터 생성에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("adminClusters.createError"));
     },
   });
 
@@ -230,7 +233,7 @@ export default function AdminClusters() {
       setDrawerOpen(false);
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "클러스터 수정에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("adminClusters.updateError"));
     },
   });
 
@@ -239,7 +242,9 @@ export default function AdminClusters() {
       updateCluster(id, { enabled }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["clusters"] }),
     onError: (err) => {
-      message.error(err instanceof ApiError ? `변경 실패: ${err.detail}` : "변경에 실패했습니다");
+      message.error(
+        err instanceof ApiError ? `${t("common.updateError")}: ${err.detail}` : t("common.updateError"),
+      );
     },
   });
 
@@ -256,7 +261,7 @@ export default function AdminClusters() {
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `토큰 회전 실패: ${err.detail}` : "토큰 회전에 실패했습니다",
+        err instanceof ApiError ? `${t("adminClusters.rotateError")}: ${err.detail}` : t("adminClusters.rotateError"),
       );
     },
   });
@@ -264,12 +269,12 @@ export default function AdminClusters() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteCluster(id),
     onSuccess: () => {
-      message.success("클러스터가 삭제되었습니다");
+      message.success(t("adminClusters.deleteSuccess"));
       queryClient.invalidateQueries({ queryKey: ["clusters"] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제 실패: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -279,17 +284,17 @@ export default function AdminClusters() {
     const text = `${secretReveal.webhook_token}\n\n${secretReveal.am_config_snippet}`;
     try {
       await navigator.clipboard.writeText(text);
-      message.success("클립보드에 복사되었습니다");
+      message.success(t("common.copySuccess"));
     } catch {
-      message.error("복사에 실패했습니다");
+      message.error(t("adminClusters.copyError"));
     }
   };
 
   const columns = [
-    { title: "이름", dataIndex: "name", key: "name" },
-    { title: "표시 이름", dataIndex: "display_name", key: "display_name" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
+    { title: t("adminClusters.displayNameColumn"), dataIndex: "display_name", key: "display_name" },
     {
-      title: "활성",
+      title: t("common.active"),
       dataIndex: "enabled",
       key: "enabled",
       render: (value: boolean, record: Cluster) => (
@@ -301,7 +306,7 @@ export default function AdminClusters() {
       ),
     },
     {
-      title: "헬스",
+      title: t("adminClusters.healthColumn"),
       key: "health",
       render: (_: unknown, record: Cluster) => {
         const health = healthByClusterId.get(record.id);
@@ -315,7 +320,7 @@ export default function AdminClusters() {
       },
     },
     {
-      title: "하트비트",
+      title: t("adminClusters.heartbeatColumn"),
       key: "heartbeat",
       render: (_: unknown, record: Cluster) => (
         <Space size={6}>
@@ -325,8 +330,8 @@ export default function AdminClusters() {
           />
           <Text type="secondary" style={{ fontSize: 12 }}>
             {record.last_heartbeat_at
-              ? `마지막 수신 ${dayjs(record.last_heartbeat_at).fromNow()}`
-              : "수신 이력 없음"}
+              ? t("adminClusters.lastHeartbeatReceived", { time: dayjs(record.last_heartbeat_at).fromNow() })
+              : t("adminClusters.noHeartbeatHistory")}
           </Text>
         </Space>
       ),
@@ -338,22 +343,22 @@ export default function AdminClusters() {
       render: (_: unknown, record: Cluster) => (
         <Space size={8}>
           <Button size="small" onClick={() => openEdit(record)}>
-            수정
+            {t("common.edit")}
           </Button>
           <Popconfirm
-            title="웹훅 토큰을 회전하시겠습니까?"
-            description="기존 토큰은 즉시 무효화됩니다."
+            title={t("adminClusters.rotateConfirmTitle")}
+            description={t("adminClusters.rotateConfirmDesc")}
             onConfirm={() => rotateMutation.mutate(record.id)}
           >
             <Button
               size="small"
               loading={rotateMutation.isPending && rotateMutation.variables === record.id}
             >
-              토큰 회전
+              {t("adminClusters.rotateButton")}
             </Button>
           </Popconfirm>
           <Popconfirm
-            title="이 클러스터를 삭제하시겠습니까?"
+            title={t("adminClusters.deleteConfirm")}
             onConfirm={() => deleteMutation.mutate(record.id)}
           >
             <Button
@@ -361,7 +366,7 @@ export default function AdminClusters() {
               danger
               loading={deleteMutation.isPending && deleteMutation.variables === record.id}
             >
-              삭제
+              {t("common.delete")}
             </Button>
           </Popconfirm>
         </Space>
@@ -372,7 +377,7 @@ export default function AdminClusters() {
   return (
     <div>
       <Button type="primary" onClick={openCreate} style={{ marginBottom: 16 }}>
-        클러스터 추가
+        {t("adminClusters.addButton")}
       </Button>
 
       <Table<Cluster>
@@ -384,7 +389,7 @@ export default function AdminClusters() {
       />
 
       <Drawer
-        title={editing ? `클러스터 수정 — ${editing.name}` : "클러스터 추가"}
+        title={editing ? t("adminClusters.editTitleWithName", { name: editing.name }) : t("adminClusters.addButton")}
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         width={520}
@@ -394,7 +399,7 @@ export default function AdminClusters() {
             loading={createMutation.isPending || updateMutation.isPending}
             onClick={() => form.submit()}
           >
-            저장
+            {t("common.save")}
           </Button>
         }
       >
@@ -410,24 +415,24 @@ export default function AdminClusters() {
         >
           <Form.Item
             name="name"
-            label="이름 (slug)"
-            help={editing ? "생성 후 변경할 수 없습니다" : "예: staging"}
+            label={t("adminClusters.nameSlugLabel")}
+            help={editing ? t("adminClusters.nameLockedHelp") : t("adminClusters.nameExampleHelp")}
             rules={[
-              { required: true, message: "이름을 입력하세요" },
-              { pattern: NAME_PATTERN, message: "소문자/숫자/하이픈만 사용할 수 있습니다" },
+              { required: true, message: t("common.nameRequired") },
+              { pattern: NAME_PATTERN, message: t("ruleEditor.slugPattern") },
             ]}
           >
             <Input disabled={!!editing} />
           </Form.Item>
           <Form.Item
             name="display_name"
-            label="표시 이름"
-            rules={[{ required: true, message: "표시 이름을 입력하세요" }]}
+            label={t("adminClusters.displayNameColumn")}
+            rules={[{ required: true, message: t("adminClusters.displayNameRequired") }]}
           >
             <Input />
           </Form.Item>
 
-          <Form.Item name="k8s_auth_kind" label="k8s 인증 방식" rules={[{ required: true }]}>
+          <Form.Item name="k8s_auth_kind" label={t("adminClusters.authKindLabel")} rules={[{ required: true }]}>
             <Radio.Group options={AUTH_KIND_OPTIONS} optionType="button" />
           </Form.Item>
 
@@ -437,8 +442,8 @@ export default function AdminClusters() {
               label="kubeconfig"
               help={
                 editing
-                  ? "비워두면 기존 자격증명을 유지합니다"
-                  : "비워두면 백엔드 호스트의 기본 kubeconfig를 사용합니다"
+                  ? t("adminClusters.kubeconfigHelpEdit")
+                  : t("adminClusters.kubeconfigHelpCreate")
               }
             >
               <Input.TextArea
@@ -454,18 +459,18 @@ export default function AdminClusters() {
               <Form.Item
                 name="k8s_api_url"
                 label="k8s API URL"
-                rules={[{ required: true, message: "API URL을 입력하세요" }]}
+                rules={[{ required: true, message: t("adminClusters.apiUrlRequired") }]}
               >
                 <Input placeholder="https://cluster.example.com:6443" />
               </Form.Item>
               <Form.Item
                 name="token"
-                label="토큰"
-                help={editing ? "비워두면 기존 토큰을 유지합니다" : undefined}
+                label={t("adminClusters.tokenLabel")}
+                help={editing ? t("adminClusters.tokenHelpEdit") : undefined}
               >
                 <Input.Password />
               </Form.Item>
-              <Form.Item name="ca_cert" label="CA 인증서 (선택)">
+              <Form.Item name="ca_cert" label={t("adminClusters.caCertLabel")}>
                 <Input.TextArea rows={3} style={{ fontFamily: "monospace" }} />
               </Form.Item>
             </>
@@ -474,46 +479,46 @@ export default function AdminClusters() {
           <Form.Item
             name="prometheus_url"
             label="Prometheus URL"
-            rules={[{ required: true, message: "Prometheus URL을 입력하세요" }]}
+            rules={[{ required: true, message: t("adminClusters.prometheusUrlRequired") }]}
           >
             <Input placeholder="http://localhost:30090" />
           </Form.Item>
           <Form.Item
             name="alertmanager_url"
             label="Alertmanager URL"
-            rules={[{ required: true, message: "Alertmanager URL을 입력하세요" }]}
+            rules={[{ required: true, message: t("adminClusters.alertmanagerUrlRequired") }]}
           >
             <Input placeholder="http://localhost:30093" />
           </Form.Item>
-          <Form.Item name="grafana_url" label="Grafana URL (선택)">
+          <Form.Item name="grafana_url" label={t("adminClusters.grafanaUrlOptionalLabel")}>
             <Input placeholder="https://grafana.example.com" />
           </Form.Item>
           <Form.Item
             name="rules_namespace"
-            label="룰 네임스페이스"
-            rules={[{ required: true, message: "네임스페이스를 입력하세요" }]}
+            label={t("adminClusters.rulesNamespaceLabel")}
+            rules={[{ required: true, message: t("adminClusters.namespaceRequired") }]}
           >
             <Input placeholder="kam-rules" />
           </Form.Item>
 
-          <Divider>하트비트 (Deadman's switch)</Divider>
-          <Form.Item name="heartbeat_enabled" label="하트비트 사용" valuePropName="checked">
+          <Divider>{t("adminClusters.heartbeatDivider")}</Divider>
+          <Form.Item name="heartbeat_enabled" label={t("adminClusters.heartbeatEnabledLabel")} valuePropName="checked">
             <Switch />
           </Form.Item>
-          <Form.Item name="heartbeat_alertname" label="하트비트 알럿명">
+          <Form.Item name="heartbeat_alertname" label={t("adminClusters.heartbeatAlertNameLabel")}>
             <Input placeholder="Watchdog" />
           </Form.Item>
-          <Form.Item name="heartbeat_timeout_seconds" label="타임아웃 (초)">
+          <Form.Item name="heartbeat_timeout_seconds" label={t("adminClusters.timeoutSecondsLabel")}>
             <InputNumber style={{ width: "100%" }} min={1} />
           </Form.Item>
           <Form.Item
             name="heartbeat_team_id"
-            label="귀속 팀"
-            help="미설정 시 알림 없음(배너/이력만)"
+            label={t("adminClusters.owningTeamLabel")}
+            help={t("adminClusters.owningTeamHelp")}
           >
             <Select
               allowClear
-              placeholder="선택 안 함"
+              placeholder={t("adminClusters.noneSelectedPlaceholder")}
               options={(teamsQuery.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
@@ -521,25 +526,25 @@ export default function AdminClusters() {
       </Drawer>
 
       <Modal
-        title="웹훅 토큰"
+        title={t("adminClusters.webhookTokenTitle")}
         open={!!secretReveal}
         onCancel={() => setSecretReveal(null)}
         footer={[
           <Button key="copy" onClick={copySecret}>
-            복사
+            {t("common.copy")}
           </Button>,
           <Button key="close" type="primary" onClick={() => setSecretReveal(null)}>
-            닫기
+            {t("common.close")}
           </Button>,
         ]}
       >
         <Alert
           type="warning"
           showIcon
-          message="이 토큰은 지금만 표시됩니다. 다시 볼 수 없으니 반드시 지금 저장하세요."
+          message={t("adminClusters.tokenRevealWarning")}
           style={{ marginBottom: 16 }}
         />
-        <Text strong>웹훅 토큰</Text>
+        <Text strong>{t("adminClusters.webhookTokenTitle")}</Text>
         <pre
           style={{
             background: "#f5f5f5",
@@ -552,7 +557,7 @@ export default function AdminClusters() {
         >
           {secretReveal?.webhook_token}
         </pre>
-        <Text strong>Alertmanager 설정 스니펫</Text>
+        <Text strong>{t("adminClusters.amConfigSnippetLabel")}</Text>
         <pre
           style={{
             background: "#f5f5f5",

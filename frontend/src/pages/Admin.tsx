@@ -31,31 +31,34 @@ import type { RetentionPurgeSummary } from "../api/admin";
 import type { AdminUser, Team } from "../api/types";
 import AdminClusters from "./AdminClusters";
 import AuditLog from "./AuditLog";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const { Title, Text } = Typography;
 
 export default function Admin() {
+  const { t } = useI18n();
   const { user } = useAuth();
 
   if (!user?.is_admin) {
     return (
       <div>
-        <h2>관리자</h2>
-        <Alert type="error" showIcon message="접근 권한이 없습니다 (403)" />
+        <h2>{t("nav.admin")}</h2>
+        <Alert type="error" showIcon message={t("admin.accessDenied")} />
       </div>
     );
   }
 
   return (
     <div>
-      <h2>관리자</h2>
+      <h2>{t("nav.admin")}</h2>
       <Tabs
         items={[
-          { key: "teams", label: "팀", children: <TeamsTab /> },
-          { key: "users", label: "사용자", children: <UsersTab /> },
-          { key: "clusters", label: "클러스터", children: <AdminClusters /> },
-          { key: "settings", label: "설정", children: <SettingsTab /> },
-          { key: "audit", label: "감사 로그", children: <AuditLog /> },
+          { key: "teams", label: t("admin.teamsTab"), children: <TeamsTab /> },
+          { key: "users", label: t("admin.usersTab"), children: <UsersTab /> },
+          { key: "clusters", label: t("admin.clustersTab"), children: <AdminClusters /> },
+          { key: "settings", label: t("audit.actionSettings"), children: <SettingsTab /> },
+          { key: "audit", label: t("team.auditTab"), children: <AuditLog /> },
         ]}
       />
     </div>
@@ -63,7 +66,6 @@ export default function Admin() {
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/;
-const SLUG_HELP = "소문자, 숫자, 하이픈만 사용 (예: platform-team)";
 
 interface TeamFormValues {
   slug: string;
@@ -77,6 +79,7 @@ interface TeamEditValues {
 }
 
 function TeamsTab() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [createOpen, setCreateOpen] = useState(false);
@@ -96,7 +99,7 @@ function TeamsTab() {
       setFormError(null);
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "팀 생성에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("admin.teamCreateError"));
     },
   });
 
@@ -113,7 +116,7 @@ function TeamsTab() {
       setFormError(null);
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "팀 수정에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("admin.teamUpdateError"));
     },
   });
 
@@ -122,15 +125,15 @@ function TeamsTab() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["teams"] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
 
   const columns = [
-    { title: "슬러그", dataIndex: "slug", key: "slug" },
-    { title: "이름", dataIndex: "name", key: "name" },
-    { title: "설명", dataIndex: "description", key: "description" },
+    { title: t("rules.slugColumn"), dataIndex: "slug", key: "slug" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
+    { title: t("common.description"), dataIndex: "description", key: "description" },
     {
       title: "",
       key: "actions",
@@ -147,14 +150,14 @@ function TeamsTab() {
               });
             }}
           >
-            수정
+            {t("common.edit")}
           </Button>
           <Popconfirm
-            title="이 팀을 삭제하시겠습니까?"
+            title={t("admin.deleteTeamConfirm")}
             onConfirm={() => deleteMutation.mutate(record.id)}
           >
             <Button danger size="small">
-              삭제
+              {t("common.delete")}
             </Button>
           </Popconfirm>
         </>
@@ -165,7 +168,7 @@ function TeamsTab() {
   return (
     <div>
       <Button type="primary" onClick={() => setCreateOpen(true)} style={{ marginBottom: 16 }}>
-        팀 생성
+        {t("admin.createTeamButton")}
       </Button>
       <Table<Team>
         rowKey="id"
@@ -176,7 +179,7 @@ function TeamsTab() {
       />
 
       <Modal
-        title="팀 생성"
+        title={t("admin.createTeamButton")}
         open={createOpen}
         onCancel={() => {
           setCreateOpen(false);
@@ -196,27 +199,27 @@ function TeamsTab() {
         >
           <Form.Item
             name="slug"
-            label="슬러그"
-            help={SLUG_HELP}
-            rules={[{ required: true, pattern: SLUG_PATTERN, message: SLUG_HELP }]}
+            label={t("rules.slugColumn")}
+            help={t("admin.slugHelp")}
+            rules={[{ required: true, pattern: SLUG_PATTERN, message: t("admin.slugHelp") }]}
           >
             <Input />
           </Form.Item>
           <Form.Item
             name="name"
-            label="이름"
-            rules={[{ required: true, message: "이름을 입력하세요" }]}
+            label={t("common.name")}
+            rules={[{ required: true, message: t("common.nameRequired") }]}
           >
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="설명">
+          <Form.Item name="description" label={t("common.description")}>
             <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title="팀 수정"
+        title={t("admin.editTeamTitle")}
         open={!!editTeam}
         onCancel={() => {
           setEditTeam(null);
@@ -232,12 +235,12 @@ function TeamsTab() {
         <Form form={editForm} layout="vertical" onFinish={(values) => editMutation.mutate(values)}>
           <Form.Item
             name="name"
-            label="이름"
-            rules={[{ required: true, message: "이름을 입력하세요" }]}
+            label={t("common.name")}
+            rules={[{ required: true, message: t("common.nameRequired") }]}
           >
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="설명">
+          <Form.Item name="description" label={t("common.description")}>
             <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
@@ -256,6 +259,7 @@ interface PatchUserContext {
 }
 
 function UsersTab() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const usersQuery = useQuery({ queryKey: ["admin-users"], queryFn: listUsers });
@@ -275,7 +279,7 @@ function UsersTab() {
         queryClient.setQueryData(["admin-users"], context.previous);
       }
       message.error(
-        err instanceof ApiError ? `사용자 수정에 실패했습니다: ${err.detail}` : "사용자 수정에 실패했습니다",
+        err instanceof ApiError ? `${t("admin.userUpdateError")}: ${err.detail}` : t("admin.userUpdateError"),
       );
     },
     onSettled: () => {
@@ -284,11 +288,11 @@ function UsersTab() {
   });
 
   const columns = [
-    { title: "아이디", dataIndex: "username", key: "username" },
-    { title: "이름", dataIndex: "display_name", key: "display_name" },
-    { title: "이메일", dataIndex: "email", key: "email" },
+    { title: t("login.usernameLabel"), dataIndex: "username", key: "username" },
+    { title: t("common.name"), dataIndex: "display_name", key: "display_name" },
+    { title: t("admin.emailColumn"), dataIndex: "email", key: "email" },
     {
-      title: "관리자",
+      title: t("admin.adminColumn"),
       dataIndex: "is_admin",
       key: "is_admin",
       render: (value: boolean, record: AdminUser) => (
@@ -299,7 +303,7 @@ function UsersTab() {
       ),
     },
     {
-      title: "활성",
+      title: t("common.active"),
       dataIndex: "is_active",
       key: "is_active",
       render: (value: boolean, record: AdminUser) => (
@@ -324,30 +328,31 @@ function UsersTab() {
 
 // -- Phase 15: retention settings ----------------------------------------
 
-const RETENTION_FIELD_LABEL: Record<string, string> = {
-  "retention.alert_events_days": "해소된 알럿 보관 기간 (일)",
-  "retention.test_alert_events_days": "테스트 알럿 보관 기간 (일)",
-  "retention.notification_outbox_days": "발송 이력 보관 기간 (일)",
-  "retention.audit_log_days": "감사 로그 보관 기간 (일)",
-  "retention.scheduled_actions_days": "예약 작업 이력 보관 기간 (일)",
+const RETENTION_FIELD_LABEL_KEY: Record<string, TranslationKey> = {
+  "retention.alert_events_days": "admin.retentionAlertEvents",
+  "retention.test_alert_events_days": "admin.retentionTestAlerts",
+  "retention.notification_outbox_days": "admin.retentionNotificationOutbox",
+  "retention.audit_log_days": "admin.retentionAuditLog",
+  "retention.scheduled_actions_days": "admin.retentionScheduledActions",
 };
 
-const RETENTION_FIELD_HELP: Record<string, string> = {
-  "retention.alert_events_days": "resolved 상태 알럿만 대상이며 firing 상태는 삭제되지 않습니다 (last_received_at 기준).",
-  "retention.test_alert_events_days": "테스트 알럿(is_test)은 firing/resolved 상태와 무관하게 이 기간이 지나면 삭제됩니다.",
-  "retention.notification_outbox_days": "발송 완료(delivered) 또는 포기(dead) 상태인 발송 이력만 대상입니다.",
-  "retention.audit_log_days": "",
-  "retention.scheduled_actions_days": "완료(done) 또는 취소(cancelled)된 에스컬레이션/재알림 예약만 대상입니다.",
+const RETENTION_FIELD_HELP_KEY: Record<string, TranslationKey | null> = {
+  "retention.alert_events_days": "admin.retentionAlertEventsHelp",
+  "retention.test_alert_events_days": "admin.retentionTestAlertsHelp",
+  "retention.notification_outbox_days": "admin.retentionNotificationOutboxHelp",
+  "retention.audit_log_days": null,
+  "retention.scheduled_actions_days": "admin.retentionScheduledActionsHelp",
 };
 
-const RETENTION_SUMMARY_LABEL: Record<keyof RetentionPurgeSummary, string> = {
-  alert_events: "알럿 이벤트",
-  notification_outbox: "발송 이력",
-  scheduled_actions: "예약 작업",
-  audit_logs: "감사 로그",
+const RETENTION_SUMMARY_LABEL_KEY: Record<keyof RetentionPurgeSummary, TranslationKey> = {
+  alert_events: "admin.summaryAlertEvents",
+  notification_outbox: "admin.summaryNotificationOutbox",
+  scheduled_actions: "admin.summaryScheduledActions",
+  audit_logs: "admin.summaryAuditLogs",
 };
 
 function SettingsTab() {
+  const { t } = useI18n();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [form] = Form.useForm<Record<string, number>>();
@@ -370,10 +375,10 @@ function SettingsTab() {
     onSuccess: (data) => {
       queryClient.setQueryData(["admin-retention-settings"], data);
       setFormError(null);
-      message.success("설정이 저장되었습니다");
+      message.success(t("admin.settingsSaveSuccess"));
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "설정 저장에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("admin.settingsSaveError"));
     },
   });
 
@@ -381,20 +386,20 @@ function SettingsTab() {
     mutationFn: runRetentionPurge,
     onSuccess: ({ summary }) => {
       setPurgeSummary(summary);
-      message.success("정리가 완료되었습니다");
+      message.success(t("admin.purgeSuccess"));
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `정리 실행에 실패했습니다: ${err.detail}` : "정리 실행에 실패했습니다",
+        err instanceof ApiError ? `${t("admin.purgeError")}: ${err.detail}` : t("admin.purgeError"),
       );
     },
   });
 
-  const keys = Object.keys(settingsQuery.data ?? RETENTION_FIELD_LABEL);
+  const keys = Object.keys(settingsQuery.data ?? RETENTION_FIELD_LABEL_KEY);
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%", maxWidth: 600 }}>
-      <Card title="데이터 보관 정책 (Retention)">
+      <Card title={t("admin.retentionPolicyTitle")}>
         {formError && (
           <Alert type="error" message={formError} showIcon style={{ marginBottom: 16 }} />
         )}
@@ -403,35 +408,36 @@ function SettingsTab() {
           layout="vertical"
           onFinish={(values) => saveMutation.mutate(values)}
         >
-          {keys.map((key) => (
-            <Form.Item
-              key={key}
-              name={key}
-              label={RETENTION_FIELD_LABEL[key] ?? key}
-              help={RETENTION_FIELD_HELP[key] || undefined}
-              rules={[{ required: true, type: "number", min: 1, message: "1 이상의 정수를 입력하세요" }]}
-            >
-              <InputNumber min={1} style={{ width: 200 }} />
-            </Form.Item>
-          ))}
+          {keys.map((key) => {
+            const labelKey = RETENTION_FIELD_LABEL_KEY[key];
+            const helpKey = RETENTION_FIELD_HELP_KEY[key];
+            return (
+              <Form.Item
+                key={key}
+                name={key}
+                label={labelKey ? t(labelKey) : key}
+                help={helpKey ? t(helpKey) : undefined}
+                rules={[{ required: true, type: "number", min: 1, message: t("admin.minIntegerRequired") }]}
+              >
+                <InputNumber min={1} style={{ width: 200 }} />
+              </Form.Item>
+            );
+          })}
           <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
-            저장
+            {t("common.save")}
           </Button>
         </Form>
       </Card>
 
-      <Card title="지금 정리 실행">
+      <Card title={t("admin.runCleanupTitle")}>
         <Space direction="vertical">
-          <Text type="secondary">
-            위 보관 기간을 기준으로 즉시 오래된 데이터를 삭제합니다. 평소에는 매일 자동으로
-            실행됩니다.
-          </Text>
+          <Text type="secondary">{t("admin.cleanupDescription")}</Text>
           <Popconfirm
-            title="지금 데이터 정리를 실행하시겠습니까?"
+            title={t("admin.runCleanupConfirm")}
             onConfirm={() => purgeMutation.mutate()}
           >
             <Button danger loading={purgeMutation.isPending}>
-              지금 정리 실행
+              {t("admin.runCleanupTitle")}
             </Button>
           </Popconfirm>
         </Space>
@@ -439,12 +445,12 @@ function SettingsTab() {
         {purgeSummary && (
           <>
             <Title level={5} style={{ marginTop: 16 }}>
-              마지막 실행 결과
+              {t("admin.lastRunResultTitle")}
             </Title>
             <Descriptions column={1} size="small" bordered>
               {(Object.keys(purgeSummary) as (keyof RetentionPurgeSummary)[]).map((key) => (
-                <Descriptions.Item key={key} label={RETENTION_SUMMARY_LABEL[key]}>
-                  {purgeSummary[key]}건 삭제
+                <Descriptions.Item key={key} label={t(RETENTION_SUMMARY_LABEL_KEY[key])}>
+                  {t("admin.deletedCount", { count: purgeSummary[key] })}
                 </Descriptions.Item>
               ))}
             </Descriptions>

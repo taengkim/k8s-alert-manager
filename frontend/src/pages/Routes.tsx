@@ -10,15 +10,10 @@ import { listClusters } from "../api/admin";
 import { deleteRoute, listRoutes, updateRoute } from "../api/routes";
 import type { RouteOut, RouteWriteInput } from "../api/routes";
 import TestAlertModal from "../components/TestAlertModal";
+import { severityTagStyle } from "../theme";
+import { useI18n } from "../i18n";
 
 const { Text } = Typography;
-
-const SEVERITY_TAG_COLOR: Record<string, string> = {
-  critical: "red",
-  warning: "orange",
-  info: "blue",
-  none: "default",
-};
 
 function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {}): RouteWriteInput {
   return {
@@ -50,6 +45,7 @@ function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {})
 }
 
 export default function Routes() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -85,7 +81,7 @@ export default function Routes() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["routes", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `변경에 실패했습니다: ${err.detail}` : "변경에 실패했습니다",
+        err instanceof ApiError ? `${t("common.updateError")}: ${err.detail}` : t("common.updateError"),
       );
     },
   });
@@ -93,12 +89,12 @@ export default function Routes() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteRoute(id),
     onSuccess: () => {
-      message.success("규칙이 삭제되었습니다");
+      message.success(t("routes.deleteSuccess"));
       queryClient.invalidateQueries({ queryKey: ["routes", teamId] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -106,12 +102,12 @@ export default function Routes() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>라우팅 규칙</h2>
+        <h2>{t("routes.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -120,57 +116,57 @@ export default function Routes() {
   const routes = routesQuery.data ?? [];
 
   const columns = [
-    { title: "이름", dataIndex: "name", key: "name" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
     {
-      title: "액션",
+      title: t("ruleImport.actionColumn"),
       dataIndex: "action",
       key: "action",
       render: (action: string) => (
         <Tag color={action === "suppress" ? "red" : "green"}>
-          {action === "suppress" ? "차단" : "알림"}
+          {action === "suppress" ? t("testAlert.actionSuppress") : t("testAlert.actionNotify")}
         </Tag>
       ),
     },
     {
-      title: "심각도",
+      title: t("common.severity"),
       key: "severities",
       render: (_: unknown, route: RouteOut) =>
         route.severities && route.severities.length > 0 ? (
           <Space size={4} wrap>
             {route.severities.map((s) => (
-              <Tag key={s} color={SEVERITY_TAG_COLOR[s] ?? "default"}>
+              <Tag key={s} style={severityTagStyle(s)}>
                 {s}
               </Tag>
             ))}
           </Space>
         ) : (
-          <Text type="secondary">전체</Text>
+          <Text type="secondary">{t("common.all")}</Text>
         ),
     },
     {
-      title: "네임스페이스",
+      title: t("common.namespace"),
       key: "namespaces",
       render: (_: unknown, route: RouteOut) => {
         const chips: ReactNode[] = [];
         for (const ns of route.namespaces_include ?? []) {
           chips.push(
-            <Tag key={`i-${ns}`} color="blue">
+            <Tag key={`i-${ns}`} color="blue" className="kam-mono">
               {ns}
             </Tag>,
           );
         }
         for (const ns of route.namespaces_exclude ?? []) {
           chips.push(
-            <Tag key={`e-${ns}`} color="red">
+            <Tag key={`e-${ns}`} color="red" className="kam-mono">
               !{ns}
             </Tag>,
           );
         }
-        return chips.length > 0 ? <Space size={4} wrap>{chips}</Space> : <Text type="secondary">전체</Text>;
+        return chips.length > 0 ? <Space size={4} wrap>{chips}</Space> : <Text type="secondary">{t("common.all")}</Text>;
       },
     },
     {
-      title: "클러스터",
+      title: t("common.cluster"),
       key: "clusters",
       render: (_: unknown, route: RouteOut) =>
         route.clusters && route.clusters.length > 0 ? (
@@ -180,18 +176,18 @@ export default function Routes() {
             ))}
           </Space>
         ) : (
-          <Text type="secondary">전체</Text>
+          <Text type="secondary">{t("common.all")}</Text>
         ),
     },
     {
-      title: "채널",
+      title: t("common.channel"),
       dataIndex: "channel_ids",
       key: "channel_ids",
       render: (ids: number[]) =>
-        ids.length > 0 ? `${ids.length}개` : <Text type="secondary">-</Text>,
+        ids.length > 0 ? t("routes.channelCount", { count: ids.length }) : <Text type="secondary">-</Text>,
     },
     {
-      title: "활성화",
+      title: t("common.enabled"),
       dataIndex: "enabled",
       key: "enabled",
       render: (enabled: boolean, route: RouteOut) => (
@@ -210,14 +206,14 @@ export default function Routes() {
         isOwner ? (
           <div style={{ display: "flex", gap: 8 }}>
             <Button size="small" onClick={() => navigate(`/routes/${route.id}/edit`)}>
-              수정
+              {t("common.edit")}
             </Button>
             <Popconfirm
-              title="이 규칙을 삭제하시겠습니까?"
+              title={t("routes.deleteConfirm")}
               onConfirm={() => deleteMutation.mutate(route.id)}
             >
               <Button size="small" danger loading={deleteMutation.isPending}>
-                삭제
+                {t("common.delete")}
               </Button>
             </Popconfirm>
           </div>
@@ -235,12 +231,12 @@ export default function Routes() {
           marginBottom: 16,
         }}
       >
-        <h2 style={{ margin: 0 }}>라우팅 규칙 — {currentTeam.name}</h2>
+        <h2 style={{ margin: 0 }}>{t("routes.titleWithTeam", { team: currentTeam.name })}</h2>
         <Space>
-          <Button onClick={() => setTestAlertModalOpen(true)}>테스트 알럿 발사</Button>
+          <Button onClick={() => setTestAlertModalOpen(true)}>{t("testAlert.modalTitle")}</Button>
           {isOwner && (
             <Button type="primary" onClick={() => navigate("/routes/new")}>
-              규칙 생성
+              {t("routes.createButton")}
             </Button>
           )}
         </Space>
@@ -252,7 +248,7 @@ export default function Routes() {
         dataSource={routes}
         columns={columns}
         pagination={false}
-        locale={{ emptyText: <Empty description="규칙이 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("routes.empty")} /> }}
       />
 
       <TestAlertModal

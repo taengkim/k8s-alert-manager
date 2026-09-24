@@ -5,15 +5,17 @@ import { Alert, Segmented, Space, Tag, Typography } from "antd";
 import { ApiError } from "../../api/client";
 import { runInstantQuery, runQueryRange } from "../../api/metrics";
 import type { RangeSeries } from "../../api/metrics";
+import { useI18n } from "../../i18n";
+import type { TranslationKey } from "../../i18n";
 
 const { Text } = Typography;
 
 type RangeKey = "1h" | "6h" | "24h";
 
-const RANGE_OPTIONS: { label: string; value: RangeKey; seconds: number }[] = [
-  { label: "1시간", value: "1h", seconds: 3600 },
-  { label: "6시간", value: "6h", seconds: 6 * 3600 },
-  { label: "24시간", value: "24h", seconds: 24 * 3600 },
+const RANGE_OPTION_KEYS: { labelKey: TranslationKey; value: RangeKey; seconds: number }[] = [
+  { labelKey: "preview.range1h", value: "1h", seconds: 3600 },
+  { labelKey: "preview.range6h", value: "6h", seconds: 6 * 3600 },
+  { labelKey: "preview.range24h", value: "24h", seconds: 24 * 3600 },
 ];
 
 interface PreviewChartProps {
@@ -41,6 +43,8 @@ function errorMessage(err: unknown, fallback: string): string {
 }
 
 export default function PreviewChart({ clusterId, chartExpr, fullExpr, threshold }: PreviewChartProps) {
+  const { t } = useI18n();
+  const RANGE_OPTIONS = RANGE_OPTION_KEYS.map((r) => ({ ...r, label: t(r.labelKey) }));
   const [range, setRange] = useState<RangeKey>("1h");
   const rangeSeconds = RANGE_OPTIONS.find((r) => r.value === range)?.seconds ?? 3600;
 
@@ -88,13 +92,15 @@ export default function PreviewChart({ clusterId, chartExpr, fullExpr, threshold
                 symbol: "none",
                 silent: true,
                 lineStyle: { color: "#f5222d", type: "dashed" },
-                data: [{ yAxis: threshold, label: { formatter: `임계값 ${threshold}` } }],
+                data: [
+                  { yAxis: threshold, label: { formatter: t("preview.thresholdMarkLabel", { value: threshold }) } },
+                ],
               },
             }
           : {}),
       })),
     };
-  }, [series, threshold]);
+  }, [series, threshold, t]);
 
   const omittedCount = (rangeQuery.data?.total_series ?? 0) - series.length;
 
@@ -119,7 +125,7 @@ export default function PreviewChart({ clusterId, chartExpr, fullExpr, threshold
         <Alert
           type="error"
           showIcon
-          message={errorMessage(rangeQuery.error, "미리보기 조회에 실패했습니다")}
+          message={errorMessage(rangeQuery.error, t("preview.loadError"))}
           style={{ marginBottom: 8 }}
         />
       )}
@@ -127,7 +133,7 @@ export default function PreviewChart({ clusterId, chartExpr, fullExpr, threshold
         <Alert
           type="warning"
           showIcon
-          message={`${omittedCount}개 시리즈 생략됨`}
+          message={t("preview.seriesOmitted", { count: omittedCount })}
           style={{ marginBottom: 8 }}
         />
       )}
@@ -141,7 +147,7 @@ export default function PreviewChart({ clusterId, chartExpr, fullExpr, threshold
         />
       ) : (
         <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Text type="secondary">메트릭을 선택하면 미리보기가 표시됩니다</Text>
+          <Text type="secondary">{t("preview.selectMetricPrompt")}</Text>
         </div>
       )}
     </div>
@@ -161,28 +167,31 @@ function NowFiringPill({
   seriesCount: number | undefined;
   enabled: boolean;
 }) {
+  const { t } = useI18n();
   if (!enabled) return null;
   if (isLoading) {
     return (
       <Space>
-        <Text type="secondary">지금 발생?</Text>
-        <Tag>확인 중...</Tag>
+        <Text type="secondary">{t("preview.nowFiringLabel")}</Text>
+        <Tag>{t("preview.checking")}</Tag>
       </Space>
     );
   }
   if (isError) {
     return (
       <Space>
-        <Text type="secondary">지금 발생?</Text>
-        <Tag title={errorMessage(error, "확인 실패")}>확인 불가</Tag>
+        <Text type="secondary">{t("preview.nowFiringLabel")}</Text>
+        <Tag title={errorMessage(error, t("preview.checkFailed"))}>{t("preview.checkUnavailable")}</Tag>
       </Space>
     );
   }
   const count = seriesCount ?? 0;
   return (
     <Space>
-      <Text type="secondary">지금 발생?</Text>
-      <Tag color={count > 0 ? "red" : "green"}>{count > 0 ? `발생 중 (${count})` : "미발생"}</Tag>
+      <Text type="secondary">{t("preview.nowFiringLabel")}</Text>
+      <Tag color={count > 0 ? "red" : "green"}>
+        {count > 0 ? t("preview.firingCount", { count }) : t("preview.notFiring")}
+      </Tag>
     </Space>
   );
 }

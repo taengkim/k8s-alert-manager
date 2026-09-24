@@ -1,9 +1,11 @@
 import { Select } from "antd";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
+import { useI18n } from "../i18n";
 
 /** Header-level multi-select: narrows every read view (Alerts, AlertHistory,
  * Silences, Rules) to the selected clusters. Empty selection means "All". */
 export default function ClusterFilterSelect() {
+  const { t } = useI18n();
   const { clusters, selectedIds, setSelectedIds } = useClusterFilter();
 
   if (clusters.length <= 1) {
@@ -14,7 +16,7 @@ export default function ClusterFilterSelect() {
     <Select
       mode="multiple"
       allowClear
-      placeholder="전체 클러스터"
+      placeholder={t("common.allClusters")}
       style={{ minWidth: 200, maxWidth: 320 }}
       value={selectedIds}
       onChange={setSelectedIds}

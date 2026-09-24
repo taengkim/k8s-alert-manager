@@ -17,52 +17,56 @@ import {
   type StatsFilters,
   type VolumeBucket,
 } from "../api/stats";
+import { chartCategorical, palette, severity, severityColor } from "../theme";
+import { useI18n } from "../i18n";
+type TFn = ReturnType<typeof useI18n>["t"];
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
 
-// Matches the severity Tag colors already used on the Alerts/History pages
-// (AlertHistory.tsx's SEVERITY_TAG_COLOR) -- one consistent meaning for
-// "critical/warning/info" across the whole app, not a chart-local palette.
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "#f5222d",
-  warning: "#fa8c16",
-  info: "#1677ff",
-  none: "#bfbfbf",
-};
+// Severity slices use the app-wide semantic severity tokens (same hues as
+// the Tag columns on Alerts/History); single-series ranking bars and the
+// volume area use the first categorical hue -- ranking compares magnitude,
+// not identity, so one hue is correct.
+const CHART_COLOR = chartCategorical[0];
 
-const CHART_COLOR = "#1677ff";
+// Recessive chart chrome shared by every cartesian chart on this page: the
+// data is the only assertive layer, grid/axes stay hairline + muted.
+const AXIS_LABEL = { color: palette.inkMuted, fontSize: 11 };
+const AXIS_LINE = { lineStyle: { color: palette.hairline } };
+const SPLIT_LINE = { lineStyle: { color: palette.hairline } };
+const CHART_ANIMATION = { animationDuration: 200, animationDurationUpdate: 200 };
 
 function apiErrorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.detail : fallback;
 }
 
-/** Seconds -> a human-scaled Korean duration: "42초" under a minute, "3분
- * 5초" under an hour, "2시간 15분" beyond that -- an MTTR can genuinely span
- * days, and a flat "N분 M초" there would read as an implausible four-digit
- * minute count. */
-function formatDuration(seconds: number | null): string {
+/** Seconds -> a human-scaled duration: seconds under a minute, "Nm Ms" under
+ * an hour, "Nh Mm" beyond that -- an MTTR can genuinely span days, and a
+ * flat "N min M sec" there would read as an implausible four-digit minute
+ * count. */
+function formatDuration(seconds: number | null, t: TFn): string {
   if (seconds === null) return "-";
   const total = Math.round(seconds);
-  if (total < 60) return `${total}초`;
+  if (total < 60) return t("stats.durationSeconds", { value: total });
   if (total < 3600) {
     const m = Math.floor(total / 60);
     const s = total % 60;
-    return `${m}분 ${s}초`;
+    return t("stats.durationMinSec", { m, s });
   }
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
-  return `${h}시간 ${m}분`;
+  return t("stats.durationHourMin", { h, m });
 }
 
-const RANGE_PRESETS: { label: string; value: [Dayjs, Dayjs] }[] = [
-  { label: "오늘", value: [dayjs().startOf("day"), dayjs()] },
-  { label: "최근 7일", value: [dayjs().subtract(7, "day"), dayjs()] },
-  { label: "최근 30일", value: [dayjs().subtract(30, "day"), dayjs()] },
-  { label: "최근 90일", value: [dayjs().subtract(90, "day"), dayjs()] },
-];
-
 export default function Stats() {
+  const { t } = useI18n();
+  const RANGE_PRESETS: { label: string; value: [Dayjs, Dayjs] }[] = [
+    { label: t("stats.presetToday"), value: [dayjs().startOf("day"), dayjs()] },
+    { label: t("stats.presetLast7Days"), value: [dayjs().subtract(7, "day"), dayjs()] },
+    { label: t("stats.presetLast30Days"), value: [dayjs().subtract(30, "day"), dayjs()] },
+    { label: t("stats.presetLast90Days"), value: [dayjs().subtract(90, "day"), dayjs()] },
+  ];
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
   const { selectedIds: clusterIds } = useClusterFilter();
@@ -145,12 +149,12 @@ export default function Stats() {
   if (noTeamSelected) {
     return (
       <div>
-        <h2>통계</h2>
+        <h2>{t("nav.stats")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -158,7 +162,7 @@ export default function Stats() {
 
   const topAlerts = topAlertsQuery.data ?? [];
   const volume = volumeQuery.data ?? [];
-  const severity = severityQuery.data ?? [];
+  const severityRows = severityQuery.data ?? [];
   const namespace = (namespaceQuery.data ?? []).slice(0, 10);
 
   return (
@@ -173,12 +177,12 @@ export default function Stats() {
           gap: 12,
         }}
       >
-        <h2 style={{ margin: 0 }}>통계</h2>
+        <h2 style={{ margin: 0 }}>{t("nav.stats")}</h2>
         <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
           {isAdmin && (
             <Select
               allowClear
-              placeholder="전체 팀"
+              placeholder={t("stats.allTeamsPlaceholder")}
               style={{ minWidth: 180 }}
               loading={teamsQuery.isLoading}
               value={adminTeamId}
@@ -202,7 +206,7 @@ export default function Stats() {
           type="error"
           showIcon
           style={{ marginBottom: 16 }}
-          message={apiErrorMessage(rangeError, "통계를 불러오지 못했습니다")}
+          message={apiErrorMessage(rangeError, t("stats.loadError"))}
         />
       )}
 
@@ -210,17 +214,17 @@ export default function Stats() {
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
-              title="현재 firing"
+              title={t("stats.firingNowLabel")}
               value={summaryQuery.data?.firing_now ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#fa8c16" }}
+              valueStyle={{ color: severity.warning, fontWeight: 600 }}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
-              title="기간 내 이벤트"
+              title={t("stats.eventsInRangeLabel")}
               value={summaryQuery.data?.events_in_range ?? 0}
               loading={summaryQuery.isLoading}
             />
@@ -229,20 +233,20 @@ export default function Stats() {
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
-              title="전송 성공"
+              title={t("stats.deliveredLabel")}
               value={summaryQuery.data?.delivered_in_range ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#389e0d" }}
+              valueStyle={{ color: severity.ok, fontWeight: 600 }}
             />
           </Card>
         </Col>
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic
-              title="실패 / dead"
+              title={t("stats.failedOrDeadLabel")}
               value={summaryQuery.data?.failed_or_dead_in_range ?? 0}
               loading={summaryQuery.isLoading}
-              valueStyle={{ color: "#cf1322" }}
+              valueStyle={{ color: severity.critical, fontWeight: 600 }}
             />
           </Card>
         </Col>
@@ -250,24 +254,28 @@ export default function Stats() {
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} md={12}>
-          <Card size="small" title="MTTA (평균 확인 소요 시간)" loading={responseTimesQuery.isLoading}>
-            <Statistic value={formatDuration(responseTimesQuery.data?.mtta_seconds ?? null)} />
-            <Text type="secondary">확인된 알럿 {responseTimesQuery.data?.acked_count ?? 0}건 기준</Text>
+          <Card size="small" title={t("stats.mttaTitle")} loading={responseTimesQuery.isLoading}>
+            <Statistic value={formatDuration(responseTimesQuery.data?.mtta_seconds ?? null, t)} />
+            <Text type="secondary">
+              {t("stats.ackedBasis", { count: responseTimesQuery.data?.acked_count ?? 0 })}
+            </Text>
           </Card>
         </Col>
         <Col xs={24} md={12}>
-          <Card size="small" title="MTTR (평균 해소 소요 시간)" loading={responseTimesQuery.isLoading}>
-            <Statistic value={formatDuration(responseTimesQuery.data?.mttr_seconds ?? null)} />
-            <Text type="secondary">해소된 알럿 {responseTimesQuery.data?.resolved_count ?? 0}건 기준</Text>
+          <Card size="small" title={t("stats.mttrTitle")} loading={responseTimesQuery.isLoading}>
+            <Statistic value={formatDuration(responseTimesQuery.data?.mttr_seconds ?? null, t)} />
+            <Text type="secondary">
+              {t("stats.resolvedBasis", { count: responseTimesQuery.data?.resolved_count ?? 0 })}
+            </Text>
           </Card>
         </Col>
       </Row>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} lg={12}>
-          <Card size="small" title="Top 10 알럿 (이벤트 수)" loading={topAlertsQuery.isLoading}>
+          <Card size="small" title={t("stats.topAlertsTitle")} loading={topAlertsQuery.isLoading}>
             {topAlerts.length === 0 ? (
-              <Empty description="데이터가 없습니다" />
+              <Empty description={t("stats.noData")} />
             ) : (
               <ReactECharts
                 style={{ height: Math.max(240, topAlerts.length * 32) }}
@@ -277,15 +285,29 @@ export default function Stats() {
                     trigger: "item",
                     formatter: (p: { name: string; value: number; dataIndex: number }) => {
                       const row = topAlerts[p.dataIndex];
-                      return `${p.name}<br/>이벤트 ${p.value}건 · 수신 ${row?.receive_total ?? 0}회`;
+                      return t("stats.topAlertsTooltip", {
+                        name: p.name,
+                        count: p.value,
+                        receiveCount: row?.receive_total ?? 0,
+                      });
                     },
                   },
+                  ...CHART_ANIMATION,
                   grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
-                  xAxis: { type: "value", name: "건수" },
+                  xAxis: {
+                    type: "value",
+                    name: t("stats.countAxisLabel"),
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
                   yAxis: {
                     type: "category",
                     inverse: true,
                     data: topAlerts.map((r) => r.alertname),
+                    axisLabel: { ...AXIS_LABEL, fontSize: 12 },
+                    axisLine: AXIS_LINE,
+                    axisTick: { show: false },
                   },
                   series: [
                     {
@@ -303,11 +325,13 @@ export default function Stats() {
         <Col xs={24} lg={12}>
           <Card
             size="small"
-            title={`알럿 발생 추이 (${bucket === "hour" ? "시간별" : "일별"})`}
+            title={t("stats.volumeTrendTitle", {
+              granularity: bucket === "hour" ? t("stats.granularityHourly") : t("stats.granularityDaily"),
+            })}
             loading={volumeQuery.isLoading}
           >
             {volume.length === 0 ? (
-              <Empty description="데이터가 없습니다" />
+              <Empty description={t("stats.noData")} />
             ) : (
               <ReactECharts
                 style={{ height: 280 }}
@@ -315,17 +339,25 @@ export default function Stats() {
                 option={{
                   tooltip: {
                     trigger: "axis",
-                    valueFormatter: (v: number) => `${v}건`,
+                    valueFormatter: (v: number) => t("alerts.count", { count: v }),
                   },
+                  ...CHART_ANIMATION,
                   grid: { left: 48, right: 24, top: 24, bottom: 32 },
-                  xAxis: { type: "time" },
-                  yAxis: { type: "value", name: "건수", minInterval: 1 },
+                  xAxis: { type: "time", axisLabel: AXIS_LABEL, axisLine: AXIS_LINE },
+                  yAxis: {
+                    type: "value",
+                    name: t("stats.countAxisLabel"),
+                    minInterval: 1,
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
                   series: [
                     {
                       type: "line",
                       showSymbol: false,
                       lineStyle: { width: 2, color: CHART_COLOR },
-                      areaStyle: { color: CHART_COLOR, opacity: 0.15 },
+                      areaStyle: { color: CHART_COLOR, opacity: 0.12 },
                       data: volume.map((v) => [dayjs(v.bucket_start).valueOf(), v.firing_count]),
                     },
                   ],
@@ -338,26 +370,33 @@ export default function Stats() {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={12}>
-          <Card size="small" title="심각도별 분포" loading={severityQuery.isLoading}>
-            {severity.length === 0 ? (
-              <Empty description="데이터가 없습니다" />
+          <Card size="small" title={t("stats.severityDistributionTitle")} loading={severityQuery.isLoading}>
+            {severityRows.length === 0 ? (
+              <Empty description={t("stats.noData")} />
             ) : (
               <ReactECharts
                 style={{ height: 280 }}
                 notMerge
                 option={{
-                  tooltip: { trigger: "item", formatter: "{b}: {c}건 ({d}%)" },
-                  legend: { bottom: 0 },
+                  ...CHART_ANIMATION,
+                  tooltip: { trigger: "item", formatter: t("stats.severityPieTooltip") },
+                  legend: { bottom: 0, textStyle: { color: palette.inkMuted } },
                   series: [
                     {
                       type: "pie",
                       radius: ["45%", "70%"],
                       avoidLabelOverlap: true,
-                      label: { formatter: "{b}\n{d}%" },
-                      data: severity.map((row) => ({
+                      label: { formatter: "{b}\n{d}%", color: palette.ink },
+                      // Status colors, not the categorical palette -- a
+                      // severity slice must match the severity Tag next to it.
+                      data: severityRows.map((row) => ({
                         name: row.key,
                         value: row.count,
-                        itemStyle: { color: SEVERITY_COLOR[row.key] ?? "#8c8c8c" },
+                        itemStyle: {
+                          color: severityColor(row.key),
+                          borderColor: palette.surface,
+                          borderWidth: 2,
+                        },
                       })),
                     },
                   ],
@@ -367,18 +406,32 @@ export default function Stats() {
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card size="small" title="네임스페이스별 상위 10" loading={namespaceQuery.isLoading}>
+          <Card size="small" title={t("stats.namespaceTopTitle")} loading={namespaceQuery.isLoading}>
             {namespace.length === 0 ? (
-              <Empty description="데이터가 없습니다" />
+              <Empty description={t("stats.noData")} />
             ) : (
               <ReactECharts
                 style={{ height: Math.max(240, namespace.length * 32) }}
                 notMerge
                 option={{
-                  tooltip: { trigger: "item", valueFormatter: (v: number) => `${v}건` },
+                  ...CHART_ANIMATION,
+                  tooltip: { trigger: "item", valueFormatter: (v: number) => t("alerts.count", { count: v }) },
                   grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
-                  xAxis: { type: "value", name: "건수" },
-                  yAxis: { type: "category", inverse: true, data: namespace.map((r) => r.key) },
+                  xAxis: {
+                    type: "value",
+                    name: t("stats.countAxisLabel"),
+                    axisLabel: AXIS_LABEL,
+                    nameTextStyle: AXIS_LABEL,
+                    splitLine: SPLIT_LINE,
+                  },
+                  yAxis: {
+                    type: "category",
+                    inverse: true,
+                    data: namespace.map((r) => r.key),
+                    axisLabel: { ...AXIS_LABEL, fontSize: 12 },
+                    axisLine: AXIS_LINE,
+                    axisTick: { show: false },
+                  },
                   series: [
                     {
                       type: "bar",

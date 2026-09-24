@@ -9,17 +9,19 @@ import type { NotificationStatus } from "../api/history";
 import { fireTestAlert } from "../api/testAlert";
 import type { RouteVerdict } from "../api/routes";
 import type { TestAlertInput, TestAlertResult, TestAlertVerdict } from "../api/testAlert";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const { Text } = Typography;
 
-const VERDICT_LABEL: Record<RouteVerdict, string> = {
-  matched: "일치",
-  cluster_filtered: "클러스터 필터링됨",
-  gated: "비활성화 / 트리거 불일치",
-  severity_filtered: "심각도 필터링됨",
-  namespace_filtered: "네임스페이스 필터링됨",
-  not_included: "포함 조건 불일치",
-  excluded: "제외 조건에 매치",
+const VERDICT_LABEL_KEY: Record<RouteVerdict, TranslationKey> = {
+  matched: "testAlert.verdictMatched",
+  cluster_filtered: "testAlert.verdictClusterFiltered",
+  gated: "testAlert.verdictGated",
+  severity_filtered: "testAlert.verdictSeverityFiltered",
+  namespace_filtered: "testAlert.verdictNamespaceFiltered",
+  not_included: "testAlert.verdictNotIncluded",
+  excluded: "testAlert.verdictExcluded",
 };
 
 const VERDICT_COLOR: Record<RouteVerdict, string> = {
@@ -32,28 +34,16 @@ const VERDICT_COLOR: Record<RouteVerdict, string> = {
   excluded: "red",
 };
 
-/** Phase 15: renotify carries a per-cycle scheduled_action id
- * (`renotify:{id}`), so this maps by prefix rather than exact match --
- * same convention as AlertHistory.tsx's TRIGGER_LABEL. */
-function TRIGGER_LABEL(trigger: string): string {
-  if (trigger === "firing") return "발생";
-  if (trigger === "resolved") return "해소";
-  if (trigger === "escalation") return "에스컬레이션";
-  if (trigger.startsWith("renotify")) return "재알림";
-  if (trigger === "digest") return "다이제스트";
-  return trigger;
-}
-
-const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
-  pending: "대기",
-  in_progress: "발송 중",
-  delivered: "발송 완료",
-  failed: "실패",
-  dead: "포기됨",
+const NOTIFICATION_STATUS_KEY: Record<NotificationStatus, TranslationKey> = {
+  pending: "common.pending",
+  in_progress: "history.notifInProgress",
+  delivered: "history.notifDelivered",
+  failed: "history.notifFailed",
+  dead: "history.notifDead",
   // Phase 16: a test alert can be parked by storm control same as any
   // other notification (see app.services.routing.stage_outbox_row's
   // docstring -- parking is channel-level, not trigger-specific).
-  digested: "다이제스트로 묶임",
+  digested: "history.notifDigested",
 };
 
 const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
@@ -85,6 +75,20 @@ interface TestAlertModalProps {
 }
 
 export default function TestAlertModal({ open, onClose, teamId }: TestAlertModalProps) {
+  const { t } = useI18n();
+
+  /** Phase 15: renotify carries a per-cycle scheduled_action id
+   * (`renotify:{id}`), so this maps by prefix rather than exact match --
+   * same convention as AlertHistory.tsx's triggerLabel. */
+  const triggerLabel = (trigger: string): string => {
+    if (trigger === "firing") return t("history.triggerFiring");
+    if (trigger === "resolved") return t("history.triggerResolved");
+    if (trigger === "escalation") return t("history.triggerEscalation");
+    if (trigger.startsWith("renotify")) return t("history.triggerRenotify");
+    if (trigger === "digest") return t("history.triggerDigest");
+    return trigger;
+  };
+
   const [form] = Form.useForm<TestAlertFormValues>();
   const [result, setResult] = useState<TestAlertResult | null>(null);
 
@@ -137,22 +141,22 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
 
   return (
     <Modal
-      title="테스트 알럿 발사"
+      title={t("testAlert.modalTitle")}
       open={open}
       onCancel={handleClose}
       footer={
         result
           ? [
               <Button key="again" onClick={() => setResult(null)}>
-                다시 발사
+                {t("testAlert.fireAgain")}
               </Button>,
               <Button key="close" type="primary" onClick={handleClose}>
-                닫기
+                {t("common.close")}
               </Button>,
             ]
           : [
               <Button key="cancel" onClick={handleClose}>
-                취소
+                {t("common.cancel")}
               </Button>,
               <Button
                 key="submit"
@@ -160,7 +164,7 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
                 loading={mutation.isPending}
                 onClick={() => form.submit()}
               >
-                발사
+                {t("testAlert.fireButton")}
               </Button>,
             ]
       }
@@ -175,7 +179,7 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
           message={
             mutation.error instanceof ApiError
               ? mutation.error.detail
-              : "테스트 알럿 발사에 실패했습니다"
+              : t("testAlert.fireError")
           }
         />
       )}
@@ -189,8 +193,8 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
         >
           <Form.Item
             name="cluster_id"
-            label="클러스터"
-            rules={[{ required: true, message: "클러스터를 선택하세요" }]}
+            label={t("common.cluster")}
+            rules={[{ required: true, message: t("ruleEditor.selectClusterPrompt") }]}
           >
             <Select
               loading={clustersQuery.isLoading}
@@ -200,10 +204,10 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
               }))}
             />
           </Form.Item>
-          <Form.Item name="alertname" label="알럿명" rules={[{ required: true }]}>
+          <Form.Item name="alertname" label={t("alerts.alertName")} rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="severity" label="심각도" rules={[{ required: true }]}>
+          <Form.Item name="severity" label={t("common.severity")} rules={[{ required: true }]}>
             <Select
               options={[
                 { value: "critical", label: "critical" },
@@ -212,12 +216,12 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
               ]}
             />
           </Form.Item>
-          <Form.Item name="namespace" label="네임스페이스">
-            <Input placeholder="선택 사항" />
+          <Form.Item name="namespace" label={t("common.namespace")}>
+            <Input placeholder={t("common.optional")} />
           </Form.Item>
           <Form.List name="labels">
             {(fields, { add, remove }) => (
-              <Form.Item label="추가 레이블">
+              <Form.Item label={t("testAlert.extraLabelsLabel")}>
                 {fields.map((field) => (
                   <div key={field.key} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <Form.Item name={[field.name, "key"]} noStyle>
@@ -227,12 +231,12 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
                       <Input placeholder="value" style={{ flex: 1 }} />
                     </Form.Item>
                     <Button type="text" danger onClick={() => remove(field.name)}>
-                      삭제
+                      {t("common.delete")}
                     </Button>
                   </div>
                 ))}
                 <Button block onClick={() => add({ key: "", value: "" })}>
-                  레이블 추가
+                  {t("ruleEditor.addLabel")}
                 </Button>
               </Form.Item>
             )}
@@ -246,8 +250,8 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
             style={{ marginBottom: 16 }}
             message={
               <Space>
-                테스트 알럿이 발사되었습니다.
-                <Link to={`/alerts/history?highlight=${result.event_id}`}>이력에서 보기</Link>
+                {t("testAlert.fireSuccess")}
+                <Link to={`/alerts/history?highlight=${result.event_id}`}>{t("alerts.viewInHistory")}</Link>
               </Space>
             }
           />
@@ -257,33 +261,35 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
               type="warning"
               showIcon
               style={{ marginBottom: 16 }}
-              message={`차단 규칙 '${result.suppressed_by.rule_name}'에 의해 알림이 차단되었습니다`}
-              description="차단 규칙이 우선 적용되어, 아래에서 '일치'로 표시된 알림 규칙이 있어도 실제로는 아무 채널에도 전송되지 않았습니다."
+              message={t("testAlert.suppressedByRule", { name: result.suppressed_by.rule_name })}
+              description={t("testAlert.suppressedByRuleDesc", {
+                matchedLabel: t("testAlert.verdictMatched"),
+              })}
             />
           )}
 
-          <Text strong>규칙 평가 결과</Text>
+          <Text strong>{t("testAlert.ruleEvalResultsTitle")}</Text>
           <Table
             size="small"
             style={{ marginTop: 8, marginBottom: 16 }}
             rowKey="rule_id"
             dataSource={result.verdicts}
             pagination={false}
-            locale={{ emptyText: "이 팀에 활성화된 규칙이 없습니다" }}
+            locale={{ emptyText: t("testAlert.noActiveRules") }}
             columns={[
-              { title: "규칙", dataIndex: "rule_name", key: "rule_name" },
+              { title: t("testAlert.ruleColumn"), dataIndex: "rule_name", key: "rule_name" },
               {
-                title: "액션",
+                title: t("ruleImport.actionColumn"),
                 dataIndex: "action",
                 key: "action",
                 render: (action: string) => (
                   <Tag color={action === "suppress" ? "red" : "blue"}>
-                    {action === "suppress" ? "차단" : "알림"}
+                    {action === "suppress" ? t("testAlert.actionSuppress") : t("testAlert.actionNotify")}
                   </Tag>
                 ),
               },
               {
-                title: "결과",
+                title: t("testAlert.resultColumn"),
                 dataIndex: "verdict",
                 key: "verdict",
                 render: (verdict: RouteVerdict, row: TestAlertVerdict) => {
@@ -295,15 +301,15 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
                   const suppressedMatch =
                     !!result.suppressed_by && row.action === "notify" && verdict === "matched";
                   if (suppressedMatch) {
-                    return <Tag color="default">일치 (차단됨)</Tag>;
+                    return <Tag color="default">{t("testAlert.matchedButSuppressed")}</Tag>;
                   }
-                  return <Tag color={VERDICT_COLOR[verdict]}>{VERDICT_LABEL[verdict]}</Tag>;
+                  return <Tag color={VERDICT_COLOR[verdict]}>{t(VERDICT_LABEL_KEY[verdict])}</Tag>;
                 },
               },
             ]}
           />
 
-          <Text strong>적재된 채널</Text>
+          <Text strong>{t("testAlert.deliveredChannelsTitle")}</Text>
           <div style={{ margin: "8px 0 16px" }}>
             {result.delivered_channels.length > 0 ? (
               result.delivered_channels.map((name) => (
@@ -312,17 +318,17 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
                 </Tag>
               ))
             ) : (
-              <Text type="secondary">일치하는 알림 규칙이 없습니다</Text>
+              <Text type="secondary">{t("testAlert.noMatchingNotifyRules")}</Text>
             )}
           </div>
 
-          <Text strong>발송 상태 (5초마다 갱신)</Text>
+          <Text strong>{t("testAlert.deliveryStatusTitle")}</Text>
           {notificationsQuery.isError ? (
             <Alert
               type="error"
               showIcon
               style={{ marginTop: 8 }}
-              message="발송 상태를 불러오지 못했습니다"
+              message={t("testAlert.deliveryStatusLoadError")}
             />
           ) : (
             <Table
@@ -332,22 +338,22 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
               loading={notificationsQuery.isLoading}
               dataSource={notificationsQuery.data ?? []}
               pagination={false}
-              locale={{ emptyText: "발송 대상 채널이 없습니다" }}
+              locale={{ emptyText: t("testAlert.noTargetChannels") }}
               columns={[
-                { title: "채널", dataIndex: "channel_name", key: "channel_name" },
+                { title: t("common.channel"), dataIndex: "channel_name", key: "channel_name" },
                 {
-                  title: "트리거",
+                  title: t("history.triggerColumn"),
                   dataIndex: "trigger",
                   key: "trigger",
-                  render: (value: string) => TRIGGER_LABEL(value),
+                  render: (value: string) => triggerLabel(value),
                 },
                 {
-                  title: "상태",
+                  title: t("common.status"),
                   dataIndex: "status",
                   key: "status",
                   render: (value: NotificationStatus) => (
                     <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
-                      {NOTIFICATION_STATUS_LABEL[value]}
+                      {t(NOTIFICATION_STATUS_KEY[value])}
                     </Tag>
                   ),
                 },

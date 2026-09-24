@@ -10,6 +10,7 @@ import { ApiError } from "../api/client";
 import { expireSilence, listSilences } from "../api/silences";
 import type { SilenceOut, SilenceStatus } from "../api/silences";
 import SilenceModal from "../components/SilenceModal";
+import { useI18n } from "../i18n";
 
 dayjs.extend(relativeTime);
 
@@ -24,6 +25,7 @@ const STATUS_TAG: Record<SilenceStatus, { color: string; label: string }> = {
 };
 
 export default function Silences() {
+  const { t } = useI18n();
   const { user } = useAuth();
   const { currentTeam } = useTeam();
   const { activeClusters, isLoading: clusterLoading } = useClusterFilter();
@@ -46,12 +48,12 @@ export default function Silences() {
   const expireMutation = useMutation({
     mutationFn: (record: SilenceOut) => expireSilence(record.id, record.cluster.id),
     onSuccess: () => {
-      message.success("사일런스가 만료되었습니다");
+      message.success(t("silences.expireSuccess"));
       queryClient.invalidateQueries({ queryKey: ["silences"] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `만료에 실패했습니다: ${err.detail}` : "만료에 실패했습니다",
+        err instanceof ApiError ? `${t("silences.expireError")}: ${err.detail}` : t("silences.expireError"),
       );
     },
   });
@@ -72,12 +74,12 @@ export default function Silences() {
   if (!currentTeam && !isAdmin) {
     return (
       <div>
-        <h2>사일런스</h2>
+        <h2>{t("silences.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -85,7 +87,7 @@ export default function Silences() {
 
   const columns = [
     {
-      title: "상태",
+      title: t("common.status"),
       dataIndex: "status",
       key: "status",
       width: 100,
@@ -95,7 +97,7 @@ export default function Silences() {
       },
     },
     {
-      title: "Matchers",
+      title: t("silences.matchersColumn"),
       dataIndex: "matchers",
       key: "matchers",
       render: (matchers: SilenceOut["matchers"]) => (
@@ -111,14 +113,14 @@ export default function Silences() {
       ),
     },
     {
-      title: "기간",
+      title: t("silences.durationColumn"),
       key: "duration",
       render: (_: unknown, record: SilenceOut) => (
         <Tooltip
           title={
             record.status === "expired"
-              ? `${dayjs(record.endsAt).fromNow()} 만료됨`
-              : `${dayjs(record.endsAt).fromNow()} 만료 예정`
+              ? t("silences.expiredAgo", { time: dayjs(record.endsAt).fromNow() })
+              : t("silences.expiresIn", { time: dayjs(record.endsAt).fromNow() })
           }
         >
           <span>
@@ -128,22 +130,22 @@ export default function Silences() {
         </Tooltip>
       ),
     },
-    { title: "설명", dataIndex: "comment", key: "comment", ellipsis: true },
-    { title: "생성자", dataIndex: "createdBy", key: "createdBy", width: 120 },
+    { title: t("common.description"), dataIndex: "comment", key: "comment", ellipsis: true },
+    { title: t("silences.createdByColumn"), dataIndex: "createdBy", key: "createdBy", width: 120 },
     {
-      title: "클러스터",
+      title: t("common.cluster"),
       dataIndex: "cluster",
       key: "cluster",
       width: 120,
       render: (cluster: SilenceOut["cluster"]) => <Tag>{cluster.name}</Tag>,
     },
     {
-      title: "팀",
+      title: t("common.team"),
       dataIndex: "team",
       key: "team",
       width: 120,
       render: (team: SilenceOut["team"]) =>
-        team ? <Tag color="blue">{team.slug}</Tag> : <Tag>외부</Tag>,
+        team ? <Tag color="blue">{team.slug}</Tag> : <Tag>{t("silences.externalTag")}</Tag>,
     },
     {
       title: "",
@@ -158,19 +160,19 @@ export default function Silences() {
             disabled={!allowed}
             loading={expireMutation.isPending && expireMutation.variables?.id === record.id}
           >
-            만료
+            {t("silences.expireButton")}
           </Button>
         );
         if (!allowed) {
           return (
-            <Tooltip title={record.status === "expired" ? "이미 만료됨" : "권한이 없습니다"}>
+            <Tooltip title={record.status === "expired" ? t("silences.alreadyExpired") : t("common.noPermission")}>
               <span>{button}</span>
             </Tooltip>
           );
         }
         return (
           <Popconfirm
-            title="이 사일런스를 만료시키겠습니까?"
+            title={t("silences.expireConfirm")}
             onConfirm={() => expireMutation.mutate(record)}
           >
             {button}
@@ -191,14 +193,14 @@ export default function Silences() {
         }}
       >
         <h2 style={{ margin: 0 }}>
-          사일런스{" "}
+          {t("silences.title")}{" "}
           <Text type="secondary" style={{ fontSize: 14, fontWeight: "normal" }}>
-            ({filtered.length}건)
+            ({t("alerts.count", { count: filtered.length })})
           </Text>
         </h2>
-        <Tooltip title={currentTeam ? undefined : "소속된 팀이 없습니다"}>
+        <Tooltip title={currentTeam ? undefined : t("common.noTeamAssigned")}>
           <Button type="primary" disabled={!currentTeam} onClick={() => setModalOpen(true)}>
-            사일런스 생성
+            {t("silences.createButton")}
           </Button>
         </Tooltip>
       </div>
@@ -207,10 +209,10 @@ export default function Silences() {
         value={statusFilter}
         onChange={(value) => setStatusFilter(value as StatusFilter)}
         options={[
-          { label: "전체", value: "all" },
-          { label: "활성", value: "active" },
-          { label: "대기", value: "pending" },
-          { label: "만료", value: "expired" },
+          { label: t("common.all"), value: "all" },
+          { label: t("common.active"), value: "active" },
+          { label: t("common.pending"), value: "pending" },
+          { label: t("common.expired"), value: "expired" },
         ]}
         style={{ marginBottom: 16 }}
       />
@@ -221,7 +223,7 @@ export default function Silences() {
         dataSource={filtered}
         columns={columns}
         pagination={{ pageSize: 20 }}
-        locale={{ emptyText: <Empty description="사일런스가 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("silences.empty")} /> }}
       />
 
       {currentTeam && (

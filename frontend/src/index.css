@@ -1,0 +1,65 @@
+body {
+  margin: 0;
+  background: #f6f7f9;
+  color: #1c2b36;
+}
+
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Numbers line up in columns everywhere they stack vertically. */
+.ant-table-tbody > tr > td,
+.ant-statistic-content-value,
+.ant-statistic-content {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Mono is reserved for genuinely code-like data: PromQL, fingerprints,
+   label matchers, metric names. Timestamps stay sans + tabular-nums. */
+code,
+.kam-mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+/* Active menu item: 3px primary rail on the left edge, quiet tinted bg
+   (set via theme tokens) -- no filled pill. */
+.kam-sider .ant-menu-inline .ant-menu-item-selected {
+  position: relative;
+}
+.kam-sider .ant-menu-inline .ant-menu-item-selected::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: #0f6e73;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d3dae3;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -2,17 +2,7 @@ import { Button, Form, Input, Segmented, Select, Space } from "antd";
 import type { FormInstance } from "antd";
 import type { NamePath } from "antd/es/form/interface";
 import type { MatcherKind, MatcherTarget } from "../api/routes";
-
-const MATCHER_KIND_OPTIONS: { value: MatcherKind; label: string }[] = [
-  { value: "include", label: "포함" },
-  { value: "exclude", label: "제외" },
-];
-
-const MATCHER_TARGET_OPTIONS: { value: MatcherTarget; label: string }[] = [
-  { value: "alertname", label: "알럿명" },
-  { value: "label", label: "레이블" },
-  { value: "annotation", label: "어노테이션" },
-];
+import { useI18n } from "../i18n";
 
 function isValidRegex(pattern: string): boolean {
   try {
@@ -41,6 +31,7 @@ interface MatcherListEditorProps {
  * build one is extracted here instead of duplicated between the two pages.
  */
 export default function MatcherListEditor({ name, form }: MatcherListEditorProps) {
+  const { t } = useI18n();
   return (
     <Form.List name={name}>
       {(fields, { add, remove }) => (
@@ -58,7 +49,7 @@ export default function MatcherListEditor({ name, form }: MatcherListEditorProps
             onClick={() => add({ kind: "include", target: "alertname", pattern: "" })}
             style={{ marginBottom: 16 }}
           >
-            매처 추가
+            {t("matcher.addMatcher")}
           </Button>
         </>
       )}
@@ -77,6 +68,16 @@ function MatcherRow({
   listName: NamePath;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
+  const MATCHER_KIND_OPTIONS: { value: MatcherKind; label: string }[] = [
+    { value: "include", label: t("matcher.kindInclude") },
+    { value: "exclude", label: t("matcher.kindExclude") },
+  ];
+  const MATCHER_TARGET_OPTIONS: { value: MatcherTarget; label: string }[] = [
+    { value: "alertname", label: t("alerts.alertName") },
+    { value: "label", label: t("matcher.targetLabel") },
+    { value: "annotation", label: t("matcher.targetAnnotation") },
+  ];
   const path = Array.isArray(listName) ? listName : [listName];
   const target = Form.useWatch([...path, field.name, "target"], form) as
     | MatcherTarget
@@ -94,7 +95,7 @@ function MatcherRow({
       {needsKey && (
         <Form.Item
           name={[field.name, "key"]}
-          rules={[{ required: true, message: "키를 입력하세요" }]}
+          rules={[{ required: true, message: t("ruleEditor.keyRequired") }]}
           noStyle
         >
           <Input placeholder="key" style={{ width: 140 }} />
@@ -103,21 +104,21 @@ function MatcherRow({
       <Form.Item
         name={[field.name, "pattern"]}
         rules={[
-          { required: true, message: "패턴을 입력하세요" },
+          { required: true, message: t("matcher.patternRequired") },
           {
             validator: async (_, value?: string) => {
               if (value && !isValidRegex(value)) {
-                throw new Error("올바른 정규식이 아닙니다");
+                throw new Error(t("matcher.invalidRegex"));
               }
             },
           },
         ]}
         noStyle
       >
-        <Input placeholder="정규식 패턴" style={{ width: 220 }} />
+        <Input placeholder={t("matcher.patternPlaceholder")} style={{ width: 220 }} />
       </Form.Item>
       <Button danger onClick={onRemove}>
-        삭제
+        {t("common.delete")}
       </Button>
     </Space>
   );
