@@ -85,6 +85,7 @@ const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
   delivered: "green",
   failed: "orange",
   dead: "red",
+  digested: "purple",
 };
 
 const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
@@ -93,6 +94,7 @@ const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
   delivered: "발송 완료",
   failed: "실패",
   dead: "포기됨",
+  digested: "다이제스트로 묶임",
 };
 
 /** Phase 15: escalation/renotify trigger values aren't plain enum members
@@ -105,6 +107,7 @@ function TRIGGER_LABEL(trigger: string): string {
   if (trigger === "resolved") return "해소";
   if (trigger === "escalation") return "에스컬레이션";
   if (trigger.startsWith("renotify")) return "재알림";
+  if (trigger === "digest") return "다이제스트";
   return trigger;
 }
 
@@ -691,11 +694,36 @@ export default function AlertHistory() {
                   title: "상태",
                   dataIndex: "status",
                   key: "status",
-                  render: (value: NotificationStatus) => (
-                    <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
-                      {NOTIFICATION_STATUS_LABEL[value]}
-                    </Tag>
-                  ),
+                  render: (value: NotificationStatus, record: AlertNotificationRecord) => {
+                    const statusTag = (
+                      <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
+                        {NOTIFICATION_STATUS_LABEL[value]}
+                      </Tag>
+                    );
+                    // Phase 16: a 'digested' row was folded into an
+                    // aggregate digest send -- show that aggregate's own
+                    // (normal) delivery status alongside, rather than
+                    // leaving "다이제스트로 묶임" looking like a dead end.
+                    if (value !== "digested" || !record.digested_into) return statusTag;
+                    const agg = record.digested_into;
+                    return (
+                      <Space size={4}>
+                        {statusTag}
+                        <Tooltip
+                          title={
+                            agg.delivered_at
+                              ? `발송 시각: ${dayjs(agg.delivered_at).format("YYYY-MM-DD HH:mm:ss")}`
+                              : undefined
+                          }
+                        >
+                          <Tag color={NOTIFICATION_STATUS_COLOR[agg.status]}>
+                            집계 {agg.notification_count ?? "?"}건:{" "}
+                            {NOTIFICATION_STATUS_LABEL[agg.status]}
+                          </Tag>
+                        </Tooltip>
+                      </Space>
+                    );
+                  },
                 },
                 { title: "시도 횟수", dataIndex: "attempts", key: "attempts" },
                 {

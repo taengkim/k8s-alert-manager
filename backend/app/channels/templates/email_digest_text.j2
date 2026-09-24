@@ -1,0 +1,7 @@
+{{ count }}건의 알럿이 다이제스트로 묶여 발송되었습니다 (팀: {{ team }}).
+
+{% for item in items -%}
+- [{{ item.severity or "-" }}] {{ item.alertname }} (namespace: {{ item.namespace or "-" }}, cluster: {{ item.cluster }}, {{ item.starts_at | datetime_format }})
+{% if item.app_url %}  {{ item.app_url }}
+{% endif -%}
+{% endfor %}

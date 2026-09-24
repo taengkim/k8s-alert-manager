@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from app.api.deps import get_current_user, require_team_role
 from app.db import get_session
@@ -834,9 +834,22 @@ async def get_alert_history_notifications(
     if restrict_to_team_ids is not None:
         conditions.append(NotificationOutbox.team_id.in_(restrict_to_team_ids))
 
+    # Phase 16: a 'digested' row (parked by storm control) was never
+    # delivered on its own -- once its channel's digest_flush fires, its
+    # own delivery/retry history is superseded by the aggregate row it was
+    # folded into (digested_into_id). That aggregate row belongs to no
+    # single alert event (its own alert_event_id is NULL -- see
+    # app.worker.scheduler._dispatch_digest_flush), so it would never
+    # surface in this per-event listing on its own; this outer join lets
+    # the frontend show "folded into a digest, which is currently ..."
+    # inline instead of just a dead-looking 'digested' status with no
+    # further information.
+    DigestAggregate = aliased(NotificationOutbox)
+
     result = await session.execute(
-        select(NotificationOutbox, Channel.name)
+        select(NotificationOutbox, Channel.name, DigestAggregate)
         .join(Channel, Channel.id == NotificationOutbox.channel_id)
+        .outerjoin(DigestAggregate, DigestAggregate.id == NotificationOutbox.digested_into_id)
         .where(*conditions)
         .order_by(NotificationOutbox.created_at)
     )
@@ -851,8 +864,23 @@ async def get_alert_history_notifications(
             "last_error": outbox.last_error,
             "created_at": outbox.created_at,
             "delivered_at": outbox.delivered_at,
+            "digested_into": (
+                {
+                    "id": aggregate.id,
+                    "status": aggregate.status,
+                    "delivered_at": aggregate.delivered_at,
+                    "notification_count": (
+                        len(aggregate.payload["notifications"])
+                        if isinstance(aggregate.payload, dict)
+                        and isinstance(aggregate.payload.get("notifications"), list)
+                        else None
+                    ),
+                }
+                if aggregate is not None
+                else None
+            ),
         }
-        for outbox, channel_name in result.all()
+        for outbox, channel_name, aggregate in result.all()
     ]
 
 

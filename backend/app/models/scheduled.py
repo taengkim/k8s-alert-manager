@@ -1,12 +1,16 @@
-"""Scheduled follow-up actions: escalation and unresolved re-notification
-timers.
+"""Scheduled follow-up actions: escalation, unresolved re-notification, and
+(Phase 16) digest-flush timers.
 
 `app.services.routing.route_event` stages an 'escalation' row when a matched
 notify rule has escalation enabled; `app/worker/outbox.py`'s `deliver()`
 stages a 'renotify' row after a successful 'firing' delivery when its rule
-has a renotify interval set. Both are dispatched later by
-`app/worker/scheduler.py`, once `due_at` arrives -- see that module's
-docstring for the claim/dispatch/lease lifecycle `status` moves through.
+has a renotify interval set; `app.services.routing._ensure_digest_flush_scheduled`
+stages a 'digest_flush' row (channel_id set, alert_event_id/routing_rule_id
+both NULL -- storm control is a per-channel decision, not a per-event or
+per-rule one) the first time a channel parks a notification. All three are
+dispatched later by `app/worker/scheduler.py`, once `due_at` arrives -- see
+that module's docstring for the claim/dispatch/lease lifecycle `status`
+moves through.
 """
 
 from datetime import UTC, datetime
@@ -25,7 +29,8 @@ class ScheduledAction(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str] = mapped_column(String(32))  # 'escalation' | 'renotify' -- app-validated, not a DB enum
+    # 'escalation' | 'renotify' | 'digest_flush' (Phase 16) -- app-validated, not a DB enum
+    kind: Mapped[str] = mapped_column(String(32))
     # ON DELETE CASCADE: the event this timer follows up on going away
     # (retention purge, see app.services.retention) leaves nothing for
     # dispatch() to act on, so the timer goes with it.
@@ -40,10 +45,11 @@ class ScheduledAction(Base):
     routing_rule_id: Mapped[int | None] = mapped_column(
         ForeignKey("routing_rules.id", ondelete="SET NULL"), nullable=True
     )
-    # Unused by both kinds implemented so far (each acts on a rule's own
-    # channel set -- escalation_channels / channels -- not one specific
-    # channel); reserved for a future scheduled-action kind that targets a
-    # single channel.
+    # Unused by 'escalation'/'renotify' (each acts on a rule's own channel
+    # set -- escalation_channels / channels -- not one specific channel).
+    # Phase 16's 'digest_flush' is the first kind that targets exactly one
+    # channel, and is keyed by this column instead of alert_event_id/
+    # routing_rule_id (both NULL for it).
     channel_id: Mapped[int | None] = mapped_column(
         ForeignKey("channels.id", ondelete="SET NULL"), nullable=True
     )

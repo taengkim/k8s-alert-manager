@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -425,6 +425,136 @@ def _matched_notify_channels(
     return matched_channels
 
 
+DIGEST_RATE_WINDOW = timedelta(hours=1)
+
+
+async def _channel_needs_parking(session: AsyncSession, channel: Channel) -> bool:
+    """Phase 16 storm control: should the NEXT outbox row for `channel` be
+    parked (status='digested') rather than queued for normal delivery?
+
+    - `digest_mode == 'always'`: every notification is parked, unconditionally.
+    - `digest_mode == 'auto'` (and `rate_limit_per_hour` is set): parked once
+      the channel has already had at least `rate_limit_per_hour` outbox rows
+      in the trailing hour -- ANY status, aggregate digest rows excluded
+      (an aggregate send must never count toward the rate that triggers more
+      parking, or storm control would asymptotically park itself forever).
+      A parked ('digested') row DOES count here: it was still a real
+      would-be send in that hour, just deferred.
+    - `digest_mode == 'off'` (or 'auto' with no rate limit configured):
+      never parked.
+
+    Runs the count query inside the caller's own staging transaction, same
+    as everything else `route_event`/its scheduler.py counterparts do here
+    -- "good enough" accuracy under concurrent staging (a race could
+    theoretically let the count be read stale by one), not a hard guarantee;
+    documented trade-off for this phase rather than a SELECT ... FOR UPDATE
+    on the channel row.
+    """
+    if channel.digest_mode == "always":
+        return True
+    if channel.digest_mode == "auto" and channel.rate_limit_per_hour:
+        cutoff = datetime.now(UTC) - DIGEST_RATE_WINDOW
+        result = await session.execute(
+            select(func.count(NotificationOutbox.id)).where(
+                NotificationOutbox.channel_id == channel.id,
+                NotificationOutbox.is_digest.is_(False),
+                NotificationOutbox.created_at >= cutoff,
+            )
+        )
+        count = result.scalar_one()
+        if count >= channel.rate_limit_per_hour:
+            return True
+    return False
+
+
+async def _ensure_digest_flush_scheduled(session: AsyncSession, channel: Channel) -> None:
+    """Guarantee at most one pending `ScheduledAction(kind='digest_flush')`
+    per channel -- called every time a row is freshly parked for it. If one
+    is already pending, this is a no-op: that existing timer will flush
+    every row parked since it was scheduled, this one included. Otherwise
+    parking would schedule a redundant flush per parked row instead of one
+    per digest window.
+    """
+    existing = await session.execute(
+        select(ScheduledAction.id).where(
+            ScheduledAction.kind == "digest_flush",
+            ScheduledAction.channel_id == channel.id,
+            ScheduledAction.status == "pending",
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        return
+    session.add(
+        ScheduledAction(
+            kind="digest_flush",
+            channel_id=channel.id,
+            due_at=datetime.now(UTC) + timedelta(minutes=channel.digest_window_minutes),
+            status="pending",
+        )
+    )
+
+
+async def stage_outbox_row(
+    session: AsyncSession,
+    *,
+    alert_event_id: int,
+    routing_rule_id: int | None,
+    channel: Channel,
+    team_id: int,
+    trigger: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Insert one outbox row for (alert_event_id, channel, trigger),
+    applying Phase 16 storm control: parked (status='digested', see
+    `_channel_needs_parking`) instead of queued for normal delivery when
+    `channel`'s digest settings say so.
+
+    The single shared primitive behind every call site that stages a
+    `NotificationOutbox` row -- `_stage_outbox` below (route_event's own
+    staging and the Phase 14 shared fan-out) AND
+    `app.worker.scheduler`'s escalation/renotify dispatch -- so a channel's
+    storm control applies uniformly regardless of trigger: an escalation or
+    renotify notification is just as capable of flooding a channel as a
+    plain firing one, and this phase's brief is explicit that parking is a
+    channel-level decision, not a trigger-specific one.
+
+    Returns whether a new row was actually inserted (False on the existing
+    `(alert_event_id, channel_id, trigger)` UQ dedup skip -- unchanged from
+    before this phase; a parked row still carries a real `alert_event_id`
+    and is still fully covered by that UQ).
+    """
+    should_park = await _channel_needs_parking(session, channel)
+    outbox = NotificationOutbox(
+        alert_event_id=alert_event_id,
+        routing_rule_id=routing_rule_id,
+        channel_id=channel.id,
+        team_id=team_id,
+        trigger=trigger,
+        payload=dict(payload),
+        status="digested" if should_park else "pending",
+    )
+    try:
+        async with session.begin_nested():
+            session.add(outbox)
+            await session.flush()
+    except IntegrityError:
+        # (alert_event_id, channel_id, trigger) UQ -- this transition was
+        # already routed to this channel (e.g. a repeated webhook delivery
+        # re-running the same transition, or -- for the shared fan-out -- a
+        # channel reachable both directly and via a share). Not an error.
+        logger.info(
+            "outbox dedup skip: event=%s channel=%s trigger=%s team=%s",
+            alert_event_id,
+            channel.id,
+            trigger,
+            team_id,
+        )
+        return False
+    if should_park:
+        await _ensure_digest_flush_scheduled(session, channel)
+    return True
+
+
 async def _stage_outbox(
     session: AsyncSession,
     event: AlertEvent,
@@ -437,37 +567,23 @@ async def _stage_outbox(
     attributed to `team_id` -- the owning team for its own routing pass, or
     a share's target team for the Phase 14 view_notify fan-out. Shared by
     both call sites so the dedup-via-UQ handling (a repeated webhook
-    delivery re-running the same transition) isn't duplicated.
+    delivery re-running the same transition) isn't duplicated. `created`
+    counts every row actually inserted, parked or not -- a parked
+    notification is still "routed", just deferred to its channel's digest.
     """
     created = 0
     for channel, rule in matched_channels.values():
-        outbox = NotificationOutbox(
+        inserted = await stage_outbox_row(
+            session,
             alert_event_id=event.id,
             routing_rule_id=rule.id,
-            channel_id=channel.id,
+            channel=channel,
             team_id=team_id,
             trigger=trigger,
-            payload=dict(notification_payload),
+            payload=notification_payload,
         )
-        try:
-            async with session.begin_nested():
-                session.add(outbox)
-                await session.flush()
-        except IntegrityError:
-            # (alert_event_id, channel_id, trigger) UQ -- this transition
-            # was already routed to this channel (e.g. a repeated webhook
-            # delivery re-running the same transition, or -- for the shared
-            # fan-out -- a channel reachable both directly and via a share).
-            # Not an error.
-            logger.info(
-                "outbox dedup skip: event=%s channel=%s trigger=%s team=%s",
-                event.id,
-                channel.id,
-                trigger,
-                team_id,
-            )
-            continue
-        created += 1
+        if inserted:
+            created += 1
     return created
 
 

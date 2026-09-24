@@ -566,3 +566,148 @@ async def test_revoking_cross_team_flag_strips_foreign_joins_and_keeps_own_team(
         ).scalars().all()
         assert len(audit_rows) == 1
         assert audit_rows[0].detail == {"escalation_disabled_rule_ids": [foreign_rule["id"]]}
+
+
+# -- Phase 16: storm control (rate_limit_per_hour / digest_mode) fields ------
+
+
+async def test_create_channel_defaults_digest_off(client: AsyncClient) -> None:
+    team_id = await _create_team("t-digest-default")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "c1", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["digest_mode"] == "off"
+    assert body["rate_limit_per_hour"] is None
+    assert body["digest_window_minutes"] == 5
+
+
+async def test_create_channel_with_storm_control_fields(client: AsyncClient) -> None:
+    team_id = await _create_team("t-digest-create")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["a@example.org"]},
+            "rate_limit_per_hour": 10,
+            "digest_mode": "auto",
+            "digest_window_minutes": 15,
+        },
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["rate_limit_per_hour"] == 10
+    assert body["digest_mode"] == "auto"
+    assert body["digest_window_minutes"] == 15
+
+
+async def test_create_channel_auto_mode_without_rate_limit_422(client: AsyncClient) -> None:
+    team_id = await _create_team("t-digest-invalid")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["a@example.org"]},
+            "digest_mode": "auto",
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_patch_channel_updates_storm_control_fields(client: AsyncClient) -> None:
+    team_id = await _create_team("t-digest-patch")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    create_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "c1", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    channel_id = create_resp.json()["id"]
+
+    patch_resp = await client.patch(
+        f"/api/v1/channels/{channel_id}",
+        json={"rate_limit_per_hour": 5, "digest_mode": "auto", "digest_window_minutes": 10},
+    )
+    assert patch_resp.status_code == 200
+    body = patch_resp.json()
+    assert body["rate_limit_per_hour"] == 5
+    assert body["digest_mode"] == "auto"
+    assert body["digest_window_minutes"] == 10
+
+
+async def test_patch_channel_to_auto_without_existing_rate_limit_422(client: AsyncClient) -> None:
+    """Setting digest_mode='auto' alone, on a channel with no
+    rate_limit_per_hour from before, must 422 -- the validation looks at the
+    channel's FINAL merged state, not just the fields this one PATCH body
+    happens to touch.
+    """
+    team_id = await _create_team("t-digest-patch-invalid")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    create_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={"name": "c1", "type": "email", "config": {"recipients": ["a@example.org"]}},
+    )
+    channel_id = create_resp.json()["id"]
+
+    resp = await client.patch(f"/api/v1/channels/{channel_id}", json={"digest_mode": "auto"})
+    assert resp.status_code == 422
+
+
+async def test_patch_channel_rate_limit_alone_does_not_422_when_already_auto(
+    client: AsyncClient,
+) -> None:
+    """The inverse of the above: a PATCH that only sets rate_limit_per_hour
+    must succeed when digest_mode was already 'auto' from a prior request,
+    even though this body alone doesn't mention digest_mode.
+    """
+    team_id = await _create_team("t-digest-patch-valid")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    create_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["a@example.org"]},
+            "rate_limit_per_hour": 3,
+            "digest_mode": "auto",
+        },
+    )
+    channel_id = create_resp.json()["id"]
+
+    resp = await client.patch(f"/api/v1/channels/{channel_id}", json={"rate_limit_per_hour": 7})
+    assert resp.status_code == 200
+    assert resp.json()["rate_limit_per_hour"] == 7
+    assert resp.json()["digest_mode"] == "auto"
+
+
+async def test_patch_channel_can_clear_rate_limit_back_to_unlimited(client: AsyncClient) -> None:
+    team_id = await _create_team("t-digest-clear")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    create_resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["a@example.org"]},
+            "rate_limit_per_hour": 3,
+            "digest_mode": "off",
+        },
+    )
+    channel_id = create_resp.json()["id"]
+
+    resp = await client.patch(f"/api/v1/channels/{channel_id}", json={"rate_limit_per_hour": None})
+    assert resp.status_code == 200
+    assert resp.json()["rate_limit_per_hour"] is None

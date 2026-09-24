@@ -242,6 +242,147 @@ async def test_notification_outbox_terminal_rows_purged_after_30_days(app) -> No
         assert await session.get(NotificationOutbox, old_pending_id) is not None
 
 
+# -- notification_outbox: Phase 16 digest aggregate + parked children -------
+
+
+async def test_purging_old_digest_aggregate_takes_its_parked_children_with_it(app) -> None:
+    """A parked ('digested') row records no delivery history of its own once
+    linked to an aggregate -- when the aggregate becomes purge-eligible
+    (delivered/dead + past the window), its children must be force-deleted
+    in the same sweep, regardless of THEIR OWN age/status, or they'd survive
+    as orphans (digested_into_id SET NULL) indistinguishable from a row
+    still awaiting a flush.
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session)
+        cluster = await _create_cluster(session)
+        channel = await _create_channel(session, team)
+        # Two distinct events -- a digest bundles rows across DIFFERENT
+        # events for one channel, so two rows sharing one event/channel/
+        # trigger would just collide on the (alert_event_id, channel_id,
+        # trigger) UQ, which has nothing to do with what's under test here.
+        event_1 = _make_event(cluster, team, fingerprint="fp-1", last_received_at=NOW)
+        event_2 = _make_event(cluster, team, fingerprint="fp-2", last_received_at=NOW)
+        session.add_all([event_1, event_2])
+        await session.flush()
+
+        old_aggregate = NotificationOutbox(
+            alert_event_id=None, channel_id=channel.id, team_id=team.id,
+            trigger="digest", payload={"notifications": [], "count": 2, "window_started_at": "x"},
+            is_digest=True, status="delivered", created_at=NOW - timedelta(days=31),
+        )
+        session.add(old_aggregate)
+        await session.flush()
+        # Both children are brand-new (created_at=now) and would never
+        # qualify for the general age-based purge on their own.
+        child_1 = NotificationOutbox(
+            alert_event_id=event_1.id, channel_id=channel.id, team_id=team.id,
+            trigger="firing", payload={}, status="digested",
+            digested_into_id=old_aggregate.id, created_at=NOW,
+        )
+        child_2 = NotificationOutbox(
+            alert_event_id=event_2.id, channel_id=channel.id, team_id=team.id,
+            trigger="firing", payload={}, status="digested",
+            digested_into_id=old_aggregate.id, created_at=NOW,
+        )
+        session.add_all([child_1, child_2])
+        await session.commit()
+        aggregate_id, child_1_id, child_2_id = old_aggregate.id, child_1.id, child_2.id
+
+    summary = await purge(db_module.async_session_factory)
+    # 1 aggregate + 2 children = 3 notification_outbox rows removed.
+    assert summary["notification_outbox"] == 3
+
+    async with db_module.async_session_factory() as session:
+        assert await session.get(NotificationOutbox, aggregate_id) is None
+        assert await session.get(NotificationOutbox, child_1_id) is None
+        assert await session.get(NotificationOutbox, child_2_id) is None
+
+
+async def test_recent_digest_aggregate_keeps_its_parked_children_intact(app) -> None:
+    """An aggregate younger than the retention window is never purged, so
+    its children (however old) must be untouched too -- the children-follow-
+    aggregate rule only fires once the aggregate itself is purge-eligible.
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session)
+        cluster = await _create_cluster(session)
+        channel = await _create_channel(session, team)
+        event = _make_event(cluster, team, fingerprint="fp-1", last_received_at=NOW)
+        session.add(event)
+        await session.flush()
+
+        recent_aggregate = NotificationOutbox(
+            alert_event_id=None, channel_id=channel.id, team_id=team.id,
+            trigger="digest", payload={"notifications": [], "count": 1, "window_started_at": "x"},
+            is_digest=True, status="delivered", created_at=NOW - timedelta(days=1),
+        )
+        session.add(recent_aggregate)
+        await session.flush()
+        # An old child would normally be exempt anyway (its own status is
+        # 'digested', not 'delivered'/'dead'), but backdating it here proves
+        # the aggregate's own (recent) age is what actually gates this,
+        # not the child's.
+        child = NotificationOutbox(
+            alert_event_id=event.id, channel_id=channel.id, team_id=team.id,
+            trigger="firing", payload={}, status="digested",
+            digested_into_id=recent_aggregate.id, created_at=NOW - timedelta(days=60),
+        )
+        session.add(child)
+        await session.commit()
+        aggregate_id, child_id = recent_aggregate.id, child.id
+
+    summary = await purge(db_module.async_session_factory)
+    assert summary["notification_outbox"] == 0
+
+    async with db_module.async_session_factory() as session:
+        assert await session.get(NotificationOutbox, aggregate_id) is not None
+        assert await session.get(NotificationOutbox, child_id) is not None
+
+
+async def test_parked_child_purged_with_its_own_event_before_aggregate_ages_out(app) -> None:
+    """The other direction: a parked row's OWNING EVENT purges first (the
+    aggregate is still recent) -- `_purge_alert_events` force-deletes every
+    outbox row for that event regardless of status, same as always, and the
+    (still-recent, unrelated) aggregate is left alone.
+    """
+    async with db_module.async_session_factory() as session:
+        team = await _create_team(session)
+        cluster = await _create_cluster(session)
+        channel = await _create_channel(session, team)
+        old_event = _make_event(
+            cluster, team, fingerprint="fp-old", last_received_at=NOW - timedelta(days=91)
+        )
+        session.add(old_event)
+        await session.flush()
+
+        aggregate = NotificationOutbox(
+            alert_event_id=None, channel_id=channel.id, team_id=team.id,
+            trigger="digest", payload={"notifications": [], "count": 1, "window_started_at": "x"},
+            is_digest=True, status="delivered", created_at=NOW,
+        )
+        session.add(aggregate)
+        await session.flush()
+        child = NotificationOutbox(
+            alert_event_id=old_event.id, channel_id=channel.id, team_id=team.id,
+            trigger="firing", payload={}, status="digested",
+            digested_into_id=aggregate.id, created_at=NOW,
+        )
+        session.add(child)
+        await session.commit()
+        event_id, aggregate_id, child_id = old_event.id, aggregate.id, child.id
+
+    summary = await purge(db_module.async_session_factory)
+    assert summary["alert_events"] == 1
+
+    async with db_module.async_session_factory() as session:
+        assert await session.get(AlertEvent, event_id) is None
+        assert await session.get(NotificationOutbox, child_id) is None
+        # The aggregate itself is untouched -- it's recent, and purging the
+        # event it was (partly) built from never reaches back into it.
+        assert await session.get(NotificationOutbox, aggregate_id) is not None
+
+
 # -- audit_log -------------------------------------------------------------
 
 

@@ -134,7 +134,23 @@ export function getAlertHistoryDetail(eventId: number): Promise<AlertEventDetail
   return apiFetch<AlertEventDetail>(`/alerts/history/${eventId}`);
 }
 
-export type NotificationStatus = "pending" | "in_progress" | "delivered" | "failed" | "dead";
+/** Phase 16 adds 'digested': this row was parked by its channel's storm
+ * control and folded into an aggregate digest send instead of being
+ * delivered on its own -- see `digested_into` below for that aggregate's
+ * own (normal pending/in_progress/delivered/dead) status. */
+export type NotificationStatus = "pending" | "in_progress" | "delivered" | "failed" | "dead" | "digested";
+
+/** Phase 16: present only when a row's status is 'digested' -- the
+ * aggregate outbox row it was folded into, which owns this batch's actual
+ * delivery/retry history from here on. */
+export interface DigestAggregateInfo {
+  id: number;
+  status: NotificationStatus;
+  delivered_at: string | null;
+  /** How many notifications (this row included) the aggregate bundles;
+   * null only if the aggregate's payload was somehow malformed. */
+  notification_count: number | null;
+}
 
 export interface AlertNotificationRecord {
   id: number;
@@ -142,13 +158,17 @@ export interface AlertNotificationRecord {
   channel_name: string;
   /** 'firing' | 'resolved' | 'escalation' (Phase 15, single-fire) |
    * `renotify:{scheduled_action_id}` (Phase 15 -- each renotify cycle gets
-   * its own value; see AlertHistory.tsx's rendering of this field). */
+   * its own value; see AlertHistory.tsx's rendering of this field) |
+   * 'digest' (Phase 16, only ever seen on an aggregate row itself -- not
+   * reachable from this per-event endpoint, since an aggregate row's own
+   * alert_event_id is null). */
   trigger: string;
   status: NotificationStatus;
   attempts: number;
   last_error: string | null;
   created_at: string;
   delivered_at: string | null;
+  digested_into: DigestAggregateInfo | null;
 }
 
 export function getAlertHistoryNotifications(eventId: number): Promise<AlertNotificationRecord[]> {

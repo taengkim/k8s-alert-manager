@@ -8,10 +8,10 @@ Channel type discovery itself lives in `app/channels/registry.py`.
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,9 @@ types_router = APIRouter(prefix="/api/v1/channel-types", tags=["channels"])
 router = APIRouter(prefix="/api/v1", tags=["channels"])
 
 
+DigestMode = Literal["off", "auto", "always"]
+
+
 class ChannelCreate(BaseModel):
     name: str
     type: str
@@ -49,6 +52,16 @@ class ChannelCreate(BaseModel):
     # _resolve_escalation_channels). Has no effect on this channel's own
     # team's rules, which can always select it either way.
     allow_cross_team_escalation: bool = False
+    # Phase 16 storm control -- see app.services.routing._channel_needs_parking.
+    rate_limit_per_hour: int | None = Field(default=None, gt=0)
+    digest_mode: DigestMode = "off"
+    digest_window_minutes: int = Field(default=5, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_digest_mode(self) -> "ChannelCreate":
+        if self.digest_mode == "auto" and self.rate_limit_per_hour is None:
+            raise ValueError("digest_mode='auto' requires rate_limit_per_hour")
+        return self
 
 
 class ChannelUpdate(BaseModel):
@@ -61,6 +74,14 @@ class ChannelUpdate(BaseModel):
     # other Optional field on this model.
     template_id: int | None = None
     allow_cross_team_escalation: bool | None = None
+    # Phase 16 storm control. `rate_limit_per_hour: None` explicitly clears
+    # it (same "check model_fields_set, not the value" disambiguation as
+    # template_id above) -- update_channel validates the FINAL merged state
+    # (not just this body in isolation), since 'auto' requiring a rate limit
+    # is a property of the channel as a whole, not of any one PATCH.
+    rate_limit_per_hour: int | None = Field(default=None, gt=0)
+    digest_mode: DigestMode | None = None
+    digest_window_minutes: int | None = Field(default=None, gt=0)
 
 
 async def _get_team_or_404(session: AsyncSession, team_id: int) -> Team:
@@ -208,6 +229,9 @@ def _serialize(channel: Channel, registry: ChannelRegistry) -> dict[str, Any]:
         "config": _mask_secrets(config, schema_cls),
         "template_id": channel.template_id,
         "allow_cross_team_escalation": channel.allow_cross_team_escalation,
+        "rate_limit_per_hour": channel.rate_limit_per_hour,
+        "digest_mode": channel.digest_mode,
+        "digest_window_minutes": channel.digest_window_minutes,
     }
 
 
@@ -260,6 +284,9 @@ async def create_channel(
         created_by=actor.id,
         template_id=body.template_id,
         allow_cross_team_escalation=body.allow_cross_team_escalation,
+        rate_limit_per_hour=body.rate_limit_per_hour,
+        digest_mode=body.digest_mode,
+        digest_window_minutes=body.digest_window_minutes,
     )
     session.add(channel)
     try:
@@ -344,6 +371,25 @@ async def update_channel(
         if body.template_id is not None:
             await _validate_template_ownership(session, channel.team_id, body.template_id)
         channel.template_id = body.template_id
+
+    if "rate_limit_per_hour" in body.model_fields_set:
+        channel.rate_limit_per_hour = body.rate_limit_per_hour
+    if "digest_mode" in body.model_fields_set and body.digest_mode is not None:
+        channel.digest_mode = body.digest_mode
+    if "digest_window_minutes" in body.model_fields_set and body.digest_window_minutes is not None:
+        channel.digest_window_minutes = body.digest_window_minutes
+    if channel.digest_mode == "auto" and channel.rate_limit_per_hour is None:
+        # Validated against the channel's FINAL merged state, not just this
+        # one PATCH body in isolation -- e.g. a request that only sets
+        # digest_mode='auto' while rate_limit_per_hour was already NULL from
+        # before (or is being cleared in the very same request) must still
+        # 422, and a request that only sets rate_limit_per_hour while
+        # digest_mode was already 'auto' from before must NOT 422 just
+        # because this body didn't also touch digest_mode.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="digest_mode='auto' requires rate_limit_per_hour",
+        )
 
     try:
         await session.flush()

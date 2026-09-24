@@ -1,6 +1,21 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, App, Button, Form, Input, Modal, Popconfirm, Select, Switch, Table, Tag } from "antd";
+import {
+  Alert,
+  App,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Segmented,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+} from "antd";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
@@ -12,7 +27,7 @@ import {
   patchChannel,
   testChannel,
 } from "../api/channels";
-import type { Channel, ChannelType } from "../api/channels";
+import type { Channel, ChannelType, DigestMode } from "../api/channels";
 import { listTemplates } from "../api/templates";
 import JsonSchemaForm from "../components/JsonSchemaForm";
 import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
@@ -56,7 +71,16 @@ interface ChannelFormValues {
   config: Record<string, unknown>;
   template_id?: number;
   allow_cross_team_escalation: boolean;
+  rate_limit_per_hour?: number;
+  digest_mode: DigestMode;
+  digest_window_minutes: number;
 }
+
+const DIGEST_MODE_OPTIONS: { label: string; value: DigestMode }[] = [
+  { label: "끄기", value: "off" },
+  { label: "자동", value: "auto" },
+  { label: "항상", value: "always" },
+];
 
 interface ChannelsTableProps {
   teamId: number;
@@ -104,6 +128,9 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         config: values.config ?? {},
         template_id: values.template_id ?? null,
         allow_cross_team_escalation: values.allow_cross_team_escalation ?? false,
+        rate_limit_per_hour: values.rate_limit_per_hour ?? null,
+        digest_mode: values.digest_mode ?? "off",
+        digest_window_minutes: values.digest_window_minutes ?? 5,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
@@ -121,6 +148,9 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         config: values.config ?? {},
         template_id: values.template_id ?? null,
         allow_cross_team_escalation: values.allow_cross_team_escalation ?? false,
+        rate_limit_per_hour: values.rate_limit_per_hour ?? null,
+        digest_mode: values.digest_mode ?? "off",
+        digest_window_minutes: values.digest_window_minutes ?? 5,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
@@ -273,8 +303,11 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
                   config: editing.config,
                   template_id: editing.template_id ?? undefined,
                   allow_cross_team_escalation: editing.allow_cross_team_escalation,
+                  rate_limit_per_hour: editing.rate_limit_per_hour ?? undefined,
+                  digest_mode: editing.digest_mode,
+                  digest_window_minutes: editing.digest_window_minutes,
                 }
-              : { allow_cross_team_escalation: false }
+              : { allow_cross_team_escalation: false, digest_mode: "off", digest_window_minutes: 5 }
           }
           onFinish={(values) =>
             editing ? updateMutation.mutate(values) : createMutation.mutate(values)
@@ -325,6 +358,44 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
             help="켜면 다른 팀의 라우팅 규칙이 이 채널을 에스컬레이션 대상으로 선택할 수 있습니다."
           >
             <Switch />
+          </Form.Item>
+
+          <Form.Item label="폭풍 제어" style={{ marginBottom: 0 }}>
+            <Space direction="vertical" style={{ width: "100%" }} size={0}>
+              <Form.Item
+                name="digest_mode"
+                label="다이제스트 모드"
+                help="자동: 시간당 발송 제한 초과 시 묶어서 발송 / 항상: 모든 알림을 항상 묶어서 발송"
+              >
+                <Segmented options={DIGEST_MODE_OPTIONS} />
+              </Form.Item>
+              <Form.Item
+                name="rate_limit_per_hour"
+                label="시간당 발송 제한"
+                dependencies={["digest_mode"]}
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (getFieldValue("digest_mode") === "auto" && (value === undefined || value === null)) {
+                        return Promise.reject(
+                          new Error("자동 모드에서는 시간당 발송 제한을 입력해야 합니다"),
+                        );
+                      }
+                      return Promise.resolve();
+                    },
+                  }),
+                ]}
+              >
+                <InputNumber min={1} style={{ width: "100%" }} placeholder="무제한" />
+              </Form.Item>
+              <Form.Item
+                name="digest_window_minutes"
+                label="다이제스트 대기 시간(분)"
+                help="묶인 알림을 이 시간만큼 기다렸다가 한 번에 발송합니다"
+              >
+                <InputNumber min={1} style={{ width: "100%" }} />
+              </Form.Item>
+            </Space>
           </Form.Item>
         </Form>
       </Modal>
