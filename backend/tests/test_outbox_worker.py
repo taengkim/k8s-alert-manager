@@ -223,9 +223,18 @@ async def test_claim_batch_concurrent_postgres_sessions_claim_disjoint_rows(app)
         )
 
     total_rows = 40
-    per_worker_limit = 25  # > total_rows / 2, so a naive (non-locking) claim
-    # would very likely double-claim at least one row if run without SKIP
-    # LOCKED protecting it.
+    # Deliberately overlapping: each worker asks for more than half of
+    # total_rows, so both workers' candidate row sets are guaranteed to
+    # intersect. Note the disjointness assertion below (ids_a & ids_b ==
+    # empty) alone doesn't specifically prove SKIP LOCKED is in effect --
+    # plain (blocking) FOR UPDATE would also produce disjoint claims, just
+    # serialized rather than concurrent, and so would two claims that simply
+    # never overlapped in time. What SKIP LOCKED actually buys is
+    # non-blocking concurrency; the load-bearing correctness assertion here
+    # is the union -- ids_a | ids_b == all_ids confirms every due row was
+    # claimed by exactly one worker, with neither silently dropping rows nor
+    # erroring out under this deliberately-overlapping load.
+    per_worker_limit = 25
 
     async with db_module.async_session_factory() as session:
         team, cluster, channel = await _setup(session)

@@ -172,6 +172,18 @@ def create_app() -> FastAPI:
     # wins the route match first; the catch-all below only ever sees a
     # request none of them claimed.
     if STATIC_DIR.is_dir():
+        # Resolved once, outside the request path: `full_path` is
+        # attacker-controlled (it's literally "everything after the
+        # domain" -- see the {full_path:path} converter below), and
+        # Starlette's `:path` converter does NOT normalize `..` segments
+        # out of it. Without an explicit containment check, a request like
+        # `/../../../etc/passwd` (or, in a real k8s pod,
+        # `/../../../var/run/secrets/kubernetes.io/serviceaccount/token`)
+        # resolves `STATIC_DIR / full_path` right out of the static root and
+        # serves that file's contents -- confirmed against a running
+        # container. `static_root` is what every candidate path is checked
+        # against below.
+        static_root = STATIC_DIR.resolve()
         assets_dir = STATIC_DIR / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=assets_dir), name="spa-assets")
@@ -184,12 +196,20 @@ def create_app() -> FastAPI:
             # confusing 200-with-HTML instead of a clear 404.
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="not found")
-            candidate = STATIC_DIR / full_path
-            if full_path and candidate.is_file():
+            # `.resolve()` collapses any `..`/symlink segments BEFORE the
+            # containment check -- checking containment on the
+            # un-resolved path would still let `../` sequences through.
+            candidate = (STATIC_DIR / full_path).resolve()
+            if (
+                full_path
+                and candidate.is_relative_to(static_root)
+                and candidate.is_file()
+            ):
                 return FileResponse(candidate)
-            # Any other path (the app root, or a client-side route like
-            # /alerts/123 with no matching file) falls back to the SPA
-            # shell -- React Router resolves the actual view client-side.
+            # Any other path (the app root, a client-side route like
+            # /alerts/123 with no matching file, or an out-of-root/missing
+            # candidate above) falls back to the SPA shell -- React Router
+            # resolves the actual view client-side.
             return FileResponse(STATIC_DIR / "index.html")
 
     return app

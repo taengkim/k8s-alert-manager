@@ -28,7 +28,14 @@ FROM python:3.12-slim AS backend-builder
 # https://docs.astral.sh/uv/guides/integration/docker/.
 COPY --from=ghcr.io/astral-sh/uv:0.11.22 /uv /uvx /usr/local/bin/
 WORKDIR /app
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_PYTHON=python3.12 \
+    UV_PYTHON_DOWNLOADS=never
+# UV_PYTHON pins uv to this image's own python3.12 rather than resolving
+# whatever `requires-python` happens to prefer; UV_PYTHON_DOWNLOADS=never
+# makes that a hard failure (not a silent network fetch of a managed
+# interpreter) if that ever stops matching -- this build has no business
+# downloading a Python at all when python:3.12-slim already provides one.
 # backend/pyproject.toml declares no [build-system] -- this is a dependency
 # manifest only (no installable "kam-backend" package), so `uv sync` here
 # needs no application source at all, just the lock. That keeps this layer

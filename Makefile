@@ -45,6 +45,10 @@ image:
 deploy-kind:
 	kind load docker-image $(IMAGE) --name $(KIND_CLUSTER)
 	kubectl apply -f deploy/k8s/namespace.yaml
+	# rbac.yaml's Role lives in kam-rules, not kam -- create it idempotently
+	# so this target also works against a clean cluster (a real deployment
+	# outside kind must still do this itself first, see deploy/README.md).
+	kubectl create namespace kam-rules --dry-run=client -o yaml | kubectl apply -f -
 	@if [ -f deploy/k8s/secret.yaml ]; then \
 		kubectl apply -f deploy/k8s/secret.yaml; \
 	else \
@@ -61,5 +65,7 @@ undeploy-kind:
 	kubectl delete -f deploy/k8s/service.yaml -f deploy/k8s/deployment.yaml --ignore-not-found
 	kubectl delete -f deploy/k8s/rbac.yaml -f deploy/k8s/serviceaccount.yaml --ignore-not-found
 	kubectl delete -f deploy/k8s/configmap.yaml --ignore-not-found
-	kubectl delete -f deploy/k8s/secret.yaml --ignore-not-found
+	@if [ -f deploy/k8s/secret.yaml ]; then \
+		kubectl delete -f deploy/k8s/secret.yaml --ignore-not-found; \
+	fi
 	kubectl delete -f deploy/k8s/namespace.yaml --ignore-not-found

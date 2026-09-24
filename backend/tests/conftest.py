@@ -21,7 +21,6 @@ from app.db import Base, get_session
 from app.main import create_app
 from app.services.ldap_auth import LdapUserInfo
 
-
 # Phase 21: KAM_DATABASE_URL, if set to a postgresql+... URL, points the
 # whole test suite at a real Postgres instance instead of the default
 # per-test in-memory SQLite db -- see docker-compose.dev.yml's `postgres`

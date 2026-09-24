@@ -1,12 +1,17 @@
-# Least-privilege RBAC for the kam ServiceAccount (deploy/k8s/serviceaccount.yaml),
-# scoped to exactly what app/services/k8s.py's K8sClientFactory ever does
-# against a k8s API server it's authenticated to via k8s_auth_kind=incluster:
+# Least-privilege RBAC for the kam ServiceAccount (deploy/k8s/serviceaccount.yaml).
+# As of this writing, this matches what app/services/k8s.py's
+# K8sClientFactory does against a k8s API server it's authenticated to via
+# k8s_auth_kind=incluster -- re-check this file against that module if
+# either one changes, rather than assuming it stays in sync automatically:
 #
-#   - PrometheusRule CRUD, but ONLY inside a cluster's own `rules_namespace`
-#     (default "kam-rules") -- see K8sClientFactory.list_rules/get_rule/
-#     create_rule/replace_rule/delete_rule. Namespaced Role, not
-#     ClusterRole: kam must never be able to touch PrometheusRules outside
-#     the one namespace it's meant to manage.
+#   - PrometheusRule get/list/create/update/delete, but ONLY inside a
+#     cluster's own `rules_namespace` (default "kam-rules") -- see
+#     K8sClientFactory.list_rules/get_rule/create_rule/replace_rule/
+#     delete_rule. No `watch`/`patch`: nothing here ever watches a
+#     PrometheusRule, and replace_rule always submits a full replacement
+#     object (a PUT, i.e. the "update" verb), never a partial PATCH.
+#     Namespaced Role, not ClusterRole: kam must never be able to touch
+#     PrometheusRules outside the one namespace it's meant to manage.
 #   - Cluster-scoped `namespaces` get/list -- the rule builder's namespace
 #     picker (GET /api/v1/namespaces, K8sClientFactory.list_namespaces).
 #   - The `/version` endpoint -- the cluster health check
@@ -27,7 +32,7 @@ metadata:
 rules:
   - apiGroups: ["monitoring.coreos.com"]
     resources: ["prometheusrules"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

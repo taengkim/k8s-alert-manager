@@ -44,12 +44,19 @@ Vite 개발 서버)과 테스트 스위트는 이 디렉터리가 없으므로 �
    ```bash
    kubectl create namespace kam-rules
    ```
+   (`make deploy-kind`는 이 단계를 자동으로 idempotent하게 해 줍니다 — 아래
+   [로컬 kind 검증](#로컬-kind-검증) 참고. 이 절차를 직접 손으로 따라가는
+   실제 배포에서는 위 명령을 직접 실행해야 합니다.)
 2. **시크릿 준비** — `deploy/k8s/secret.example.yaml`을 `secret.yaml`로 복사해
-   실제 값(`KAM_SECRET_KEY`, LDAP 바인드 DN/비밀번호, SMTP 자격증명,
-   `KAM_DATABASE_URL`)을 채운 뒤 커밋하지 마세요 (`.gitignore`에 이미
-   등록되어 있습니다). Postgres가 클러스터 안에 없다면 관리형 DB를 먼저
-   준비하거나, 작은 배포라면 `deploy/k8s/postgres.example.yaml`(운영 환경에는
-   권장하지 않음 — 파일 자체의 주석 참고)을 적용하세요.
+   실제 값(`KAM_SECRET_KEY`, **`KAM_WEBHOOK_TOKEN`**, LDAP 바인드 DN/비밀번호,
+   SMTP 자격증명, `KAM_DATABASE_URL`)을 채운 뒤 커밋하지 마세요
+   (`.gitignore`에 이미 등록되어 있습니다). **`KAM_WEBHOOK_TOKEN`을 빠뜨리지
+   마세요** — 기본값(`"dev-webhook-token"`)은 코드에 공개된 문자열이라,
+   그대로 두면 앱이 첫 기동 시 자동 시드하는 기본(`local`) 클러스터의 웹훅
+   인증이 그 값으로 뚫린 채 배포됩니다(`POST /webhook/alertmanager`에는 이
+   토큰 외 다른 인증이 없음). Postgres가 클러스터 안에 없다면 관리형 DB를
+   먼저 준비하거나, 작은 배포라면 `deploy/k8s/postgres.example.yaml`(운영
+   환경에는 권장하지 않음 — 파일 자체의 주석 참고)을 적용하세요.
 3. **매니페스트 적용** (순서 중요 — Deployment는 ConfigMap/Secret/
    ServiceAccount가 먼저 있어야 합니다):
    ```bash
@@ -121,7 +128,8 @@ kam은 관리 대상 클러스터마다 별도의 `Cluster` 행을 가집니다.
 
 ```bash
 make image
-make deploy-kind    # kind load docker-image + 위 배포 순서 전체 적용 + rollout 대기
+make deploy-kind    # kind load docker-image + kam-rules 네임스페이스(idempotent) +
+                    # 위 배포 순서 전체 적용 + rollout 대기
 # ... 확인 ...
 make undeploy-kind  # kam 네임스페이스 + rbac.yaml/serviceaccount.yaml 리소스 삭제
 ```
@@ -135,3 +143,34 @@ make undeploy-kind  # kam 네임스페이스 + rbac.yaml/serviceaccount.yaml 리
 이 두 타깃은 `deploy/k8s/ingress.example.yaml`/`postgres.example.yaml`/
 `secret.example.yaml`은 건드리지 않습니다 (전부 opt-in 예시 — 직접
 `kubectl apply -f`).
+
+### `kubectl auth can-i` 최소권한 매트릭스
+
+`deploy/k8s/rbac.yaml`이 의도한 대로 동작하는지 배포 후 확인하는 명령들
+(kam ServiceAccount 기준 — 실제 kind 클러스터에 배포하고 아래 그대로 실행해
+직접 검증했습니다):
+
+```bash
+SA=system:serviceaccount:kam:kam
+
+# 허용되어야 함 (yes)
+kubectl auth can-i create prometheusrules --as=$SA -n kam-rules
+kubectl auth can-i get    prometheusrules --as=$SA -n kam-rules
+kubectl auth can-i list   prometheusrules --as=$SA -n kam-rules
+kubectl auth can-i update prometheusrules --as=$SA -n kam-rules
+kubectl auth can-i delete prometheusrules --as=$SA -n kam-rules
+kubectl auth can-i list   namespaces      --as=$SA
+kubectl auth can-i get    namespaces      --as=$SA
+kubectl auth can-i get    /version        --as=$SA
+
+# 거부되어야 함 (no)
+kubectl auth can-i create prometheusrules   --as=$SA -n default
+kubectl auth can-i create prometheusrules   --as=$SA -n monitoring
+kubectl auth can-i list   pods             --as=$SA -A
+kubectl auth can-i get    secrets          --as=$SA -n kam-rules
+kubectl auth can-i get    secrets          --as=$SA -n kam
+kubectl auth can-i delete deployments      --as=$SA -A
+kubectl auth can-i create clusterroles     --as=$SA
+kubectl auth can-i delete namespaces       --as=$SA
+kubectl auth can-i create alertmanagerconfigs --as=$SA -n kam-rules
+```
