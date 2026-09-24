@@ -62,16 +62,40 @@ Alertmanager webhook으로 수신한 알럿을 팀별 라우팅 규칙에 따라
 
 ## 아키텍처
 
-```
- ┌─ Cluster A ─────────────┐        ┌──────────────────── KAM (단일 프로세스) ───────────────────┐
- │ Prometheus  Alertmanager│ webhook│  FastAPI ──── ingest(중복제거·팀귀속) ── 라우팅 엔진        │
- │     ▲            │      │───────▶│    │                                       │              │
- │ PrometheusRule ◀─┼──────┼────────│  K8s/Prom/AM 클라이언트 팩토리          notification_outbox │
- └──────────────────┼──────┘  CRUD  │  (클러스터 키 기반 LRU)                     │              │
- ┌─ Cluster B ──────┼──────┐        │                                    워커(폴링·백오프·스케줄러)│
- │      ...         │      │        │  SQLite(dev) / PostgreSQL(prod)             │              │
- └──────────────────┴──────┘        └──────────────────────────────────────────┬──┘              │
-                                                 React SPA (antd) ◀── SSE ──┘  └─▶ Email/플러그인 채널
+```mermaid
+flowchart LR
+  subgraph cluster["Kubernetes 클러스터 (× N)"]
+    PROM["Prometheus"]
+    AM["Alertmanager"]
+    CRD["PrometheusRule CRD"]
+  end
+
+  subgraph kam["KAM (단일 프로세스)"]
+    API["FastAPI"]
+    ING["ingest<br/>중복 제거 · 팀 귀속"]
+    RT["라우팅 엔진<br/>suppress → severity/ns → regex"]
+    OB[("notification_outbox")]
+    WK["워커 + 스케줄러<br/>재시도 · 에스컬레이션 · 재알림 · digest"]
+    FCT["K8s/Prom/AM 클라이언트 팩토리<br/>클러스터 키 LRU"]
+    DB[("SQLite / PostgreSQL")]
+  end
+
+  SPA["React SPA (antd)"]
+  CH["이메일 / 플러그인 채널"]
+
+  AM -- "webhook + 클러스터별 토큰" --> API
+  API --> ING
+  ING --> RT
+  RT --> OB
+  OB --> WK
+  WK -- "send / send_batch" --> CH
+  API --- FCT
+  FCT -- "룰 CRUD" --> CRD
+  FCT -- "라이브 알럿 · 메트릭 · 사일런스" --> PROM
+  FCT --> AM
+  API --- DB
+  SPA -- "REST" --> API
+  API -- "SSE 실시간 피드" --> SPA
 ```
 
 핵심 설계 결정:
