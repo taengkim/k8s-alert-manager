@@ -78,7 +78,21 @@ export default function Alerts() {
     refetchInterval: 30_000,
   });
   const missingClusters = useMemo(
-    () => (heartbeatQuery.data ?? []).filter((c) => c.heartbeat_state === "missing"),
+    () =>
+      (heartbeatQuery.data ?? []).filter((c) => {
+        if (c.heartbeat_state !== "missing") return false;
+        if (!c.enabled) return false;
+        // `heartbeat_enabled` is admin-only in GET /clusters (see
+        // app/api/clusters.py's _serialize_cluster) -- undefined for a
+        // non-admin viewer, so this only excludes when it's known to be
+        // explicitly false, never when it's simply not visible to this
+        // user's role. In steady state a disabled/heartbeat-disabled
+        // cluster's state is reset away from 'missing' the moment it's
+        // toggled (app/api/clusters.py's update_cluster), so this is
+        // belt-and-suspenders against a row that predates that reset.
+        if (c.heartbeat_enabled === false) return false;
+        return true;
+      }),
     [heartbeatQuery.data],
   );
 
