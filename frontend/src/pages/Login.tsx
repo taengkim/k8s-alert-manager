@@ -3,6 +3,7 @@ import { Alert, Button, Card, Form, Input } from "antd";
 import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { ApiError } from "../api/client";
+import { useI18n } from "../i18n";
 
 interface LoginFormValues {
   username: string;
@@ -14,6 +15,7 @@ interface LocationState {
 }
 
 export default function Login() {
+  const { t } = useI18n();
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -31,16 +33,16 @@ export default function Login() {
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401 || err.status === 422) {
-          setError("아이디 또는 비밀번호가 올바르지 않습니다");
+          setError(t("login.errorInvalidCredentials"));
         } else if (err.status === 403) {
-          setError("비활성화된 계정입니다");
+          setError(t("login.errorAccountDisabled"));
         } else if (err.status === 503) {
-          setError("인증 서버(LDAP)에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.");
+          setError(t("login.errorAuthServerUnavailable"));
         } else {
-          setError("로그인 중 오류가 발생했습니다");
+          setError(t("login.errorGeneric"));
         }
       } else {
-        setError("로그인 중 오류가 발생했습니다");
+        setError(t("login.errorGeneric"));
       }
     } finally {
       setSubmitting(false);
@@ -57,28 +59,28 @@ export default function Login() {
         background: "#f0f2f5",
       }}
     >
-      <Card title="K8s Alert Manager" style={{ width: 360 }}>
+      <Card title={t("app.title")} style={{ width: 360 }}>
         <Form<LoginFormValues> layout="vertical" onFinish={handleFinish} disabled={submitting}>
           {error && (
             <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />
           )}
           <Form.Item
             name="username"
-            label="아이디"
-            rules={[{ required: true, message: "아이디를 입력하세요" }]}
+            label={t("login.usernameLabel")}
+            rules={[{ required: true, message: t("login.usernameRequired") }]}
           >
             <Input autoFocus autoComplete="username" />
           </Form.Item>
           <Form.Item
             name="password"
-            label="비밀번호"
-            rules={[{ required: true, message: "비밀번호를 입력하세요" }]}
+            label={t("login.passwordLabel")}
+            rules={[{ required: true, message: t("login.passwordRequired") }]}
           >
             <Input.Password autoComplete="current-password" />
           </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit" block loading={submitting}>
-              로그인
+              {t("login.submit")}
             </Button>
           </Form.Item>
         </Form>
