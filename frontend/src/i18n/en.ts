@@ -631,4 +631,48 @@ export const en: Record<keyof typeof ko, string> = {
   "audit.detailPopoverTitle": "Detail",
   "audit.actionTypePlaceholder": "Action type",
   "audit.empty": "No audit logs",
+
+  // -- admin --
+  "admin.accessDenied": "You don't have access (403)",
+  "admin.teamsTab": "Teams",
+  "admin.usersTab": "Users",
+  "admin.clustersTab": "Clusters",
+  "admin.teamCreateError": "Failed to create team",
+  "admin.teamUpdateError": "Failed to update team",
+  "admin.deleteTeamConfirm": "Delete this team?",
+  "admin.createTeamButton": "Create team",
+  "admin.editTeamTitle": "Edit team",
+  "admin.slugHelp": "Lowercase letters, numbers, and hyphens only (e.g. platform-team)",
+  "admin.userUpdateError": "Failed to update user",
+  "admin.emailColumn": "Email",
+  "admin.adminColumn": "Admin",
+  "admin.retentionAlertEvents": "Resolved alert retention (days)",
+  "admin.retentionTestAlerts": "Test alert retention (days)",
+  "admin.retentionNotificationOutbox": "Notification history retention (days)",
+  "admin.retentionAuditLog": "Audit log retention (days)",
+  "admin.retentionScheduledActions": "Scheduled action history retention (days)",
+  "admin.retentionAlertEventsHelp":
+    "Applies only to resolved alerts; firing alerts are never deleted (based on last_received_at).",
+  "admin.retentionTestAlertsHelp":
+    "Test alerts (is_test) are deleted after this period regardless of firing/resolved state.",
+  "admin.retentionNotificationOutboxHelp":
+    "Applies only to delivered or given-up (dead) notification history.",
+  "admin.retentionScheduledActionsHelp":
+    "Applies only to done or cancelled escalation/re-notify schedules.",
+  "admin.summaryAlertEvents": "Alert events",
+  "admin.summaryNotificationOutbox": "Notification history",
+  "admin.summaryScheduledActions": "Scheduled actions",
+  "admin.summaryAuditLogs": "Audit logs",
+  "admin.minIntegerRequired": "Enter an integer of 1 or more",
+  "admin.settingsSaveSuccess": "Settings saved",
+  "admin.settingsSaveError": "Failed to save settings",
+  "admin.purgeSuccess": "Cleanup completed",
+  "admin.purgeError": "Failed to run cleanup",
+  "admin.retentionPolicyTitle": "Data retention policy",
+  "admin.runCleanupTitle": "Run cleanup now",
+  "admin.cleanupDescription":
+    "Immediately deletes data older than the retention periods above. This normally runs automatically once a day.",
+  "admin.runCleanupConfirm": "Run data cleanup now?",
+  "admin.lastRunResultTitle": "Last run result",
+  "admin.deletedCount": "{count} deleted",
 };

@@ -634,4 +634,48 @@ export const ko = {
   "audit.detailPopoverTitle": "상세 정보",
   "audit.actionTypePlaceholder": "작업 종류",
   "audit.empty": "감사 로그가 없습니다",
+
+  // -- admin --
+  "admin.accessDenied": "접근 권한이 없습니다 (403)",
+  "admin.teamsTab": "팀",
+  "admin.usersTab": "사용자",
+  "admin.clustersTab": "클러스터",
+  "admin.teamCreateError": "팀 생성에 실패했습니다",
+  "admin.teamUpdateError": "팀 수정에 실패했습니다",
+  "admin.deleteTeamConfirm": "이 팀을 삭제하시겠습니까?",
+  "admin.createTeamButton": "팀 생성",
+  "admin.editTeamTitle": "팀 수정",
+  "admin.slugHelp": "소문자, 숫자, 하이픈만 사용 (예: platform-team)",
+  "admin.userUpdateError": "사용자 수정에 실패했습니다",
+  "admin.emailColumn": "이메일",
+  "admin.adminColumn": "관리자",
+  "admin.retentionAlertEvents": "해소된 알럿 보관 기간 (일)",
+  "admin.retentionTestAlerts": "테스트 알럿 보관 기간 (일)",
+  "admin.retentionNotificationOutbox": "발송 이력 보관 기간 (일)",
+  "admin.retentionAuditLog": "감사 로그 보관 기간 (일)",
+  "admin.retentionScheduledActions": "예약 작업 이력 보관 기간 (일)",
+  "admin.retentionAlertEventsHelp":
+    "resolved 상태 알럿만 대상이며 firing 상태는 삭제되지 않습니다 (last_received_at 기준).",
+  "admin.retentionTestAlertsHelp":
+    "테스트 알럿(is_test)은 firing/resolved 상태와 무관하게 이 기간이 지나면 삭제됩니다.",
+  "admin.retentionNotificationOutboxHelp":
+    "발송 완료(delivered) 또는 포기(dead) 상태인 발송 이력만 대상입니다.",
+  "admin.retentionScheduledActionsHelp":
+    "완료(done) 또는 취소(cancelled)된 에스컬레이션/재알림 예약만 대상입니다.",
+  "admin.summaryAlertEvents": "알럿 이벤트",
+  "admin.summaryNotificationOutbox": "발송 이력",
+  "admin.summaryScheduledActions": "예약 작업",
+  "admin.summaryAuditLogs": "감사 로그",
+  "admin.minIntegerRequired": "1 이상의 정수를 입력하세요",
+  "admin.settingsSaveSuccess": "설정이 저장되었습니다",
+  "admin.settingsSaveError": "설정 저장에 실패했습니다",
+  "admin.purgeSuccess": "정리가 완료되었습니다",
+  "admin.purgeError": "정리 실행에 실패했습니다",
+  "admin.retentionPolicyTitle": "데이터 보관 정책 (Retention)",
+  "admin.runCleanupTitle": "지금 정리 실행",
+  "admin.cleanupDescription":
+    "위 보관 기간을 기준으로 즉시 오래된 데이터를 삭제합니다. 평소에는 매일 자동으로 실행됩니다.",
+  "admin.runCleanupConfirm": "지금 데이터 정리를 실행하시겠습니까?",
+  "admin.lastRunResultTitle": "마지막 실행 결과",
+  "admin.deletedCount": "{count}건 삭제",
 } as const;
