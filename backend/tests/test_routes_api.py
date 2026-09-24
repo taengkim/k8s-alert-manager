@@ -40,13 +40,16 @@ async def _add_membership(team_id: int, user_id: int, role: str) -> None:
         await session.commit()
 
 
-async def _create_channel(team_id: int, name: str = "email-1") -> int:
+async def _create_channel(
+    team_id: int, name: str = "email-1", *, allow_cross_team_escalation: bool = False
+) -> int:
     async with db_module.async_session_factory() as session:
         channel = Channel(
             team_id=team_id,
             name=name,
             type="email",
             config_encrypted=encrypt_str('{"recipients": ["ops@example.org"]}'),
+            allow_cross_team_escalation=allow_cross_team_escalation,
         )
         session.add(channel)
         await session.commit()
@@ -445,3 +448,143 @@ async def test_preview_includes_stored_status_but_evaluates_as_firing(client: As
     [row] = [r for r in resp.json() if r["event_id"] == resolved_event]
     assert row["status"] == "resolved"
     assert row["verdict"] == "matched"
+
+
+# -- Phase 15: escalation / renotify ------------------------------------
+
+
+async def test_escalation_enabled_requires_after_minutes(client: AsyncClient) -> None:
+    team_id = await _create_team("t-esc-nomin")
+    channel_id = await _create_channel(team_id)
+    esc_channel_id = await _create_channel(team_id, "esc")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(
+            channel_ids=[channel_id],
+            escalation_enabled=True,
+            escalation_channel_ids=[esc_channel_id],
+        ),
+    )
+    assert resp.status_code == 422
+
+
+async def test_escalation_enabled_requires_at_least_one_channel(client: AsyncClient) -> None:
+    team_id = await _create_team("t-esc-nochan")
+    channel_id = await _create_channel(team_id)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(
+            channel_ids=[channel_id], escalation_enabled=True, escalation_after_minutes=5
+        ),
+    )
+    assert resp.status_code == 422
+
+
+async def test_escalation_and_renotify_round_trip(client: AsyncClient) -> None:
+    team_id = await _create_team("t-esc-ok")
+    channel_id = await _create_channel(team_id)
+    esc_channel_id = await _create_channel(team_id, "esc")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(
+            channel_ids=[channel_id],
+            escalation_enabled=True,
+            escalation_after_minutes=15,
+            escalation_channel_ids=[esc_channel_id],
+            renotify_interval_minutes=30,
+        ),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["escalation_enabled"] is True
+    assert body["escalation_after_minutes"] == 15
+    assert body["escalation_channel_ids"] == [esc_channel_id]
+    assert body["renotify_interval_minutes"] == 30
+
+    get_resp = await client.get(f"/api/v1/routes/{body['id']}")
+    assert get_resp.json()["escalation_channel_ids"] == [esc_channel_id]
+
+
+async def test_escalation_channel_from_other_team_without_opt_in_is_422(
+    client: AsyncClient,
+) -> None:
+    team_a = await _create_team("t-esc-a")
+    team_b = await _create_team("t-esc-b")
+    channel_id = await _create_channel(team_a)
+    other_team_channel = await _create_channel(team_b, allow_cross_team_escalation=False)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_a}/routes",
+        json=_notify_body(
+            channel_ids=[channel_id],
+            escalation_enabled=True,
+            escalation_after_minutes=5,
+            escalation_channel_ids=[other_team_channel],
+        ),
+    )
+    assert resp.status_code == 422
+
+
+async def test_escalation_channel_from_other_team_with_opt_in_succeeds(
+    client: AsyncClient,
+) -> None:
+    team_a = await _create_team("t-esc-c")
+    team_b = await _create_team("t-esc-d")
+    channel_id = await _create_channel(team_a)
+    other_team_channel = await _create_channel(team_b, allow_cross_team_escalation=True)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_a}/routes",
+        json=_notify_body(
+            channel_ids=[channel_id],
+            escalation_enabled=True,
+            escalation_after_minutes=5,
+            escalation_channel_ids=[other_team_channel],
+        ),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["escalation_channel_ids"] == [other_team_channel]
+
+
+async def test_suppress_rule_with_escalation_is_422(client: AsyncClient) -> None:
+    team_id = await _create_team("t-esc-suppress")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(
+            action="suppress", channel_ids=[], escalation_enabled=True, escalation_after_minutes=5
+        ),
+    )
+    assert resp.status_code == 422
+
+
+async def test_suppress_rule_with_renotify_is_422(client: AsyncClient) -> None:
+    team_id = await _create_team("t-renotify-suppress")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(action="suppress", channel_ids=[], renotify_interval_minutes=10),
+    )
+    assert resp.status_code == 422
+
+
+async def test_renotify_interval_must_be_positive(client: AsyncClient) -> None:
+    team_id = await _create_team("t-renotify-badval")
+    channel_id = await _create_channel(team_id)
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(channel_ids=[channel_id], renotify_interval_minutes=0),
+    )
+    assert resp.status_code == 422

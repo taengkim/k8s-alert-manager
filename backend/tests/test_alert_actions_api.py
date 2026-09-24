@@ -4,7 +4,7 @@ live-alerts ack-status batch endpoint (app/api/alerts.py additions).
 Test-alert firing/resolve-test live in tests/test_test_alert_api.py.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
@@ -13,6 +13,7 @@ import app.db as db_module
 from app.models.alert import AlertEvent
 from app.models.audit import AuditLog
 from app.models.cluster import Cluster
+from app.models.scheduled import ScheduledAction
 from app.models.share import AlertShare
 from app.models.team import Team, TeamMembership
 from tests.conftest import login_as
@@ -150,6 +151,51 @@ async def test_ack_sets_fields_and_is_idempotent(app, client: AsyncClient) -> No
             await session.execute(select(AuditLog).where(AuditLog.action == "alert.ack"))
         ).scalars().all()
         assert len(audit_rows) == 1  # no second audit row for the no-op idempotent call
+
+
+async def test_ack_cancels_pending_scheduled_actions(client: AsyncClient) -> None:
+    """Phase 15: ack has nothing left to escalate/renotify about -- every
+    'pending' ScheduledAction for the event is cancelled, not just left to
+    be caught by dispatch()'s own acknowledged_at re-check later.
+    """
+    cluster_id = await _default_cluster_id()
+    team_id = await _create_team("platform")
+    event_id = await _create_event(cluster_id=cluster_id, fingerprint="f1", team_id=team_id)
+
+    async with db_module.async_session_factory() as session:
+        session.add(
+            ScheduledAction(
+                kind="escalation",
+                alert_event_id=event_id,
+                due_at=datetime.now(UTC) + timedelta(minutes=5),
+                status="pending",
+            )
+        )
+        session.add(
+            ScheduledAction(
+                kind="renotify",
+                alert_event_id=event_id,
+                due_at=datetime.now(UTC) + timedelta(minutes=15),
+                status="pending",
+            )
+        )
+        await session.commit()
+
+    await login_as(client, username="alice")
+    await _add_membership(team_id, await _user_id(client))
+
+    response = await client.post(f"/api/v1/alerts/history/{event_id}/ack")
+    assert response.status_code == 200
+
+    async with db_module.async_session_factory() as session:
+        rows = (
+            await session.execute(
+                select(ScheduledAction).where(ScheduledAction.alert_event_id == event_id)
+            )
+        ).scalars().all()
+        assert len(rows) == 2
+        assert all(r.status == "cancelled" for r in rows)
+        assert all(r.processed_at is not None for r in rows)
 
 
 async def test_unack_clears_fields(client: AsyncClient) -> None:

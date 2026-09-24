@@ -39,6 +39,9 @@ export interface Channel {
   /** This channel's own default message template (Phase 13) -- null means
    * "use the channel type's default_templates, or the app default". */
   template_id: number | null;
+  /** Phase 15: lets another team's routing rule pick this channel as an
+   * escalation target (see listEscalationTargets). */
+  allow_cross_team_escalation: boolean;
 }
 
 export interface ChannelCreateInput {
@@ -46,6 +49,7 @@ export interface ChannelCreateInput {
   type: string;
   config: Record<string, unknown>;
   template_id?: number | null;
+  allow_cross_team_escalation?: boolean;
 }
 
 export interface ChannelUpdateInput {
@@ -55,6 +59,16 @@ export interface ChannelUpdateInput {
   /** Included in the request only when actually changed -- see
    * Channels.tsx's update mutation. `null` explicitly clears it. */
   template_id?: number | null;
+  allow_cross_team_escalation?: boolean;
+}
+
+/** One selectable escalation target (Phase 15): a team's own channels plus
+ * any other team's channel with allow_cross_team_escalation=true. Powers
+ * RouteEditor's escalation channel Select. */
+export interface EscalationTarget {
+  id: number;
+  name: string;
+  team_slug: string;
 }
 
 export function listChannelTypes(): Promise<ChannelType[]> {
@@ -79,4 +93,8 @@ export function deleteChannel(channelId: number): Promise<void> {
 
 export function testChannel(channelId: number): Promise<{ status: string }> {
   return apiFetch<{ status: string }>(`/channels/${channelId}/test`, { method: "POST" });
+}
+
+export function listEscalationTargets(teamId: number): Promise<EscalationTarget[]> {
+  return apiFetch<EscalationTarget[]>(`/channels/escalation-targets?team_id=${teamId}`);
 }

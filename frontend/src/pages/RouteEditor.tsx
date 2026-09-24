@@ -8,6 +8,7 @@ import {
   Checkbox,
   Form,
   Input,
+  InputNumber,
   Segmented,
   Select,
   Space,
@@ -20,7 +21,7 @@ import { useTeam } from "../auth/TeamContext";
 import { useDefaultCluster } from "../api/useDefaultCluster";
 import { ApiError } from "../api/client";
 import { listClusters } from "../api/admin";
-import { listChannels } from "../api/channels";
+import { listChannels, listEscalationTargets } from "../api/channels";
 import {
   createRoute,
   getRoute,
@@ -111,6 +112,10 @@ interface FormValues {
   matchers: MatcherFormValue[];
   template_id?: number;
   include_shared: boolean;
+  escalation_enabled: boolean;
+  escalation_after_minutes?: number;
+  escalation_channel_ids: number[];
+  renotify_interval_minutes?: number;
 }
 
 function toBody(values: FormValues): RouteWriteInput {
@@ -128,6 +133,17 @@ function toBody(values: FormValues): RouteWriteInput {
     channel_ids: values.action === "suppress" ? [] : (values.channel_ids ?? []),
     template_id: values.action === "suppress" ? undefined : values.template_id,
     include_shared: values.include_shared ?? false,
+    escalation_enabled: values.action === "notify" ? (values.escalation_enabled ?? false) : false,
+    escalation_after_minutes:
+      values.action === "notify" && values.escalation_enabled
+        ? values.escalation_after_minutes
+        : undefined,
+    escalation_channel_ids:
+      values.action === "notify" && values.escalation_enabled
+        ? (values.escalation_channel_ids ?? [])
+        : [],
+    renotify_interval_minutes:
+      values.action === "notify" ? values.renotify_interval_minutes : undefined,
     matchers: (values.matchers ?? []).map((m) => ({
       kind: m.kind,
       target: m.target,
@@ -154,6 +170,7 @@ export default function RouteEditor() {
   const teamId = currentTeam?.id;
   const clusterId = cluster?.id;
   const action = Form.useWatch("action", form) ?? "notify";
+  const escalationEnabled = Form.useWatch("escalation_enabled", form) ?? false;
 
   const routeQuery = useQuery({
     queryKey: ["route", id],
@@ -165,6 +182,11 @@ export default function RouteEditor() {
   const channelsQuery = useQuery({
     queryKey: ["channels", teamId],
     queryFn: () => listChannels(teamId!),
+    enabled: !!teamId,
+  });
+  const escalationTargetsQuery = useQuery({
+    queryKey: ["escalation-targets", teamId],
+    queryFn: () => listEscalationTargets(teamId!),
     enabled: !!teamId,
   });
   const namespacesQuery = useQuery({
@@ -197,6 +219,10 @@ export default function RouteEditor() {
       channel_ids: r.channel_ids,
       template_id: r.template_id ?? undefined,
       include_shared: r.include_shared,
+      escalation_enabled: r.escalation_enabled,
+      escalation_after_minutes: r.escalation_after_minutes ?? undefined,
+      escalation_channel_ids: r.escalation_channel_ids,
+      renotify_interval_minutes: r.renotify_interval_minutes ?? undefined,
       matchers: r.matchers.map((m) => ({
         kind: m.kind,
         target: m.target,
@@ -269,6 +295,10 @@ export default function RouteEditor() {
     value: c.id,
     label: c.enabled ? c.name : `${c.name} (비활성)`,
   }));
+  const escalationChannelOptions = (escalationTargetsQuery.data ?? []).map((c) => ({
+    value: c.id,
+    label: c.team_slug === currentTeam.slug ? c.name : `${c.name} (${c.team_slug})`,
+  }));
   const clusterOptions = (clustersQuery.data ?? []).map((c) => ({
     value: c.id,
     label: c.display_name,
@@ -334,6 +364,8 @@ export default function RouteEditor() {
           channel_ids: [],
           matchers: [],
           include_shared: false,
+          escalation_enabled: false,
+          escalation_channel_ids: [],
         }}
         onFinish={handleFinish}
       >
@@ -432,6 +464,48 @@ export default function RouteEditor() {
                 <Checkbox>resolved 시 알림</Checkbox>
               </Form.Item>
             </Space>
+
+            <Form.Item
+              name="renotify_interval_minutes"
+              label="미해결 재알림 간격 (분)"
+              help="설정하면 이 알럿이 firing 상태로 미확인(unack)인 동안 지정한 간격마다 같은 채널로 반복 알림을 보냅니다. 비워두면 재알림하지 않습니다."
+            >
+              <InputNumber min={1} style={{ width: 200 }} placeholder="예: 15" />
+            </Form.Item>
+
+            <Title level={5}>에스컬레이션</Title>
+            <Form.Item
+              name="escalation_enabled"
+              label="에스컬레이션 사용"
+              valuePropName="checked"
+              help="firing 상태로 지정한 시간이 지나도 확인(ack)되지 않으면 에스컬레이션 채널로 추가 알림을 보냅니다."
+            >
+              <Switch />
+            </Form.Item>
+            {escalationEnabled && (
+              <>
+                <Form.Item
+                  name="escalation_after_minutes"
+                  label="에스컬레이션 대기 시간 (분)"
+                  rules={[{ required: true, message: "에스컬레이션 대기 시간을 입력하세요" }]}
+                >
+                  <InputNumber min={1} style={{ width: 200 }} placeholder="예: 10" />
+                </Form.Item>
+                <Form.Item
+                  name="escalation_channel_ids"
+                  label="에스컬레이션 채널"
+                  help="같은 팀의 채널 또는 '타팀 에스컬레이션 허용'이 켜진 다른 팀의 채널을 선택할 수 있습니다."
+                  rules={[{ required: true, message: "에스컬레이션 채널을 하나 이상 선택하세요" }]}
+                >
+                  <Select
+                    mode="multiple"
+                    loading={escalationTargetsQuery.isLoading}
+                    options={escalationChannelOptions}
+                    placeholder="에스컬레이션 채널 선택"
+                  />
+                </Form.Item>
+              </>
+            )}
           </>
         )}
 

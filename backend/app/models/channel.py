@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -51,6 +51,12 @@ class Channel(Base):
     template_id: Mapped[int | None] = mapped_column(
         ForeignKey("message_templates.id", ondelete="SET NULL"), nullable=True
     )
+    # Phase 15: lets ANOTHER team's routing rule pick this channel as one of
+    # its escalation_channels (see app/api/channels.py's
+    # GET /channels/escalation-targets and app/api/routes.py's escalation
+    # channel validation). False means this channel is only selectable by
+    # its own team's rules -- same as before this column existed.
+    allow_cross_team_escalation: Mapped[bool] = mapped_column(Boolean, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ON DELETE SET NULL: deleting the creating user must not delete (or
     # block deleting) the channel itself -- it just loses its "created by"

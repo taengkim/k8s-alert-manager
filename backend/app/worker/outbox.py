@@ -26,6 +26,12 @@ from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
 from app.security import decrypt_str
 from app.services.templating import APP_DEFAULT_TEMPLATES, render, resolve_template
+from app.worker.scheduler import (
+    maybe_run_retention_sweep,
+    recover_stale_claims,
+    run_scheduler_tick,
+    schedule_renotify,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +238,16 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
         # template is broken instead of silently getting the wrong message
         # forever.
         row.last_error = f"template render failed: {outcome.error}; fallback used"[:500]
+
+    # Phase 15: a successful 'firing' delivery through a rule with
+    # renotify_interval_minutes set starts (or keeps alive) the unresolved
+    # re-notification loop -- see app/worker/scheduler.py's schedule_renotify
+    # and _dispatch_renotify. 'resolved' deliveries never schedule one
+    # (there's nothing left to renotify about), and neither does a rule
+    # with no renotify interval configured.
+    if row.trigger == "firing" and rule is not None and rule.renotify_interval_minutes:
+        await schedule_renotify(session, row.alert_event_id, rule)
+
     await session.commit()
 
 
@@ -308,14 +324,29 @@ async def run_loop(
     poll_interval: float = 3.0,
     lease_recovery_interval: float = 60.0,
     lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT,
+    scheduler_interval: float = 30.0,
 ) -> None:
     """Poll for due outbox rows until `stop_event` is set.
 
-    Robust by design: any exception during a tick (claim, deliver, or lease
-    recovery) is logged and swallowed so one bad iteration never kills the
-    loop -- the next poll just tries again.
+    Phase 15: also ticks `app.worker.scheduler` on its own, coarser
+    `scheduler_interval` (default 30s -- escalation/renotify timers don't
+    need 3s-poll-loop precision) from inside this same loop/task, rather
+    than running a second independent loop -- the simpler of the two
+    options this phase's brief considered, since a second loop would need
+    its own task, its own stop_event handling, and its own lifespan wiring
+    for no real benefit here. The daily retention purge sweep
+    (`maybe_run_retention_sweep`) piggybacks on that same 30s tick too --
+    it no-ops immediately unless 24h have actually passed (gated by the
+    'retention.last_purge_at' AppSetting), so checking every 30s costs one
+    cheap indexed read, not a purge attempt every 30s.
+
+    Robust by design: any exception during a tick (claim, deliver, lease
+    recovery, scheduler dispatch, or retention) is logged and swallowed so
+    one bad iteration never kills the loop -- the next poll just tries
+    again.
     """
     last_lease_recovery = time.monotonic() - lease_recovery_interval  # run once immediately
+    last_scheduler_tick = time.monotonic() - scheduler_interval  # run once immediately
     while not stop_event.is_set():
         try:
             if time.monotonic() - last_lease_recovery >= lease_recovery_interval:
@@ -326,6 +357,15 @@ async def run_loop(
                 last_lease_recovery = time.monotonic()
 
             await run_tick(session_factory, registry, worker_id)
+
+            if time.monotonic() - last_scheduler_tick >= scheduler_interval:
+                async with session_factory() as session:
+                    recovered = await recover_stale_claims(session)
+                    if recovered:
+                        logger.warning("scheduler worker: recovered %d stale claim(s)", recovered)
+                await run_scheduler_tick(session_factory, worker_id)
+                await maybe_run_retention_sweep(session_factory)
+                last_scheduler_tick = time.monotonic()
         except Exception:
             logger.exception("outbox worker: tick failed -- continuing")
 

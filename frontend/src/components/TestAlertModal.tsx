@@ -32,6 +32,17 @@ const VERDICT_COLOR: Record<RouteVerdict, string> = {
   excluded: "red",
 };
 
+/** Phase 15: renotify carries a per-cycle scheduled_action id
+ * (`renotify:{id}`), so this maps by prefix rather than exact match --
+ * same convention as AlertHistory.tsx's TRIGGER_LABEL. */
+function TRIGGER_LABEL(trigger: string): string {
+  if (trigger === "firing") return "발생";
+  if (trigger === "resolved") return "해소";
+  if (trigger === "escalation") return "에스컬레이션";
+  if (trigger.startsWith("renotify")) return "재알림";
+  return trigger;
+}
+
 const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
   pending: "대기",
   in_progress: "발송 중",
@@ -310,7 +321,12 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
             locale={{ emptyText: "발송 대상 채널이 없습니다" }}
             columns={[
               { title: "채널", dataIndex: "channel_name", key: "channel_name" },
-              { title: "트리거", dataIndex: "trigger", key: "trigger" },
+              {
+                title: "트리거",
+                dataIndex: "trigger",
+                key: "trigger",
+                render: (value: string) => TRIGGER_LABEL(value),
+              },
               {
                 title: "상태",
                 dataIndex: "status",

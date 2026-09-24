@@ -38,6 +38,23 @@ routing_rule_channels = Table(
     Column("channel_id", ForeignKey("channels.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# Many-to-many: which channels an escalation dispatch (Phase 15) notifies
+# through, separate from routing_rule_channels -- a rule's normal channels
+# and its escalation channels are independent selections (escalation
+# commonly fans out to a *different*, more urgent set, e.g. an on-call
+# pager channel that isn't in the rule's everyday channel list). CASCADE
+# both ways, same reasoning as routing_rule_channels.
+routing_rule_escalation_channels = Table(
+    "routing_rule_escalation_channels",
+    Base.metadata,
+    Column(
+        "routing_rule_id",
+        ForeignKey("routing_rules.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("channel_id", ForeignKey("channels.id", ondelete="CASCADE"), primary_key=True),
+)
+
 
 class RoutingRule(Base):
     __tablename__ = "routing_rules"
@@ -54,6 +71,18 @@ class RoutingRule(Base):
     # Phase 14 (cross-team shared-alert visibility): column reserved now,
     # gated off -- evaluate() never lets this be anything but a no-op.
     include_shared: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Phase 15: when true and escalation_after_minutes is set, an event this
+    # (notify-action) rule matches gets a `ScheduledAction(kind='escalation')`
+    # timer -- see app.services.routing.route_event and
+    # app/worker/scheduler.py. No effect on a 'suppress' rule.
+    escalation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    escalation_after_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Phase 15: when set, a successful 'firing' delivery through this rule
+    # schedules a `ScheduledAction(kind='renotify')` timer that re-delivers
+    # to this rule's own channels (not escalation_channels) if the event is
+    # still firing and unacknowledged when it comes due -- see
+    # app/worker/outbox.py's deliver() and app/worker/scheduler.py.
+    renotify_interval_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # None/[] mean "no filter" at this field -- see evaluate()'s docstring.
     severities: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     namespaces_include: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -88,6 +117,9 @@ class RoutingRule(Base):
     )
     channels: Mapped[list["Channel"]] = relationship(  # noqa: F821
         "Channel", secondary=routing_rule_channels
+    )
+    escalation_channels: Mapped[list["Channel"]] = relationship(  # noqa: F821
+        "Channel", secondary=routing_rule_escalation_channels
     )
 
 

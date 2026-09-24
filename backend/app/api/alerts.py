@@ -38,6 +38,7 @@ from app.services.ingest import (
     ingest_webhook,
 )
 from app.services.routing import evaluate, route_event
+from app.services.scheduled_actions import cancel_pending
 from app.services.sharing import (
     CompiledShareScope,
     MatchableAlert,
@@ -876,6 +877,13 @@ async def ack_alert(
     if event.acknowledged_at is None:
         event.acknowledged_at = datetime.now(UTC)
         event.acknowledged_by = user.id
+        # Phase 15: an acknowledged alert has nothing left to escalate about
+        # (dispatch would cancel it anyway once it re-checks acknowledged_at,
+        # but cancelling eagerly here means the admin/team UI reflects it
+        # immediately instead of waiting for the escalation's due_at). Not
+        # restored on unack (see unack_alert below) -- documented as a
+        # deliberate simplification in this phase's brief.
+        await cancel_pending(session, event.id)
         await audit.log(
             session,
             user_id=user.id,

@@ -55,6 +55,7 @@ interface ChannelFormValues {
   type: string;
   config: Record<string, unknown>;
   template_id?: number;
+  allow_cross_team_escalation: boolean;
 }
 
 interface ChannelsTableProps {
@@ -102,6 +103,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         type: values.type,
         config: values.config ?? {},
         template_id: values.template_id ?? null,
+        allow_cross_team_escalation: values.allow_cross_team_escalation ?? false,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
@@ -118,6 +120,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         name: values.name,
         config: values.config ?? {},
         template_id: values.template_id ?? null,
+        allow_cross_team_escalation: values.allow_cross_team_escalation ?? false,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["channels", teamId] });
@@ -269,8 +272,9 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
                   type: editing.type,
                   config: editing.config,
                   template_id: editing.template_id ?? undefined,
+                  allow_cross_team_escalation: editing.allow_cross_team_escalation,
                 }
-              : undefined
+              : { allow_cross_team_escalation: false }
           }
           onFinish={(values) =>
             editing ? updateMutation.mutate(values) : createMutation.mutate(values)
@@ -314,6 +318,14 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
             />
           </Form.Item>
           <TemplatePreviewPopover template={selectedTemplate} />
+          <Form.Item
+            name="allow_cross_team_escalation"
+            label="타팀 에스컬레이션 허용"
+            valuePropName="checked"
+            help="켜면 다른 팀의 라우팅 규칙이 이 채널을 에스컬레이션 대상으로 선택할 수 있습니다."
+          >
+            <Switch />
+          </Form.Item>
         </Form>
       </Modal>
     </div>

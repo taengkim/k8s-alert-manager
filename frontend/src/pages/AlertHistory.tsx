@@ -95,6 +95,19 @@ const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
   dead: "포기됨",
 };
 
+/** Phase 15: escalation/renotify trigger values aren't plain enum members
+ * -- renotify carries a per-cycle scheduled_action id
+ * (`renotify:{id}`) so each cycle's outbox row stays distinct (see
+ * app/worker/scheduler.py's _dispatch_renotify) -- so this maps by prefix
+ * rather than exact match. */
+function TRIGGER_LABEL(trigger: string): string {
+  if (trigger === "firing") return "발생";
+  if (trigger === "resolved") return "해소";
+  if (trigger === "escalation") return "에스컬레이션";
+  if (trigger.startsWith("renotify")) return "재알림";
+  return trigger;
+}
+
 export default function AlertHistory() {
   const { message } = App.useApp();
   const { user } = useAuth();
@@ -668,7 +681,12 @@ export default function AlertHistory() {
               locale={{ emptyText: <Empty description="발송된 알림이 없습니다" /> }}
               columns={[
                 { title: "채널", dataIndex: "channel_name", key: "channel_name" },
-                { title: "트리거", dataIndex: "trigger", key: "trigger" },
+                {
+                  title: "트리거",
+                  dataIndex: "trigger",
+                  key: "trigger",
+                  render: (value: string) => TRIGGER_LABEL(value),
+                },
                 {
                   title: "상태",
                   dataIndex: "status",

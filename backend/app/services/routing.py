@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,10 +31,12 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingMatcher, RoutingRule
+from app.models.scheduled import ScheduledAction
 from app.models.share import AlertShare
 from app.models.team import Team
 from app.services.grafana import resolve_grafana_url
 from app.services.rules import RUNBOOK_ANNOTATION
+from app.services.scheduled_actions import cancel_pending
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +471,55 @@ async def _stage_outbox(
     return created
 
 
+async def _schedule_escalations(
+    session: AsyncSession, event: AlertEvent, notify_rules: Sequence[RoutingRule], trigger: str
+) -> None:
+    """Stage a `ScheduledAction(kind='escalation')` for each of `notify_rules`
+    that both matched `event` and has escalation enabled (Phase 15) --
+    dispatched later by `app/worker/scheduler.py`, which cancels it if the
+    event is acknowledged (or resolved) before `due_at`.
+
+    Scoped to the OWNING team's own notify rules only: this is called from
+    `route_event`'s own routing pass, never from `_route_shared_view`'s
+    target-team fan-out -- a share's target team escalating on behalf of
+    another team's alert is out of this phase's scope.
+
+    Gated on `trigger == "firing"`: escalation means "still unresolved after
+    N minutes", which is meaningless for a resolved transition even if a
+    rule with `notify_on_resolved` happens to also have escalation
+    configured. At most one row per (event, rule) at a time -- a rule that
+    already has a 'pending' escalation `ScheduledAction` for this event is
+    skipped, so a repeated webhook delivery re-evaluating the same firing
+    transition doesn't stack up duplicate timers.
+    """
+    if trigger != "firing":
+        return
+    for rule in notify_rules:
+        if not rule.escalation_enabled or not rule.escalation_after_minutes:
+            continue
+        if not evaluate(event, rule, rule.matchers, trigger=trigger).matched:
+            continue
+        existing = await session.execute(
+            select(ScheduledAction.id).where(
+                ScheduledAction.alert_event_id == event.id,
+                ScheduledAction.routing_rule_id == rule.id,
+                ScheduledAction.kind == "escalation",
+                ScheduledAction.status == "pending",
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            continue
+        session.add(
+            ScheduledAction(
+                kind="escalation",
+                alert_event_id=event.id,
+                routing_rule_id=rule.id,
+                due_at=datetime.now(UTC) + timedelta(minutes=rule.escalation_after_minutes),
+                status="pending",
+            )
+        )
+
+
 async def _route_shared_view(
     session: AsyncSession,
     event: AlertEvent,
@@ -518,6 +570,16 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     the caller's transaction covers this along with the event mutation that
     triggered it.
     """
+    if trigger == "resolved":
+        # Phase 15: there's nothing left to escalate or renotify about once
+        # an event resolves -- cancel any 'pending' ScheduledAction for it,
+        # regardless of whether this team has any escalation/renotify rules
+        # configured at all. Covers both a real Alertmanager resolved
+        # webhook (via app.services.ingest.on_event_transition) and
+        # POST .../resolve-test (which calls route_event directly) --
+        # route_event is the one place both paths already go through.
+        await cancel_pending(session, event.id)
+
     if event.team_id is None:
         # No admin catch-all in this phase (post-MVP, see brief) -- an
         # event with no `kam_team` match just isn't routed (and can't be
@@ -542,6 +604,8 @@ async def route_event(session: AsyncSession, event: AlertEvent, trigger: str) ->
     matched_channels = (
         {} if suppressing_rule is not None else _matched_notify_channels(event, notify_rules, trigger)
     )
+    if suppressing_rule is None:
+        await _schedule_escalations(session, event, notify_rules, trigger)
 
     # Deferred, local import: app.services.sharing imports matcher
     # primitives from this module at import time, so importing it back at

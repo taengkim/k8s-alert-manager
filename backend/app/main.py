@@ -8,6 +8,7 @@ import httpx
 from fastapi import FastAPI
 
 import app.db as db_module
+from app.api.admin_settings import router as admin_settings_router
 from app.api.alerts import comments_router as alerts_comments_router
 from app.api.alerts import router as alerts_router
 from app.api.alerts import team_router as alerts_team_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(teams_router)
     app.include_router(users_router)
+    app.include_router(admin_settings_router)
     app.include_router(clusters_router)
     app.include_router(namespaces_router)
     app.include_router(alerts_router)
