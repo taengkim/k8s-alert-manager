@@ -40,20 +40,10 @@ import type {
 import { listTemplates } from "../api/templates";
 import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
 import MatcherListEditor from "../components/MatcherListEditor";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const { Text, Title } = Typography;
-
-const ACTION_OPTIONS: { value: RouteAction; label: string }[] = [
-  { value: "notify", label: "알림" },
-  { value: "suppress", label: "차단" },
-];
-
-const SEVERITY_OPTIONS = [
-  { value: "critical", label: "critical" },
-  { value: "warning", label: "warning" },
-  { value: "info", label: "info" },
-  { value: "none", label: "없음" },
-];
 
 // Preview only cares about what feeds evaluate() -- not channel_ids (which
 // preview never uses), so clicking "최근 알럿에 테스트" shouldn't be blocked
@@ -70,14 +60,14 @@ const PREVIEW_VALIDATE_FIELDS = [
   "matchers",
 ];
 
-const VERDICT_LABEL: Record<RouteVerdict, string> = {
-  matched: "일치",
-  cluster_filtered: "클러스터 필터링됨",
-  gated: "비활성화 / 트리거 불일치",
-  severity_filtered: "심각도 필터링됨",
-  namespace_filtered: "네임스페이스 필터링됨",
-  not_included: "포함 조건 불일치",
-  excluded: "제외 조건에 매치",
+const VERDICT_LABEL_KEY: Record<RouteVerdict, TranslationKey> = {
+  matched: "testAlert.verdictMatched",
+  cluster_filtered: "testAlert.verdictClusterFiltered",
+  gated: "testAlert.verdictGated",
+  severity_filtered: "testAlert.verdictSeverityFiltered",
+  namespace_filtered: "testAlert.verdictNamespaceFiltered",
+  not_included: "testAlert.verdictNotIncluded",
+  excluded: "testAlert.verdictExcluded",
 };
 
 const VERDICT_COLOR: Record<RouteVerdict, string> = {
@@ -154,6 +144,17 @@ function toBody(values: FormValues): RouteWriteInput {
 }
 
 export default function RouteEditor() {
+  const { t } = useI18n();
+  const ACTION_OPTIONS: { value: RouteAction; label: string }[] = [
+    { value: "notify", label: t("testAlert.actionNotify") },
+    { value: "suppress", label: t("testAlert.actionSuppress") },
+  ];
+  const SEVERITY_OPTIONS = [
+    { value: "critical", label: "critical" },
+    { value: "warning", label: "warning" },
+    { value: "info", label: "info" },
+    { value: "none", label: t("common.none") },
+  ];
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
   const navigate = useNavigate();
@@ -238,7 +239,7 @@ export default function RouteEditor() {
       return isEdit ? updateRoute(Number(id), body) : createRoute(teamId!, body);
     },
     onSuccess: () => {
-      message.success(isEdit ? "규칙이 수정되었습니다" : "규칙이 생성되었습니다");
+      message.success(isEdit ? t("routeEditor.updateSuccess") : t("routeEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["routes", teamId] });
       navigate("/routes");
     },
@@ -247,8 +248,8 @@ export default function RouteEditor() {
         err instanceof ApiError
           ? err.detail
           : isEdit
-            ? "규칙 수정에 실패했습니다"
-            : "규칙 생성에 실패했습니다",
+            ? t("routeEditor.updateError")
+            : t("routeEditor.createError"),
       );
     },
   });
@@ -270,7 +271,7 @@ export default function RouteEditor() {
       if (err instanceof ApiError) {
         setPreviewError(err.detail);
       } else if (!(err && typeof err === "object" && "errorFields" in err)) {
-        setPreviewError("미리보기에 실패했습니다");
+        setPreviewError(t("preview.loadError"));
       }
     } finally {
       setPreviewLoading(false);
@@ -285,15 +286,15 @@ export default function RouteEditor() {
   if (!currentTeam) {
     return (
       <div>
-        <h2>{isEdit ? "규칙 수정" : "규칙 생성"}</h2>
-        <Alert type="info" showIcon message="소속된 팀이 없습니다" />
+        <h2>{isEdit ? t("routeEditor.editTitle") : t("routes.createButton")}</h2>
+        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
       </div>
     );
   }
 
   const channelOptions = (channelsQuery.data ?? []).map((c) => ({
     value: c.id,
-    label: c.enabled ? c.name : `${c.name} (비활성)`,
+    label: c.enabled ? c.name : `${c.name} (${t("common.inactive")})`,
   }));
   const escalationChannelOptions = (escalationTargetsQuery.data ?? []).map((c) => ({
     value: c.id,
@@ -306,35 +307,37 @@ export default function RouteEditor() {
   const namespaceOptions = (namespacesQuery.data ?? []).map((ns) => ({ value: ns, label: ns }));
 
   const previewColumns = [
-    { title: "알럿명", dataIndex: "alertname", key: "alertname" },
+    { title: t("alerts.alertName"), dataIndex: "alertname", key: "alertname" },
     {
-      title: "심각도",
+      title: t("common.severity"),
       dataIndex: "severity",
       key: "severity",
       render: (v: string | null) => v ?? "-",
     },
     {
-      title: "네임스페이스",
+      title: t("common.namespace"),
       dataIndex: "namespace",
       key: "namespace",
       render: (v: string | null) => v ?? "-",
     },
-    { title: "클러스터", dataIndex: "cluster", key: "cluster" },
+    { title: t("common.cluster"), dataIndex: "cluster", key: "cluster" },
     {
-      title: "현재 상태",
+      title: t("routeEditor.currentStatusColumn"),
       dataIndex: "status",
       key: "status",
       render: (v: string) => (v === "firing" ? "firing" : "resolved"),
     },
     {
-      title: "판정",
+      title: t("routeEditor.verdictColumn"),
       dataIndex: "verdict",
       key: "verdict",
       render: (verdict: RouteVerdict, row: RoutePreviewItem) => (
         <Space size={4}>
-          <Tag color={VERDICT_COLOR[verdict]}>{VERDICT_LABEL[verdict]}</Tag>
+          <Tag color={VERDICT_COLOR[verdict]}>{t(VERDICT_LABEL_KEY[verdict])}</Tag>
           {row.blocking_matcher_position !== null && (
-            <Text type="secondary">(매처 #{row.blocking_matcher_position + 1})</Text>
+            <Text type="secondary">
+              {t("routeEditor.matcherPositionTag", { position: row.blocking_matcher_position + 1 })}
+            </Text>
           )}
         </Space>
       ),
@@ -343,7 +346,11 @@ export default function RouteEditor() {
 
   return (
     <div style={{ maxWidth: 900 }}>
-      <h2>{isEdit ? `규칙 수정 — ${routeQuery.data?.name ?? ""}` : "규칙 생성"}</h2>
+      <h2>
+        {isEdit
+          ? t("routeEditor.editTitleWithName", { name: routeQuery.data?.name ?? "" })
+          : t("routes.createButton")}
+      </h2>
 
       {serverError && (
         <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
@@ -371,114 +378,114 @@ export default function RouteEditor() {
       >
         <Form.Item
           name="name"
-          label="이름"
-          rules={[{ required: true, message: "이름을 입력하세요" }]}
+          label={t("common.name")}
+          rules={[{ required: true, message: t("common.nameRequired") }]}
         >
           <Input placeholder="critical-to-oncall" />
         </Form.Item>
-        <Form.Item name="description" label="설명">
+        <Form.Item name="description" label={t("common.description")}>
           <Input.TextArea rows={2} />
         </Form.Item>
 
-        <Form.Item name="action" label="액션">
+        <Form.Item name="action" label={t("ruleImport.actionColumn")}>
           <Segmented options={ACTION_OPTIONS} />
         </Form.Item>
 
-        <Form.Item name="enabled" label="활성화" valuePropName="checked">
+        <Form.Item name="enabled" label={t("common.enabled")} valuePropName="checked">
           <Switch />
         </Form.Item>
 
         <Form.Item
           name="include_shared"
-          label="공유 알럿 포함"
+          label={t("routeEditor.includeSharedLabel")}
           valuePropName="checked"
-          help="받는 공유(view_notify)의 알럿도 이 규칙으로 알림"
+          help={t("routeEditor.includeSharedHelp")}
         >
           <Switch />
         </Form.Item>
 
-        <Title level={5}>필터</Title>
+        <Title level={5}>{t("routeEditor.filtersTitle")}</Title>
 
-        <Form.Item name="severities" label="심각도" help="비워두면 모든 심각도에 적용">
+        <Form.Item name="severities" label={t("common.severity")} help={t("routeEditor.severityHelp")}>
           <Checkbox.Group options={SEVERITY_OPTIONS} />
         </Form.Item>
 
         <Form.Item
           name="namespaces_include"
-          label="네임스페이스 포함"
-          help="정확일치 또는 정규식(전체일치) -- 비워두면 전체 허용"
+          label={t("routeEditor.namespacesIncludeLabel")}
+          help={t("routeEditor.namespaceMatchHelp")}
         >
           <Select
             mode="tags"
             options={namespaceOptions}
-            placeholder="네임스페이스 선택 또는 정규식 입력"
+            placeholder={t("routeEditor.namespacePlaceholder")}
           />
         </Form.Item>
         <Form.Item
           name="namespaces_exclude"
-          label="네임스페이스 제외"
-          help="정확일치 또는 정규식(전체일치)"
+          label={t("routeEditor.namespacesExcludeLabel")}
+          help={t("routeEditor.namespaceMatchHelpShort")}
         >
           <Select
             mode="tags"
             options={namespaceOptions}
-            placeholder="네임스페이스 선택 또는 정규식 입력"
+            placeholder={t("routeEditor.namespacePlaceholder")}
           />
         </Form.Item>
 
-        <Form.Item name="clusters" label="클러스터" help="비워두면 전체 클러스터에 적용">
-          <Select mode="multiple" options={clusterOptions} placeholder="전체 클러스터" />
+        <Form.Item name="clusters" label={t("common.cluster")} help={t("routeEditor.clustersHelp")}>
+          <Select mode="multiple" options={clusterOptions} placeholder={t("common.allClusters")} />
         </Form.Item>
 
-        <Title level={5}>매처</Title>
+        <Title level={5}>{t("routeEditor.matchersTitle")}</Title>
         <MatcherListEditor name="matchers" form={form} />
 
         {action === "notify" && (
           <>
-            <Title level={5}>알림 설정</Title>
+            <Title level={5}>{t("routeEditor.notificationSettingsTitle")}</Title>
             <Form.Item
               name="channel_ids"
-              label="채널"
-              rules={[{ required: true, message: "채널을 하나 이상 선택하세요" }]}
+              label={t("common.channel")}
+              rules={[{ required: true, message: t("routeEditor.channelsRequired") }]}
             >
-              <Select mode="multiple" options={channelOptions} placeholder="채널 선택" />
+              <Select mode="multiple" options={channelOptions} placeholder={t("routeEditor.channelSelectPlaceholder")} />
             </Form.Item>
             <Form.Item
               name="template_id"
-              label="메시지 템플릿"
-              help="비워두면 채널의 템플릿(또는 채널 타입/앱 기본 템플릿)을 사용합니다"
+              label={t("channels.messageTemplateLabel")}
+              help={t("routeEditor.templateHelp")}
             >
               <Select
                 allowClear
                 loading={templatesQuery.isLoading}
-                placeholder="기본값 상속"
+                placeholder={t("channels.inheritDefaultPlaceholder")}
                 options={(templatesQuery.data ?? []).map((t) => ({ value: t.id, label: t.name }))}
               />
             </Form.Item>
             <TemplatePreviewPopover template={selectedTemplate} />
             <Space direction="vertical" style={{ marginBottom: 16, marginTop: 8 }}>
               <Form.Item name="notify_on_firing" valuePropName="checked" noStyle>
-                <Checkbox>firing 시 알림</Checkbox>
+                <Checkbox>{t("routeEditor.notifyOnFiring")}</Checkbox>
               </Form.Item>
               <Form.Item name="notify_on_resolved" valuePropName="checked" noStyle>
-                <Checkbox>resolved 시 알림</Checkbox>
+                <Checkbox>{t("routeEditor.notifyOnResolved")}</Checkbox>
               </Form.Item>
             </Space>
 
             <Form.Item
               name="renotify_interval_minutes"
-              label="미해결 재알림 간격 (분)"
-              help="설정하면 이 알럿이 firing 상태로 미확인(unack)인 동안 지정한 간격마다 같은 채널로 반복 알림을 보냅니다. 비워두면 재알림하지 않습니다."
+              label={t("routeEditor.renotifyIntervalLabel")}
+              help={t("routeEditor.renotifyIntervalHelp")}
             >
-              <InputNumber min={1} style={{ width: 200 }} placeholder="예: 15" />
+              <InputNumber min={1} style={{ width: 200 }} placeholder={t("routeEditor.examplePlaceholder15")} />
             </Form.Item>
 
-            <Title level={5}>에스컬레이션</Title>
+            <Title level={5}>{t("routeEditor.escalationTitle")}</Title>
             <Form.Item
               name="escalation_enabled"
-              label="에스컬레이션 사용"
+              label={t("routeEditor.escalationEnabledLabel")}
               valuePropName="checked"
-              help="firing 상태로 지정한 시간이 지나도 확인(ack)되지 않으면 에스컬레이션 채널로 추가 알림을 보냅니다."
+              help={t("routeEditor.escalationEnabledHelp")}
             >
               <Switch />
             </Form.Item>
@@ -486,22 +493,22 @@ export default function RouteEditor() {
               <>
                 <Form.Item
                   name="escalation_after_minutes"
-                  label="에스컬레이션 대기 시간 (분)"
-                  rules={[{ required: true, message: "에스컬레이션 대기 시간을 입력하세요" }]}
+                  label={t("routeEditor.escalationAfterLabel")}
+                  rules={[{ required: true, message: t("routeEditor.escalationAfterRequired") }]}
                 >
-                  <InputNumber min={1} style={{ width: 200 }} placeholder="예: 10" />
+                  <InputNumber min={1} style={{ width: 200 }} placeholder={t("routeEditor.examplePlaceholder10")} />
                 </Form.Item>
                 <Form.Item
                   name="escalation_channel_ids"
-                  label="에스컬레이션 채널"
-                  help="같은 팀의 채널 또는 '타팀 에스컬레이션 허용'이 켜진 다른 팀의 채널을 선택할 수 있습니다."
-                  rules={[{ required: true, message: "에스컬레이션 채널을 하나 이상 선택하세요" }]}
+                  label={t("routeEditor.escalationChannelsLabel")}
+                  help={t("routeEditor.escalationChannelsHelp")}
+                  rules={[{ required: true, message: t("routeEditor.escalationChannelsRequired") }]}
                 >
                   <Select
                     mode="multiple"
                     loading={escalationTargetsQuery.isLoading}
                     options={escalationChannelOptions}
-                    placeholder="에스컬레이션 채널 선택"
+                    placeholder={t("routeEditor.escalationChannelsPlaceholder")}
                   />
                 </Form.Item>
               </>
@@ -511,26 +518,23 @@ export default function RouteEditor() {
 
         <Space>
           <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
-            저장
+            {t("common.save")}
           </Button>
-          <Button onClick={() => navigate("/routes")}>취소</Button>
+          <Button onClick={() => navigate("/routes")}>{t("common.cancel")}</Button>
         </Space>
       </Form>
 
       <Title level={5} style={{ marginTop: 32 }}>
-        미리보기
+        {t("ruleEditor.previewTitle")}
       </Title>
       <Space direction="vertical" style={{ marginBottom: 16 }}>
         <Space>
           <Button onClick={() => void handlePreview()} loading={previewLoading}>
-            최근 알럿에 테스트
+            {t("routeEditor.testAgainstRecentButton")}
           </Button>
-          <Text type="secondary">최근 알럿 이력 최대 200건에 이 규칙을 평가합니다.</Text>
+          <Text type="secondary">{t("routeEditor.previewScopeHint")}</Text>
         </Space>
-        <Text type="secondary">
-          "현재 상태"는 이력에 기록된 실제 상태이며, 판정은 항상 이 알럿이 firing으로
-          들어왔을 때를 기준으로 평가합니다.
-        </Text>
+        <Text type="secondary">{t("routeEditor.previewStatusHint")}</Text>
       </Space>
       {previewError && (
         <Alert type="error" showIcon message={previewError} style={{ marginBottom: 16 }} />
