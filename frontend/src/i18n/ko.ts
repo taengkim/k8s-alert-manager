@@ -454,6 +454,7 @@ export const ko = {
   "routeEditor.createSuccess": "규칙이 생성되었습니다",
   "routeEditor.updateError": "규칙 수정에 실패했습니다",
   "routeEditor.createError": "규칙 생성에 실패했습니다",
+  "routeEditor.createTitle": "규칙 생성",
   "routeEditor.editTitle": "규칙 수정",
   "routeEditor.editTitleWithName": "규칙 수정 — {name}",
   "routeEditor.currentStatusColumn": "현재 상태",

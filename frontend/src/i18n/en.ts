@@ -451,6 +451,7 @@ export const en: Record<keyof typeof ko, string> = {
   "routeEditor.createSuccess": "Routing rule created",
   "routeEditor.updateError": "Failed to update routing rule",
   "routeEditor.createError": "Failed to create routing rule",
+  "routeEditor.createTitle": "Create routing rule",
   "routeEditor.editTitle": "Edit routing rule",
   "routeEditor.editTitleWithName": "Edit routing rule — {name}",
   "routeEditor.currentStatusColumn": "Current status",

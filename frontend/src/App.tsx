@@ -12,7 +12,6 @@ import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
 import Login from "./pages/Login";
-import RouteEditor from "./pages/RouteEditor";
 import RoutesPage from "./pages/Routes";
 import Rules from "./pages/Rules";
 import Shares from "./pages/Shares";
@@ -144,8 +143,11 @@ export default function App() {
             <Route path="/templates/new" element={<TemplateEditor />} />
             <Route path="/templates/:id/edit" element={<TemplateEditor />} />
             <Route path="/routes" element={<RoutesPage />} />
-            <Route path="/routes/new" element={<RouteEditor />} />
-            <Route path="/routes/:id/edit" element={<RouteEditor />} />
+            {/* /routes/new and /routes/:id/edit are now handled as a modal
+                from within Routes.tsx -- these redirects only exist for
+                bookmarks/links made before that conversion. */}
+            <Route path="/routes/new" element={<Navigate to="/routes" replace />} />
+            <Route path="/routes/:id/edit" element={<Navigate to="/routes" replace />} />
             <Route path="/shares" element={<Shares />} />
             <Route path="/stats" element={<Stats />} />
             <Route path="/team" element={<TeamSettings />} />
