@@ -80,13 +80,13 @@ async def claim_batch(
             .where(NotificationOutbox.id.in_(due_ids_subquery))
             .values(status="in_progress", locked_by=worker_id, locked_at=now)
             .returning(NotificationOutbox.id)
-            # Nothing is loaded in this Session that this UPDATE could
-            # invalidate, so there's nothing to synchronize -- and leaving
-            # the default ("evaluate") composes ORM auto-synchronization
-            # with a RETURNING fetch in a way that isn't the well-trodden
-            # path on Postgres. No live-Postgres test for this branch in
-            # this repo yet (Phase 21's packaging work brings a Postgres
-            # profile); reasoned correct against SQLAlchemy 2.0's docs.
+            # `synchronize_session=False`: this bulk UPDATE's WHERE clause
+            # (a subquery) isn't something the ORM's other sync strategies
+            # ("evaluate"/"fetch") can reliably apply to already-loaded
+            # objects anyway. This does mean any row already loaded in this
+            # Session keeps its stale pre-UPDATE attributes until something
+            # explicitly re-reads it -- see the `populate_existing` on the
+            # follow-up SELECT below, which is exactly that.
             .execution_options(synchronize_session=False)
         )
         claimed_ids = list(claimed.scalars().all())
@@ -94,7 +94,19 @@ async def claim_batch(
         if not claimed_ids:
             return []
         result = await session.execute(
-            select(NotificationOutbox).where(NotificationOutbox.id.in_(claimed_ids))
+            select(NotificationOutbox)
+            .where(NotificationOutbox.id.in_(claimed_ids))
+            # This session's `expire_on_commit=False` (see app/db.py) means
+            # `session.commit()` above did NOT expire any of these rows'
+            # identity-mapped Python objects -- so without
+            # `populate_existing`, a caller that already had one of these
+            # rows loaded in this same session (e.g. just having created it)
+            # would get back its pre-claim, now-stale in-memory copy
+            # (status='pending') instead of the fresh post-UPDATE row this
+            # query just re-read from Postgres. `populate_existing` forces
+            # SQLAlchemy to overwrite that cached object's attributes with
+            # what this SELECT actually returned.
+            .execution_options(populate_existing=True)
         )
         return list(result.scalars().all())
 

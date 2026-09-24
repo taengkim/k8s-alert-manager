@@ -53,3 +53,8 @@ make dev-second-cluster-sim
 kind 클러스터를 별도 이름으로 띄우고, `kube-prometheus-values.yaml`의 NodePort를
 충돌하지 않게 바꾼 뒤, `/admin/clusters`에서 그 클러스터의 실제 Prometheus/Alertmanager
 URL로 새 클러스터를 등록하면 됩니다.
+
+## 배포
+
+컨테이너 이미지 빌드, 쿠버네티스 매니페스트, 클러스터 등록 절차는
+[`deploy/README.md`](./deploy/README.md)를 참고하세요.

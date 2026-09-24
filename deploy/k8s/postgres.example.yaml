@@ -1,0 +1,84 @@
+# EXAMPLE ONLY -- a minimal single-instance Postgres for a small/dev
+# in-cluster deployment (this is also what the in-cluster E2E in
+# deploy/README.md deploys, so KAM_DATABASE_URL there can point somewhere
+# real). No replication, no backups, no PodDisruptionBudget, credentials
+# below are placeholders committed in cleartext for convenience.
+#
+# For a real deployment, use a managed database service (RDS/Cloud SQL/
+# Azure Database for PostgreSQL/...) instead and skip this file entirely --
+# just point secret.yaml's KAM_DATABASE_URL at it. A hand-rolled
+# single-replica StatefulSet like this one has no failover and loses
+# whatever hasn't been backed up if its PVC is ever lost.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kam-postgres-secret
+  namespace: kam
+type: Opaque
+stringData:
+  POSTGRES_USER: "kam"
+  POSTGRES_PASSWORD: "REPLACE_ME"
+  POSTGRES_DB: "kam"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kam-postgres
+  namespace: kam
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: kam-postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kam-postgres
+  namespace: kam
+spec:
+  serviceName: kam-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kam-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kam-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: kam-postgres-secret
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata # avoid postgres's "lost+found in an empty-looking dir" complaint on some CSI drivers
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "kam"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

@@ -24,6 +24,10 @@ dist/
 # Backend static (built SPA output)
 backend/app/static/
 
+# Real k8s secret manifests (copied from deploy/k8s/secret.example.yaml) --
+# never commit filled-in credentials.
+deploy/k8s/secret.yaml
+
 # Env / OS
 .env
 .DS_Store

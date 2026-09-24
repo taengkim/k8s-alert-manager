@@ -3,9 +3,12 @@ import logging
 import socket
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 import app.db as db_module
 from app.api.admin_settings import router as admin_settings_router
@@ -44,6 +47,13 @@ from app.services.k8s import K8sClientFactory
 from app.worker.outbox import run_loop
 
 logger = logging.getLogger(__name__)
+
+# Built SPA output (`frontend/` -> `npm run build` -> `dist/`), copied here by
+# the packaging Dockerfile's final stage. Absent in dev (host-run backend
+# against the Vite dev server) and in the test app fixture -- the static
+# mount + SPA fallback route below are only registered when this directory
+# actually exists, so neither dev flow nor tests are affected.
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -156,6 +166,52 @@ def create_app() -> FastAPI:
     app.include_router(stats_router)
     app.include_router(audit_router)
     app.include_router(reports_router)
+
+    # SPA static serving (packaged/deployed image only -- see STATIC_DIR's
+    # docstring). Registered LAST so every `/api/v1/*` router above always
+    # wins the route match first; the catch-all below only ever sees a
+    # request none of them claimed.
+    if STATIC_DIR.is_dir():
+        # Resolved once, outside the request path: `full_path` is
+        # attacker-controlled (it's literally "everything after the
+        # domain" -- see the {full_path:path} converter below), and
+        # Starlette's `:path` converter does NOT normalize `..` segments
+        # out of it. Without an explicit containment check, a request like
+        # `/../../../etc/passwd` (or, in a real k8s pod,
+        # `/../../../var/run/secrets/kubernetes.io/serviceaccount/token`)
+        # resolves `STATIC_DIR / full_path` right out of the static root and
+        # serves that file's contents -- confirmed against a running
+        # container. `static_root` is what every candidate path is checked
+        # against below.
+        static_root = STATIC_DIR.resolve()
+        assets_dir = STATIC_DIR / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="spa-assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(full_path: str) -> FileResponse:
+            # An unmatched `/api/...` request is a real 404 (unknown API
+            # route), never the SPA shell -- falling through to index.html
+            # here would turn a client's typo'd/removed endpoint into a
+            # confusing 200-with-HTML instead of a clear 404.
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="not found")
+            # `.resolve()` collapses any `..`/symlink segments BEFORE the
+            # containment check -- checking containment on the
+            # un-resolved path would still let `../` sequences through.
+            candidate = (STATIC_DIR / full_path).resolve()
+            if (
+                full_path
+                and candidate.is_relative_to(static_root)
+                and candidate.is_file()
+            ):
+                return FileResponse(candidate)
+            # Any other path (the app root, a client-side route like
+            # /alerts/123 with no matching file, or an out-of-root/missing
+            # candidate above) falls back to the SPA shell -- React Router
+            # resolves the actual view client-side.
+            return FileResponse(STATIC_DIR / "index.html")
+
     return app
 
 

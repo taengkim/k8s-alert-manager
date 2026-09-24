@@ -1,0 +1,95 @@
+# replicas: 1 is deliberate, not a placeholder -- do not scale this up
+# without addressing both of the following first:
+#   1. The embedded outbox/scheduler worker (app.worker.outbox.run_loop,
+#      started in-process by app/main.py's lifespan when KAM_WORKER_MODE=
+#      embedded, the default) has no leader election / advisory lock of its
+#      own. Two+ replicas would each run their own worker loop, all polling
+#      and claiming from the same outbox table -- claim_batch's row locking
+#      (Postgres FOR UPDATE SKIP LOCKED) keeps that safe from double
+#      delivery, but the heartbeat sweep, retention sweep, and report sweep
+#      (also piggybacked on that same loop -- see app/worker/outbox.py's
+#      run_loop docstring) are not all similarly guarded against running
+#      redundantly from every replica.
+#   2. deploy/docker-entrypoint.sh runs `alembic upgrade head` on every pod
+#      start, unguarded by any lock -- concurrent replicas starting at once
+#      against an empty/behind database could race the same migration.
+#
+# Scaling this safely would need `KAM_WORKER_MODE=off` on N-1 replicas (see
+# app/config.py) plus a separate single-replica worker Deployment (`python
+# -m app.worker.runner`, per app/worker/runner.py) or a real leader-election
+# story -- out of scope for this project (see deploy/README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kam
+  namespace: kam
+  labels:
+    app.kubernetes.io/name: kam
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kam
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kam
+    spec:
+      serviceAccountName: kam
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: kam
+          # Built by `make image` (deploy/Dockerfile) and loaded into the
+          # target cluster (`make deploy-kind` does this for a local kind
+          # cluster via `kind load docker-image`) -- push to a real registry
+          # and update this to that registry's image reference for any
+          # non-kind deployment.
+          image: kam:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: kam-config
+            - secretRef:
+                name: kam-secrets
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Starting point, not a load-tested figure -- adjust to your own
+          # traffic/alert volume.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Not read-only: a 'token' auth-kind cluster's CA cert is
+            # written to a temp file under /tmp at request time (see
+            # app/services/k8s.py's _write_ca_cert) and the default
+            # KAM_DATABASE_URL falls back to a SQLite file under the
+            # working directory if KAM_DATABASE_URL is ever unset. Both
+            # would need an emptyDir volume mounted over /tmp (and /app for
+            # the SQLite fallback case) to make this safely `true`.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]

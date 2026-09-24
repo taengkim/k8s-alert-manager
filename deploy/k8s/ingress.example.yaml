@@ -1,0 +1,30 @@
+# EXAMPLE ONLY -- assumes an ingress-nginx-shaped IngressClass and a
+# cert-manager-issued TLS secret; adjust both to whatever your cluster
+# actually runs. Not applied by `make deploy-kind` (a kind cluster has no
+# ingress controller by default) -- the in-cluster E2E in deploy/README.md
+# uses `kubectl port-forward` instead.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kam
+  namespace: kam
+  annotations:
+    # nginx-specific; drop/replace if you're on a different controller.
+    nginx.ingress.kubernetes.io/proxy-body-size: "4m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - kam.example.org
+      secretName: kam-tls
+  rules:
+    - host: kam.example.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kam
+                port:
+                  name: http
