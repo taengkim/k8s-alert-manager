@@ -12,6 +12,7 @@ from app.api.admin_settings import router as admin_settings_router
 from app.api.alerts import comments_router as alerts_comments_router
 from app.api.alerts import router as alerts_router
 from app.api.alerts import team_router as alerts_team_router
+from app.api.audit import router as audit_router
 from app.api.auth import router as auth_router
 from app.api.channels import router as channels_router
 from app.api.channels import types_router as channel_types_router
@@ -28,6 +29,7 @@ from app.api.shares import router as shares_router
 from app.api.shares import shared_with_me_router
 from app.api.shares import team_router as shares_team_router
 from app.api.silences import router as silences_router
+from app.api.stats import router as stats_router
 from app.api.teams import router as teams_router
 from app.api.templates import router as templates_router
 from app.api.users import router as users_router
@@ -150,6 +152,8 @@ def create_app() -> FastAPI:
     app.include_router(shares_team_router)
     app.include_router(shares_router)
     app.include_router(shared_with_me_router)
+    app.include_router(stats_router)
+    app.include_router(audit_router)
     return app
 
 
