@@ -93,6 +93,9 @@ export const ko = {
   "common.startedAt": "시작 시각",
   "common.assignee": "담당자",
   "common.channel": "채널",
+  "common.pending": "대기",
+  "common.expired": "만료",
+  "common.noPermission": "권한이 없습니다",
 
   // -- login --
   "login.usernameLabel": "아이디",
@@ -154,7 +157,6 @@ export const ko = {
   "history.triggerEscalation": "에스컬레이션",
   "history.triggerRenotify": "재알림",
   "history.triggerDigest": "다이제스트",
-  "history.notifPending": "대기",
   "history.notifInProgress": "발송 중",
   "history.notifDelivered": "발송 완료",
   "history.notifFailed": "실패",
@@ -279,4 +281,41 @@ export const ko = {
   "ruleImport.previewLoading": "미리보기를 계산하는 중...",
   "ruleImport.previewError": "미리보기 계산에 실패했습니다",
   "ruleImport.applyError": "가져오기 적용에 실패했습니다",
+
+  // -- silences --
+  "silences.title": "사일런스",
+  "silences.expireSuccess": "사일런스가 만료되었습니다",
+  "silences.expireError": "만료에 실패했습니다",
+  "silences.matchersColumn": "Matchers",
+  "silences.durationColumn": "기간",
+  "silences.expiredAgo": "{time} 만료됨",
+  "silences.expiresIn": "{time} 만료 예정",
+  "silences.createdByColumn": "생성자",
+  "silences.externalTag": "외부",
+  "silences.expireButton": "만료",
+  "silences.alreadyExpired": "이미 만료됨",
+  "silences.expireConfirm": "이 사일런스를 만료시키겠습니까?",
+  "silences.createButton": "사일런스 생성",
+  "silences.empty": "사일런스가 없습니다",
+
+  // -- silenceModal --
+  "silenceModal.duration4h": "4시간",
+  "silenceModal.durationCustom": "직접 지정",
+  "silenceModal.createError": "사일런스 생성에 실패했습니다",
+  "silenceModal.matcherRequired": "matcher를 하나 이상 입력하세요",
+  "silenceModal.matcherNameRequired": "레이블명",
+  "silenceModal.regexToggle": "정규식",
+  "silenceModal.endsAtRequired": "만료 시각을 선택하세요",
+  "silenceModal.commentRequired": "설명을 입력하세요",
+  "silenceModal.commentPlaceholder": "사일런스 사유",
+
+  // -- matcher (shared include/exclude matcher builder) --
+  "matcher.kindInclude": "포함",
+  "matcher.kindExclude": "제외",
+  "matcher.targetLabel": "레이블",
+  "matcher.targetAnnotation": "어노테이션",
+  "matcher.addMatcher": "매처 추가",
+  "matcher.patternRequired": "패턴을 입력하세요",
+  "matcher.invalidRegex": "올바른 정규식이 아닙니다",
+  "matcher.patternPlaceholder": "정규식 패턴",
 } as const;

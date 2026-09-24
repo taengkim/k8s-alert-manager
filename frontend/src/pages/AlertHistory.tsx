@@ -75,7 +75,7 @@ const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
 };
 
 const NOTIFICATION_STATUS_KEY: Record<NotificationStatus, TranslationKey> = {
-  pending: "history.notifPending",
+  pending: "common.pending",
   in_progress: "history.notifInProgress",
   delivered: "history.notifDelivered",
   failed: "history.notifFailed",
@@ -174,7 +174,7 @@ export default function AlertHistory() {
 
   const exportMutation = useMutation({
     mutationFn: () => downloadAlertHistoryExport(currentFilters, exportFormat),
-    onError: (err) => message.error(apiErrorMessage(err, t("history.exportError"))),
+    onError: (err) => message.error(apiErrorMessage(err, t("common.exportError"))),
   });
 
   const detailQuery = useQuery({

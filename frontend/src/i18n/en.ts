@@ -90,6 +90,9 @@ export const en: Record<keyof typeof ko, string> = {
   "common.startedAt": "Started at",
   "common.assignee": "Assignee",
   "common.channel": "Channel",
+  "common.pending": "Pending",
+  "common.expired": "Expired",
+  "common.noPermission": "You don't have permission",
 
   // -- login --
   "login.usernameLabel": "Username",
@@ -151,7 +154,6 @@ export const en: Record<keyof typeof ko, string> = {
   "history.triggerEscalation": "Escalation",
   "history.triggerRenotify": "Re-notify",
   "history.triggerDigest": "Digest",
-  "history.notifPending": "Pending",
   "history.notifInProgress": "Sending",
   "history.notifDelivered": "Delivered",
   "history.notifFailed": "Failed",
@@ -276,4 +278,41 @@ export const en: Record<keyof typeof ko, string> = {
   "ruleImport.previewLoading": "Computing preview...",
   "ruleImport.previewError": "Failed to compute preview",
   "ruleImport.applyError": "Failed to apply import",
+
+  // -- silences --
+  "silences.title": "Silences",
+  "silences.expireSuccess": "Silence expired",
+  "silences.expireError": "Failed to expire",
+  "silences.matchersColumn": "Matchers",
+  "silences.durationColumn": "Duration",
+  "silences.expiredAgo": "Expired {time}",
+  "silences.expiresIn": "Expires {time}",
+  "silences.createdByColumn": "Created by",
+  "silences.externalTag": "External",
+  "silences.expireButton": "Expire",
+  "silences.alreadyExpired": "Already expired",
+  "silences.expireConfirm": "Expire this silence?",
+  "silences.createButton": "Create silence",
+  "silences.empty": "No silences",
+
+  // -- silenceModal --
+  "silenceModal.duration4h": "4 hours",
+  "silenceModal.durationCustom": "Custom",
+  "silenceModal.createError": "Failed to create silence",
+  "silenceModal.matcherRequired": "Add at least one matcher",
+  "silenceModal.matcherNameRequired": "Label name",
+  "silenceModal.regexToggle": "Regex",
+  "silenceModal.endsAtRequired": "Select an expiry time",
+  "silenceModal.commentRequired": "Enter a description",
+  "silenceModal.commentPlaceholder": "Reason for the silence",
+
+  // -- matcher (shared include/exclude matcher builder) --
+  "matcher.kindInclude": "Include",
+  "matcher.kindExclude": "Exclude",
+  "matcher.targetLabel": "Label",
+  "matcher.targetAnnotation": "Annotation",
+  "matcher.addMatcher": "Add matcher",
+  "matcher.patternRequired": "Enter a pattern",
+  "matcher.invalidRegex": "Not a valid regular expression",
+  "matcher.patternPlaceholder": "Regex pattern",
 };
