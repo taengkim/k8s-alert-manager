@@ -15,6 +15,11 @@ class Settings(BaseSettings):
 
     secret_key: str = "dev-secret-change-me"
     jwt_ttl_hours: int = 12
+    # Set to true behind HTTPS (any real deployment) so the session cookie
+    # is never sent over a plaintext connection. False by default so local
+    # dev (http://localhost) still gets the cookie back at all -- a browser
+    # drops a Secure cookie outright on a non-HTTPS origin.
+    cookie_secure: bool = False
 
     ldap_url: str = "ldap://localhost:1389"
     ldap_bind_dn: str = "cn=admin,dc=example,dc=org"

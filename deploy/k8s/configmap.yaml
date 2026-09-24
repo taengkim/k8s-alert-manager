@@ -14,6 +14,9 @@ data:
   KAM_APP_NAME: "kam"
   KAM_APP_VERSION: "0.1.0"
   KAM_JWT_TTL_HOURS: "12"
+  # Real deployments are HTTPS -- keep the session cookie Secure so it's
+  # never sent over a plaintext connection.
+  KAM_COOKIE_SECURE: "true"
 
   # LDAP: everything except the bind DN/password (see secret.example.yaml)
   # -- these describe the directory's SHAPE, not a credential. Replace with

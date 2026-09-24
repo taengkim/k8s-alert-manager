@@ -88,6 +88,8 @@ async def login(
         token,
         httponly=True,
         samesite="lax",
+        secure=settings.cookie_secure,
+        path="/",
         max_age=settings.jwt_ttl_hours * 3600,
     )
 
@@ -96,7 +98,19 @@ async def login(
 
 @router.post("/logout")
 async def logout(response: Response) -> dict[str, str]:
-    response.delete_cookie(COOKIE_NAME)
+    settings = get_settings()
+    # Must mirror every flag set_cookie() used above -- a delete_cookie()
+    # whose attributes don't match the cookie as originally set (e.g. a
+    # differing `secure`/`path`) is a *new* cookie declaration to the
+    # browser, not a match against the existing one, so it wouldn't
+    # actually clear it.
+    response.delete_cookie(
+        COOKIE_NAME,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path="/",
+    )
     return {"status": "ok"}
 
 

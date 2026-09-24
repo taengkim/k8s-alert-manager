@@ -4,6 +4,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 import app.db as db_module
+from app.config import get_settings
 from app.models.user import User
 from app.services.ldap_auth import LdapUserInfo
 from tests.conftest import login_as
@@ -72,6 +73,21 @@ async def test_inactive_user_login_returns_403(client: AsyncClient) -> None:
     assert second_login.status_code == 403
 
 
+async def test_login_sets_secure_cookie_when_configured(client: AsyncClient) -> None:
+    with patch.object(get_settings(), "cookie_secure", True):
+        response = await login_as(client, username="alice")
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "Secure" in set_cookie
+
+
+async def test_login_omits_secure_cookie_by_default(client: AsyncClient) -> None:
+    response = await login_as(client, username="alice")
+    assert response.status_code == 200
+    set_cookie = response.headers.get("set-cookie", "")
+    assert "Secure" not in set_cookie
+
+
 async def test_logout_clears_cookie(client: AsyncClient) -> None:
     await login_as(client, username="alice")
     logout = await client.post("/api/v1/auth/logout")
@@ -79,6 +95,19 @@ async def test_logout_clears_cookie(client: AsyncClient) -> None:
 
     me = await client.get("/api/v1/auth/me")
     assert me.status_code == 401
+
+
+async def test_logout_clears_cookie_when_cookie_secure_enabled(client: AsyncClient) -> None:
+    # The Secure flag makes delete_cookie() a *different* cookie declaration
+    # unless logout() mirrors it -- verify clearing still works with the
+    # flag on, not just the (already-covered) default-off case above.
+    with patch.object(get_settings(), "cookie_secure", True):
+        await login_as(client, username="alice")
+        logout = await client.post("/api/v1/auth/logout")
+        assert logout.status_code == 200
+
+        me = await client.get("/api/v1/auth/me")
+        assert me.status_code == 401
 
 
 async def test_admin_group_dn_grants_is_admin(client: AsyncClient) -> None:
