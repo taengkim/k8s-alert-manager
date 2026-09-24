@@ -26,55 +26,56 @@ import type {
   RuleImportResult,
   RuleImportVerdict,
 } from "../api/rules";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const { Text, Paragraph } = Typography;
 const { Dragger } = Upload;
 
-const STRATEGY_OPTIONS: { value: ConflictStrategy; label: string }[] = [
-  { value: "skip", label: "건너뛰기" },
-  { value: "overwrite", label: "덮어쓰기" },
-  { value: "rename", label: "이름 변경" },
-];
-
-const ACTION_TAG: Record<ImportAction, { color: string; label: string }> = {
-  created: { color: "green", label: "생성" },
-  renamed: { color: "blue", label: "이름 변경됨" },
-  skipped: { color: "default", label: "건너뜀" },
-  overwritten: { color: "orange", label: "덮어씀" },
-  failed: { color: "red", label: "실패" },
+const ACTION_TAG_KEY: Record<ImportAction, { color: string; labelKey: TranslationKey }> = {
+  created: { color: "green", labelKey: "ruleImport.actionCreated" },
+  renamed: { color: "blue", labelKey: "ruleImport.actionRenamed" },
+  skipped: { color: "default", labelKey: "ruleImport.actionSkipped" },
+  overwritten: { color: "orange", labelKey: "ruleImport.actionOverwritten" },
+  failed: { color: "red", labelKey: "ruleImport.actionFailed" },
 };
 
-function parseEnvelope(text: string): { data: RuleExportEnvelope | null; error: string | null } {
+function parseEnvelope(
+  text: string,
+  t: (key: TranslationKey) => string,
+): { data: RuleExportEnvelope | null; error: string | null } {
   if (!text.trim()) return { data: null, error: null };
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { data: null, error: "올바른 JSON이 아닙니다" };
+    return { data: null, error: t("ruleImport.invalidJson") };
   }
   const data = parsed as Partial<RuleExportEnvelope>;
   if (data.kam_export_version !== 1 || data.kind !== "rules" || !Array.isArray(data.rules)) {
     return {
       data: null,
-      error: '지원하지 않는 형식입니다 (kam_export_version: 1, kind: "rules"가 필요합니다)',
+      error: t("ruleImport.unsupportedFormat"),
     };
   }
   return { data: data as RuleExportEnvelope, error: null };
 }
 
 function SummaryTags({ summary }: { summary: RuleImportResult["summary"] }) {
+  const { t } = useI18n();
   return (
     <Space wrap>
-      <Tag color="green">생성 {summary.created}</Tag>
-      <Tag color="blue">이름 변경 {summary.renamed}</Tag>
-      <Tag color="orange">덮어씀 {summary.overwritten}</Tag>
-      <Tag>건너뜀 {summary.skipped}</Tag>
-      <Tag color="red">실패 {summary.failed}</Tag>
+      <Tag color="green">{t("ruleImport.summaryCreated", { count: summary.created })}</Tag>
+      <Tag color="blue">{t("ruleImport.summaryRenamed", { count: summary.renamed })}</Tag>
+      <Tag color="orange">{t("ruleImport.summaryOverwritten", { count: summary.overwritten })}</Tag>
+      <Tag>{t("ruleImport.summarySkipped", { count: summary.skipped })}</Tag>
+      <Tag color="red">{t("ruleImport.summaryFailed", { count: summary.failed })}</Tag>
     </Space>
   );
 }
 
 function VerdictTable({ verdicts }: { verdicts: RuleImportVerdict[] }) {
+  const { t } = useI18n();
   return (
     <Table<RuleImportVerdict>
       size="small"
@@ -83,17 +84,17 @@ function VerdictTable({ verdicts }: { verdicts: RuleImportVerdict[] }) {
       pagination={false}
       style={{ marginTop: 12 }}
       columns={[
-        { title: "슬러그", dataIndex: "slug", key: "slug" },
+        { title: t("rules.slugColumn"), dataIndex: "slug", key: "slug" },
         {
-          title: "액션",
+          title: t("ruleImport.actionColumn"),
           dataIndex: "action",
           key: "action",
           render: (action: ImportAction) => (
-            <Tag color={ACTION_TAG[action].color}>{ACTION_TAG[action].label}</Tag>
+            <Tag color={ACTION_TAG_KEY[action].color}>{t(ACTION_TAG_KEY[action].labelKey)}</Tag>
           ),
         },
         {
-          title: "최종 슬러그",
+          title: t("ruleImport.finalSlugColumn"),
           dataIndex: "final_slug",
           key: "final_slug",
           render: (value: string | null) => value ?? <Text type="secondary">-</Text>,
@@ -106,7 +107,7 @@ function VerdictTable({ verdicts }: { verdicts: RuleImportVerdict[] }) {
             {record.errors.length > 0 && (
               <List
                 size="small"
-                header={<Text type="danger">오류</Text>}
+                header={<Text type="danger">{t("ruleImport.errorsHeader")}</Text>}
                 dataSource={record.errors}
                 renderItem={(item) => <List.Item>{item}</List.Item>}
               />
@@ -114,7 +115,7 @@ function VerdictTable({ verdicts }: { verdicts: RuleImportVerdict[] }) {
             {record.warnings.length > 0 && (
               <List
                 size="small"
-                header={<Text type="warning">경고</Text>}
+                header={<Text type="warning">{t("ruleImport.warningsHeader")}</Text>}
                 dataSource={record.warnings}
                 renderItem={(item) => <List.Item>{item}</List.Item>}
               />
@@ -133,6 +134,12 @@ interface RuleImportModalProps {
 }
 
 export default function RuleImportModal({ open, onClose, teamId }: RuleImportModalProps) {
+  const { t } = useI18n();
+  const STRATEGY_OPTIONS: { value: ConflictStrategy; label: string }[] = [
+    { value: "skip", label: t("ruleImport.strategySkip") },
+    { value: "overwrite", label: t("ruleImport.strategyOverwrite") },
+    { value: "rename", label: t("ruleImport.strategyRename") },
+  ];
   const queryClient = useQueryClient();
   const [envelopeText, setEnvelopeText] = useState("");
   const [targetClusterId, setTargetClusterId] = useState<number | undefined>(undefined);
@@ -141,8 +148,8 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
 
   const clustersQuery = useQuery({ queryKey: ["clusters"], queryFn: listClusters });
   const { data: envelope, error: parseError } = useMemo(
-    () => parseEnvelope(envelopeText),
-    [envelopeText],
+    () => parseEnvelope(envelopeText, t),
+    [envelopeText, t],
   );
 
   const canPreview = envelope !== null && targetClusterId !== undefined;
@@ -202,7 +209,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
 
   return (
     <Modal
-      title="룰 가져오기"
+      title={t("ruleImport.modalTitle")}
       open={open}
       onCancel={handleClose}
       width={720}
@@ -211,12 +218,12 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
         applyResult
           ? [
               <Button key="close" type="primary" onClick={handleClose}>
-                닫기
+                {t("common.close")}
               </Button>,
             ]
           : [
               <Button key="cancel" onClick={handleClose}>
-                취소
+                {t("common.cancel")}
               </Button>,
               <Button
                 key="apply"
@@ -225,7 +232,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
                 loading={applyMutation.isPending}
                 onClick={() => applyMutation.mutate()}
               >
-                적용
+                {t("ruleImport.applyButton")}
               </Button>,
             ]
       }
@@ -236,7 +243,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
             type="success"
             showIcon
             style={{ marginBottom: 16 }}
-            message="가져오기를 적용했습니다"
+            message={t("ruleImport.applySuccess")}
           />
           <SummaryTags summary={applyResult.summary} />
           <VerdictTable verdicts={applyResult.verdicts} />
@@ -244,14 +251,14 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
       ) : (
         <div>
           <Dragger {...uploadProps} style={{ marginBottom: 12 }}>
-            <p className="ant-upload-text">내보내기 JSON 파일을 끌어다 놓거나 클릭해서 선택하세요</p>
+            <p className="ant-upload-text">{t("ruleImport.dropzoneText")}</p>
           </Dragger>
 
-          <Divider plain>또는 직접 붙여넣기</Divider>
+          <Divider plain>{t("ruleImport.orPasteDivider")}</Divider>
 
           <Input.TextArea
             rows={4}
-            placeholder="내보내기 JSON을 붙여넣으세요"
+            placeholder={t("ruleImport.pastePlaceholder")}
             value={envelopeText}
             onChange={(e) => setEnvelopeText(e.target.value)}
             style={{ fontFamily: "monospace", marginBottom: 12 }}
@@ -264,11 +271,11 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
           <Space direction="vertical" style={{ width: "100%", marginBottom: 12 }}>
             <div>
               <Paragraph style={{ marginBottom: 4 }}>
-                <Text strong>대상 클러스터</Text>
+                <Text strong>{t("ruleImport.targetClusterLabel")}</Text>
               </Paragraph>
               <Select
                 style={{ width: "100%" }}
-                placeholder="클러스터를 선택하세요"
+                placeholder={t("ruleEditor.selectClusterPrompt")}
                 loading={clustersQuery.isLoading}
                 value={targetClusterId}
                 onChange={setTargetClusterId}
@@ -280,7 +287,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
             </div>
             <div>
               <Paragraph style={{ marginBottom: 4 }}>
-                <Text strong>충돌 처리 전략</Text>
+                <Text strong>{t("ruleImport.conflictStrategyLabel")}</Text>
               </Paragraph>
               <Radio.Group
                 options={STRATEGY_OPTIONS}
@@ -293,8 +300,8 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
 
           {canPreview && (
             <div>
-              <Divider plain>미리보기 (dry-run)</Divider>
-              {previewQuery.isLoading && <Text type="secondary">미리보기를 계산하는 중...</Text>}
+              <Divider plain>{t("ruleImport.previewDividerLabel")}</Divider>
+              {previewQuery.isLoading && <Text type="secondary">{t("ruleImport.previewLoading")}</Text>}
               {previewQuery.isError && (
                 <Alert
                   type="error"
@@ -302,7 +309,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
                   message={
                     previewQuery.error instanceof ApiError
                       ? previewQuery.error.detail
-                      : "미리보기 계산에 실패했습니다"
+                      : t("ruleImport.previewError")
                   }
                 />
               )}
@@ -323,7 +330,7 @@ export default function RuleImportModal({ open, onClose, teamId }: RuleImportMod
               message={
                 applyMutation.error instanceof ApiError
                   ? applyMutation.error.detail
-                  : "가져오기 적용에 실패했습니다"
+                  : t("ruleImport.applyError")
               }
             />
           )}
