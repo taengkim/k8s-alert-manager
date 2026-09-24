@@ -14,7 +14,6 @@ import Channels from "./pages/Channels";
 import Login from "./pages/Login";
 import RouteEditor from "./pages/RouteEditor";
 import RoutesPage from "./pages/Routes";
-import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
 import Shares from "./pages/Shares";
 import Silences from "./pages/Silences";
@@ -134,8 +133,11 @@ export default function App() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/alerts/history" element={<AlertHistory />} />
             <Route path="/rules" element={<Rules />} />
-            <Route path="/rules/new" element={<RuleEditor />} />
-            <Route path="/rules/:slug/edit" element={<RuleEditor />} />
+            {/* /rules/new and /rules/:slug/edit are now handled as a modal
+                from within Rules.tsx -- these redirects only exist for
+                bookmarks/links made before that conversion. */}
+            <Route path="/rules/new" element={<Navigate to="/rules" replace />} />
+            <Route path="/rules/:slug/edit" element={<Navigate to="/rules" replace />} />
             <Route path="/silences" element={<Silences />} />
             <Route path="/channels" element={<Channels />} />
             <Route path="/templates" element={<Templates />} />

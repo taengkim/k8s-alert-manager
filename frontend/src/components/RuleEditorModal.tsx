@@ -1,17 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams, useSearchParams } from "react-router";
-import { Alert, App, Button, Drawer, Form, Input, Segmented, Select, Space, Typography } from "antd";
+import { Alert, App, Button, Drawer, Form, Input, Modal, Segmented, Select, Space, Typography } from "antd";
 import { monoFontFamily } from "../theme";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
 import { ApiError } from "../api/client";
 import { createRule, getRule, updateRule, validateExpr } from "../api/rules";
 import type { RuleMode, RuleWriteInput, Severity } from "../api/rules";
-import ThresholdBuilder from "../components/rule-editor/ThresholdBuilder";
-import PreviewChart from "../components/rule-editor/PreviewChart";
-import { emptyBuilderState, generateBuilderExpr, generateSelector } from "../components/rule-editor/builderExpr";
-import type { BuilderState } from "../components/rule-editor/builderExpr";
+import ThresholdBuilder from "./rule-editor/ThresholdBuilder";
+import PreviewChart from "./rule-editor/PreviewChart";
+import { emptyBuilderState, generateBuilderExpr, generateSelector } from "./rule-editor/builderExpr";
+import type { BuilderState } from "./rule-editor/builderExpr";
 import { useI18n } from "../i18n";
 
 const { Text, Title } = Typography;
@@ -39,6 +38,20 @@ interface FormValues {
   annotations?: KeyValue[];
   runbook_url?: string;
   grafana_url?: string;
+}
+
+/** Edit-mode context passed in from Rules.tsx -- a rule lives on exactly one
+ * cluster's k8s API, so editing one always carries its cluster id alongside
+ * the slug. Absent (null/undefined) means create mode. */
+export interface RuleEditTarget {
+  slug: string;
+  clusterId: number;
+}
+
+interface RuleEditorModalProps {
+  open: boolean;
+  onClose: () => void;
+  editTarget?: RuleEditTarget | null;
 }
 
 function toRecord(list?: KeyValue[]): Record<string, string> {
@@ -109,7 +122,37 @@ function renderYamlPreview(
   return lines.join("\n");
 }
 
-export default function RuleEditor() {
+export default function RuleEditorModal({ open, onClose, editTarget }: RuleEditorModalProps) {
+  const { t } = useI18n();
+  const isEdit = !!editTarget;
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      destroyOnClose
+      width={960}
+      style={{ top: 24 }}
+      styles={{ body: { maxHeight: "calc(100vh - 160px)", overflowY: "auto" } }}
+      title={isEdit ? t("ruleEditor.editTitle") : t("ruleEditor.createTitle")}
+    >
+      {/* Gated on `open` (in addition to Modal's own destroyOnClose) so this
+          heavy stateful form is a fresh component instance every time it's
+          opened -- reopening for a different rule (or for create, right
+          after editing one) always starts from a clean slate rather than
+          carrying over the previous session's builder/promql state. */}
+      {open && <RuleEditorFormBody editTarget={editTarget ?? null} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function RuleEditorFormBody({
+  editTarget,
+  onClose,
+}: {
+  editTarget: RuleEditTarget | null;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
   const SEVERITY_OPTIONS: { value: Severity; label: string }[] = [
     { value: "critical", label: "critical" },
@@ -120,23 +163,19 @@ export default function RuleEditor() {
     { value: "builder", label: t("ruleEditor.builderModeOption") },
     { value: "promql", label: "PromQL" },
   ];
-  const { slug } = useParams<{ slug: string }>();
-  const isEdit = !!slug;
-  const navigate = useNavigate();
+  const slug = editTarget?.slug;
+  const isEdit = !!editTarget;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { currentTeam } = useTeam();
   const { clusters } = useClusterFilter();
   const enabledClusters = useMemo(() => clusters.filter((c) => c.enabled), [clusters]);
-  const [searchParams] = useSearchParams();
-  // Edit mode arrives via /rules/:slug/edit?cluster=<id> (see Rules.tsx's
-  // navigation) since a rule lives on exactly one cluster's k8s API --
-  // create mode has no such context, so the field starts unselected and the
-  // user must pick one (first field in the form).
-  const [clusterId, setClusterId] = useState<number | undefined>(() => {
-    const fromQuery = Number(searchParams.get("cluster"));
-    return Number.isFinite(fromQuery) && fromQuery > 0 ? fromQuery : undefined;
-  });
+  // Edit mode arrives with its cluster id already known (see Rules.tsx's
+  // row action, which passes record.cluster.id) since a rule lives on
+  // exactly one cluster's k8s API -- create mode has no such context, so
+  // the field starts unselected and the user must pick one (first field in
+  // the form).
+  const [clusterId, setClusterId] = useState<number | undefined>(editTarget?.clusterId);
   const [form] = Form.useForm<FormValues>();
   const [serverError, setServerError] = useState<string | null>(null);
   const [exprValidation, setExprValidation] = useState<ValidateStatus | null>(null);
@@ -223,7 +262,7 @@ export default function RuleEditor() {
     onSuccess: () => {
       message.success(isEdit ? t("ruleEditor.updateSuccess") : t("ruleEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["rules", teamId, clusterId] });
-      navigate("/rules");
+      onClose();
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 422) {
@@ -274,27 +313,12 @@ export default function RuleEditor() {
   };
 
   if (!currentTeam) {
-    return (
-      <div>
-        <h2>{isEdit ? t("ruleEditor.editTitle") : t("ruleEditor.createTitle")}</h2>
-        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
-      </div>
-    );
+    return <Alert type="info" showIcon message={t("common.noTeamAssigned")} />;
   }
 
   return (
-    <div style={{ maxWidth: 800 }}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <h2 style={{ margin: 0 }}>
-          {isEdit ? t("ruleEditor.editTitleWithSlug", { slug: slug ?? "" }) : t("ruleEditor.createTitle")}
-        </h2>
+    <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
         <Button
           onClick={() => {
             setPreviewValues({
@@ -441,7 +465,7 @@ export default function RuleEditor() {
           >
             {t("common.save")}
           </Button>
-          <Button onClick={() => navigate("/rules")}>{t("common.cancel")}</Button>
+          <Button onClick={onClose}>{t("common.cancel")}</Button>
         </Space>
       </Form>
 
