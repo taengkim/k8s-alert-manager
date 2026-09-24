@@ -51,6 +51,8 @@ import type {
   NotificationStatus,
 } from "../api/history";
 import { listMembers } from "../api/teams";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 dayjs.extend(relativeTime);
 
@@ -58,14 +60,6 @@ const { Text, Title } = Typography;
 const { RangePicker } = DatePicker;
 
 type StatusFilter = "all" | AlertEventStatus;
-
-const SEVERITY_OPTIONS = [
-  { value: "critical", label: "critical" },
-  { value: "warning", label: "warning" },
-  { value: "info", label: "info" },
-  { value: "none", label: "없음" },
-];
-
 
 function apiErrorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.detail : fallback;
@@ -80,36 +74,44 @@ const NOTIFICATION_STATUS_COLOR: Record<NotificationStatus, string> = {
   digested: "purple",
 };
 
-const NOTIFICATION_STATUS_LABEL: Record<NotificationStatus, string> = {
-  pending: "대기",
-  in_progress: "발송 중",
-  delivered: "발송 완료",
-  failed: "실패",
-  dead: "포기됨",
-  digested: "다이제스트로 묶임",
+const NOTIFICATION_STATUS_KEY: Record<NotificationStatus, TranslationKey> = {
+  pending: "history.notifPending",
+  in_progress: "history.notifInProgress",
+  delivered: "history.notifDelivered",
+  failed: "history.notifFailed",
+  dead: "history.notifDead",
+  digested: "history.notifDigested",
 };
 
-/** Phase 15: escalation/renotify trigger values aren't plain enum members
- * -- renotify carries a per-cycle scheduled_action id
- * (`renotify:{id}`) so each cycle's outbox row stays distinct (see
- * app/worker/scheduler.py's _dispatch_renotify) -- so this maps by prefix
- * rather than exact match. */
-function TRIGGER_LABEL(trigger: string): string {
-  if (trigger === "firing") return "발생";
-  if (trigger === "resolved") return "해소";
-  if (trigger === "escalation") return "에스컬레이션";
-  if (trigger.startsWith("renotify")) return "재알림";
-  if (trigger === "digest") return "다이제스트";
-  return trigger;
-}
-
 export default function AlertHistory() {
+  const { t } = useI18n();
   const { message } = App.useApp();
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
   const { selectedIds: clusterIds } = useClusterFilter();
   const isAdmin = !!user?.is_admin;
   const queryClient = useQueryClient();
+
+  const SEVERITY_OPTIONS = [
+    { value: "critical", label: "critical" },
+    { value: "warning", label: "warning" },
+    { value: "info", label: "info" },
+    { value: "none", label: t("common.none") },
+  ];
+
+  /** Phase 15: escalation/renotify trigger values aren't plain enum members
+   * -- renotify carries a per-cycle scheduled_action id
+   * (`renotify:{id}`) so each cycle's outbox row stays distinct (see
+   * app/worker/scheduler.py's _dispatch_renotify) -- so this maps by prefix
+   * rather than exact match. */
+  const triggerLabel = (trigger: string): string => {
+    if (trigger === "firing") return t("history.triggerFiring");
+    if (trigger === "resolved") return t("history.triggerResolved");
+    if (trigger === "escalation") return t("history.triggerEscalation");
+    if (trigger.startsWith("renotify")) return t("history.triggerRenotify");
+    if (trigger === "digest") return t("history.triggerDigest");
+    return trigger;
+  };
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [severity, setSeverity] = useState<string[]>([]);
@@ -172,7 +174,7 @@ export default function AlertHistory() {
 
   const exportMutation = useMutation({
     mutationFn: () => downloadAlertHistoryExport(currentFilters, exportFormat),
-    onError: (err) => message.error(apiErrorMessage(err, "내보내기에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.exportError"))),
   });
 
   const detailQuery = useQuery({
@@ -209,26 +211,26 @@ export default function AlertHistory() {
   const ackMutation = useMutation({
     mutationFn: () => ackAlert(selectedId as number),
     onSuccess: invalidateSelected,
-    onError: (err) => message.error(apiErrorMessage(err, "확인 처리에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.ackError"))),
   });
   const unackMutation = useMutation({
     mutationFn: () => unackAlert(selectedId as number),
     onSuccess: invalidateSelected,
-    onError: (err) => message.error(apiErrorMessage(err, "확인 취소에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.unackError"))),
   });
   const assigneeMutation = useMutation({
     mutationFn: (userId: number | null) => setAlertAssignee(selectedId as number, userId),
     onSuccess: invalidateSelected,
-    onError: (err) => message.error(apiErrorMessage(err, "담당자 지정에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.assigneeError"))),
   });
   const resolveTestMutation = useMutation({
     mutationFn: () => resolveTestAlert(selectedId as number),
     onSuccess: () => {
       invalidateSelected();
       queryClient.invalidateQueries({ queryKey: ["alert-history-notifications", selectedId] });
-      message.success("테스트 알럿을 해제했습니다");
+      message.success(t("history.testResolvedSuccess"));
     },
-    onError: (err) => message.error(apiErrorMessage(err, "테스트 알럿 해제에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.testResolveError"))),
   });
   const addCommentMutation = useMutation({
     mutationFn: (body: string) => addAlertComment(selectedId as number, body),
@@ -236,12 +238,12 @@ export default function AlertHistory() {
       setCommentText("");
       queryClient.invalidateQueries({ queryKey: ["alert-comments", selectedId] });
     },
-    onError: (err) => message.error(apiErrorMessage(err, "댓글 작성에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.commentAddError"))),
   });
   const deleteCommentMutation = useMutation({
     mutationFn: (commentId: number) => deleteAlertComment(commentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["alert-comments", selectedId] }),
-    onError: (err) => message.error(apiErrorMessage(err, "댓글 삭제에 실패했습니다")),
+    onError: (err) => message.error(apiErrorMessage(err, t("history.commentDeleteError"))),
   });
 
   const items = useMemo(() => query.data?.items ?? [], [query.data]);
@@ -274,12 +276,12 @@ export default function AlertHistory() {
   if (noTeamSelected) {
     return (
       <div>
-        <h2>알럿 이력</h2>
+        <h2>{t("history.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -287,7 +289,7 @@ export default function AlertHistory() {
 
   const columns = [
     {
-      title: "상태",
+      title: t("common.status"),
       dataIndex: "status",
       key: "status",
       width: 110,
@@ -299,32 +301,34 @@ export default function AlertHistory() {
         ),
     },
     {
-      title: "알럿명",
+      title: t("alerts.alertName"),
       dataIndex: "alertname",
       key: "alertname",
       render: (value: string, record: AlertEventSummary) => (
         <Space size={4}>
           {value}
-          {record.is_test && <Tag color="purple">테스트</Tag>}
-          {record.shared_from && <Tag color="blue">공유: {record.shared_from}</Tag>}
+          {record.is_test && <Tag color="purple">{t("history.testTag")}</Tag>}
+          {record.shared_from && (
+            <Tag color="blue">{t("alerts.sharedFrom", { source: record.shared_from })}</Tag>
+          )}
         </Space>
       ),
     },
     {
-      title: "심각도",
+      title: t("common.severity"),
       dataIndex: "severity",
       key: "severity",
       render: (value: string | null) => <Tag style={severityTagStyle(value)}>{value ?? "none"}</Tag>,
     },
     {
-      title: "네임스페이스",
+      title: t("common.namespace"),
       dataIndex: "namespace",
       key: "namespace",
       render: (value: string | null) => value ?? "-",
     },
-    { title: "클러스터", dataIndex: "cluster_name", key: "cluster_name" },
+    { title: t("common.cluster"), dataIndex: "cluster_name", key: "cluster_name" },
     {
-      title: "확인",
+      title: t("common.acknowledged"),
       key: "acknowledged",
       width: 70,
       align: "center" as const,
@@ -340,15 +344,15 @@ export default function AlertHistory() {
         ),
     },
     {
-      title: "담당자",
+      title: t("common.assignee"),
       key: "assignee",
       width: 100,
       render: (_: unknown, record: AlertEventSummary) =>
         record.assignee?.username ?? <Text type="secondary">-</Text>,
     },
-    { title: "수신 횟수", dataIndex: "receive_count", key: "receive_count", width: 100 },
+    { title: t("history.receiveCount"), dataIndex: "receive_count", key: "receive_count", width: 100 },
     {
-      title: "시작 시각",
+      title: t("common.startedAt"),
       dataIndex: "starts_at",
       key: "starts_at",
       render: (value: string) => (
@@ -356,7 +360,7 @@ export default function AlertHistory() {
       ),
     },
     {
-      title: "최종 수신",
+      title: t("history.lastReceivedAt"),
       dataIndex: "last_received_at",
       key: "last_received_at",
       render: (value: string) => (
@@ -376,9 +380,9 @@ export default function AlertHistory() {
         }}
       >
         <h2 style={{ margin: 0 }}>
-          알럿 이력{" "}
+          {t("history.title")}{" "}
           <Text type="secondary" style={{ fontSize: 14, fontWeight: "normal" }}>
-            ({total}건)
+            ({t("alerts.count", { count: total })})
           </Text>
         </h2>
         <Space>
@@ -396,7 +400,7 @@ export default function AlertHistory() {
             disabled={exportOverCap}
             onClick={() => exportMutation.mutate()}
           >
-            {exportFormat === "json" ? "JSON 내보내기" : "NDJSON 내보내기"}
+            {t("history.exportButton", { format: exportFormat.toUpperCase() })}
           </Button>
         </Space>
       </div>
@@ -406,7 +410,11 @@ export default function AlertHistory() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message={`현재 필터 결과(${total}건)가 ${exportFormat.toUpperCase()} 내보내기 캡(${HISTORY_EXPORT_CAP[exportFormat].toLocaleString()}건)을 초과합니다. 필터를 좁혀주세요.`}
+          message={t("history.exportCapExceeded", {
+            total,
+            format: exportFormat.toUpperCase(),
+            cap: HISTORY_EXPORT_CAP[exportFormat].toLocaleString(),
+          })}
         />
       )}
 
@@ -415,7 +423,7 @@ export default function AlertHistory() {
           value={statusFilter}
           onChange={resetToFirstPage(setStatusFilter)}
           options={[
-            { label: "전체", value: "all" },
+            { label: t("common.all"), value: "all" },
             { label: "firing", value: "firing" },
             { label: "resolved", value: "resolved" },
           ]}
@@ -423,7 +431,7 @@ export default function AlertHistory() {
         <Select
           mode="multiple"
           allowClear
-          placeholder="심각도"
+          placeholder={t("common.severity")}
           style={{ minWidth: 220 }}
           options={SEVERITY_OPTIONS}
           value={severity}
@@ -431,14 +439,14 @@ export default function AlertHistory() {
         />
         <Select
           allowClear
-          placeholder="네임스페이스"
+          placeholder={t("common.namespace")}
           style={{ minWidth: 200 }}
           options={namespaceOptions}
           value={namespace}
           onChange={resetToFirstPage(setNamespace)}
         />
         <Input.Search
-          placeholder="알럿명 검색"
+          placeholder={t("alerts.searchPlaceholder")}
           allowClear
           style={{ minWidth: 240 }}
           onSearch={resetToFirstPage(setSearch)}
@@ -446,7 +454,7 @@ export default function AlertHistory() {
         <RangePicker showTime value={range} onChange={resetToFirstPage(setRange)} />
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Switch checked={includeTest} onChange={resetToFirstPage(setIncludeTest)} />
-          <Text>테스트 포함</Text>
+          <Text>{t("history.includeTest")}</Text>
         </div>
       </div>
 
@@ -469,15 +477,17 @@ export default function AlertHistory() {
           onClick: () => setSelectedId(record.id),
           style: { cursor: "pointer" },
         })}
-        locale={{ emptyText: <Empty description="이력이 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("history.empty")} /> }}
       />
 
       <Drawer
         title={
           <Space>
             {selected?.alertname}
-            {selected?.is_test && <Tag color="purple">테스트</Tag>}
-            {selected?.shared_from && <Tag color="blue">공유: {selected.shared_from}</Tag>}
+            {selected?.is_test && <Tag color="purple">{t("history.testTag")}</Tag>}
+            {selected?.shared_from && (
+              <Tag color="blue">{t("alerts.sharedFrom", { source: selected.shared_from })}</Tag>
+            )}
           </Space>
         }
         open={selectedId !== null}
@@ -495,37 +505,37 @@ export default function AlertHistory() {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 16 }}
-                message="테스트 알럿입니다"
+                message={t("history.testAlertBanner")}
                 action={
                   <Button
                     size="small"
                     loading={resolveTestMutation.isPending}
                     onClick={() => resolveTestMutation.mutate()}
                   >
-                    지금 해제
+                    {t("history.resolveNow")}
                   </Button>
                 }
               />
             )}
 
             <Descriptions column={1} bordered size="small" style={{ marginBottom: 24 }}>
-              <Descriptions.Item label="상태">{selected.status}</Descriptions.Item>
-              <Descriptions.Item label="심각도">
+              <Descriptions.Item label={t("common.status")}>{selected.status}</Descriptions.Item>
+              <Descriptions.Item label={t("common.severity")}>
                 <Tag style={severityTagStyle(selected.severity)}>{selected.severity ?? "none"}</Tag>
               </Descriptions.Item>
-              <Descriptions.Item label="네임스페이스">{selected.namespace ?? "-"}</Descriptions.Item>
-              <Descriptions.Item label="클러스터">{selected.cluster_name}</Descriptions.Item>
-              <Descriptions.Item label="시작 시각">
+              <Descriptions.Item label={t("common.namespace")}>{selected.namespace ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label={t("common.cluster")}>{selected.cluster_name}</Descriptions.Item>
+              <Descriptions.Item label={t("common.startedAt")}>
                 {dayjs(selected.starts_at).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
-              <Descriptions.Item label="최초 수신">
+              <Descriptions.Item label={t("history.firstReceivedAt")}>
                 {dayjs(selected.first_received_at).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
-              <Descriptions.Item label="최종 수신">
+              <Descriptions.Item label={t("history.lastReceivedAt")}>
                 {dayjs(selected.last_received_at).format("YYYY-MM-DD HH:mm:ss")}
               </Descriptions.Item>
-              <Descriptions.Item label="수신 횟수">{selected.receive_count}</Descriptions.Item>
-              <Descriptions.Item label="확인">
+              <Descriptions.Item label={t("history.receiveCount")}>{selected.receive_count}</Descriptions.Item>
+              <Descriptions.Item label={t("common.acknowledged")}>
                 {selected.acknowledged_at ? (
                   <Space>
                     <Tag color="success">
@@ -537,7 +547,7 @@ export default function AlertHistory() {
                       loading={unackMutation.isPending}
                       onClick={() => unackMutation.mutate()}
                     >
-                      확인 취소
+                      {t("history.unacknowledge")}
                     </Button>
                   </Space>
                 ) : (
@@ -547,14 +557,14 @@ export default function AlertHistory() {
                     loading={ackMutation.isPending}
                     onClick={() => ackMutation.mutate()}
                   >
-                    확인
+                    {t("history.ackButton")}
                   </Button>
                 )}
               </Descriptions.Item>
-              <Descriptions.Item label="담당자">
+              <Descriptions.Item label={t("common.assignee")}>
                 <Select
                   allowClear
-                  placeholder="담당자 지정"
+                  placeholder={t("history.assignPlaceholder")}
                   style={{ minWidth: 220 }}
                   disabled={selected.team_id == null}
                   loading={membersQuery.isLoading}
@@ -568,7 +578,7 @@ export default function AlertHistory() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Title level={5}>레이블</Title>
+            <Title level={5}>{t("alerts.labelsTitle")}</Title>
             <div style={{ marginBottom: 24 }}>
               {Object.entries(selected.labels).map(([key, value]) => (
                 <Tag key={key} style={{ marginBottom: 4 }}>
@@ -577,7 +587,7 @@ export default function AlertHistory() {
               ))}
             </div>
 
-            <Title level={5}>어노테이션</Title>
+            <Title level={5}>{t("alerts.annotationsTitle")}</Title>
             <div style={{ whiteSpace: "pre-wrap", marginBottom: 24 }}>
               {Object.entries(selected.annotations).length > 0 ? (
                 Object.entries(selected.annotations).map(([key, value]) => (
@@ -594,24 +604,24 @@ export default function AlertHistory() {
             <Space size="middle">
               {selected.generator_url && (
                 <a href={selected.generator_url} target="_blank" rel="noreferrer">
-                  Prometheus에서 보기
+                  {t("alerts.viewInPrometheus")}
                 </a>
               )}
               {selected.grafana_url && (
                 <a href={selected.grafana_url} target="_blank" rel="noreferrer">
-                  Grafana에서 보기
+                  {t("alerts.viewInGrafana")}
                 </a>
               )}
             </Space>
 
             <Title level={5} style={{ marginTop: 24 }}>
-              댓글
+              {t("history.commentsTitle")}
             </Title>
             <List
               size="small"
               loading={commentsQuery.isLoading}
               dataSource={commentsQuery.data ?? []}
-              locale={{ emptyText: <Empty description="댓글이 없습니다" /> }}
+              locale={{ emptyText: <Empty description={t("history.noComments")} /> }}
               style={{ marginBottom: 12 }}
               renderItem={(comment) => {
                 const canDelete =
@@ -623,11 +633,11 @@ export default function AlertHistory() {
                         ? [
                             <Popconfirm
                               key="delete"
-                              title="이 댓글을 삭제하시겠습니까?"
+                              title={t("history.deleteCommentConfirm")}
                               onConfirm={() => deleteCommentMutation.mutate(comment.id)}
                             >
                               <Button size="small" type="text" danger>
-                                삭제
+                                {t("common.delete")}
                               </Button>
                             </Popconfirm>,
                           ]
@@ -637,7 +647,7 @@ export default function AlertHistory() {
                     <List.Item.Meta
                       title={
                         <Space>
-                          <Text strong>{comment.user?.display_name ?? "(탈퇴한 사용자)"}</Text>
+                          <Text strong>{comment.user?.display_name ?? t("history.deletedUser")}</Text>
                           <Text type="secondary" style={{ fontWeight: "normal", fontSize: 12 }}>
                             {dayjs(comment.created_at).format("YYYY-MM-DD HH:mm:ss")}
                           </Text>
@@ -652,7 +662,7 @@ export default function AlertHistory() {
             <Space.Compact style={{ width: "100%", marginBottom: 24 }}>
               <Input.TextArea
                 rows={2}
-                placeholder="댓글을 입력하세요"
+                placeholder={t("history.commentPlaceholder")}
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
               />
@@ -662,34 +672,34 @@ export default function AlertHistory() {
                 disabled={!commentText.trim()}
                 onClick={() => addCommentMutation.mutate(commentText)}
               >
-                등록
+                {t("history.postComment")}
               </Button>
             </Space.Compact>
 
-            <Title level={5}>알림 전송 이력</Title>
+            <Title level={5}>{t("history.notificationHistoryTitle")}</Title>
             <Table<AlertNotificationRecord>
               rowKey="id"
               size="small"
               loading={notificationsQuery.isLoading}
               dataSource={notificationsQuery.data ?? []}
               pagination={false}
-              locale={{ emptyText: <Empty description="발송된 알림이 없습니다" /> }}
+              locale={{ emptyText: <Empty description={t("history.noNotifications")} /> }}
               columns={[
-                { title: "채널", dataIndex: "channel_name", key: "channel_name" },
+                { title: t("common.channel"), dataIndex: "channel_name", key: "channel_name" },
                 {
-                  title: "트리거",
+                  title: t("history.triggerColumn"),
                   dataIndex: "trigger",
                   key: "trigger",
-                  render: (value: string) => TRIGGER_LABEL(value),
+                  render: (value: string) => triggerLabel(value),
                 },
                 {
-                  title: "상태",
+                  title: t("common.status"),
                   dataIndex: "status",
                   key: "status",
                   render: (value: NotificationStatus, record: AlertNotificationRecord) => {
                     const statusTag = (
                       <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
-                        {NOTIFICATION_STATUS_LABEL[value]}
+                        {t(NOTIFICATION_STATUS_KEY[value])}
                       </Tag>
                     );
                     // Phase 16: a 'digested' row was folded into an
@@ -704,29 +714,33 @@ export default function AlertHistory() {
                         <Tooltip
                           title={
                             agg.delivered_at
-                              ? `발송 시각: ${dayjs(agg.delivered_at).format("YYYY-MM-DD HH:mm:ss")}`
+                              ? t("history.deliveredAtLabel", {
+                                  time: dayjs(agg.delivered_at).format("YYYY-MM-DD HH:mm:ss"),
+                                })
                               : undefined
                           }
                         >
                           <Tag color={NOTIFICATION_STATUS_COLOR[agg.status]}>
-                            집계 {agg.notification_count ?? "?"}건:{" "}
-                            {NOTIFICATION_STATUS_LABEL[agg.status]}
+                            {t("history.aggregateSummary", {
+                              count: agg.notification_count ?? "?",
+                              status: t(NOTIFICATION_STATUS_KEY[agg.status]),
+                            })}
                           </Tag>
                         </Tooltip>
                       </Space>
                     );
                   },
                 },
-                { title: "시도 횟수", dataIndex: "attempts", key: "attempts" },
+                { title: t("history.attemptsColumn"), dataIndex: "attempts", key: "attempts" },
                 {
-                  title: "발송 시각",
+                  title: t("history.deliveredAtColumn"),
                   dataIndex: "delivered_at",
                   key: "delivered_at",
                   render: (value: string | null) =>
                     value ? dayjs(value).format("YYYY-MM-DD HH:mm:ss") : "-",
                 },
                 {
-                  title: "오류",
+                  title: t("history.errorColumn"),
                   dataIndex: "last_error",
                   key: "last_error",
                   render: (value: string | null) =>
