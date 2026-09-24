@@ -30,6 +30,7 @@ import {
 import type { RetentionPurgeSummary } from "../api/admin";
 import type { AdminUser, Team } from "../api/types";
 import AdminClusters from "./AdminClusters";
+import AuditLog from "./AuditLog";
 
 const { Title, Text } = Typography;
 
@@ -54,6 +55,7 @@ export default function Admin() {
           { key: "users", label: "사용자", children: <UsersTab /> },
           { key: "clusters", label: "클러스터", children: <AdminClusters /> },
           { key: "settings", label: "설정", children: <SettingsTab /> },
+          { key: "audit", label: "감사 로그", children: <AuditLog /> },
         ]}
       />
     </div>

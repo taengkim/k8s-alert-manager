@@ -24,6 +24,7 @@ import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
 import Shares from "./pages/Shares";
 import Silences from "./pages/Silences";
+import Stats from "./pages/Stats";
 import TeamSettings from "./pages/TeamSettings";
 import Templates from "./pages/Templates";
 import TemplateEditor from "./pages/TemplateEditor";
@@ -39,6 +40,7 @@ const sections = [
   { key: "templates", label: "템플릿", path: "/templates" },
   { key: "routes", label: "Routes", path: "/routes" },
   { key: "shares", label: "공유", path: "/shares" },
+  { key: "stats", label: "통계", path: "/stats" },
 ];
 
 const CONNECTION_LABEL: Record<AlertStreamStatus, string> = {
@@ -189,6 +191,7 @@ export default function App() {
             <Route path="/routes/new" element={<RouteEditor />} />
             <Route path="/routes/:id/edit" element={<RouteEditor />} />
             <Route path="/shares" element={<Shares />} />
+            <Route path="/stats" element={<Stats />} />
             {sections
               .filter(
                 (section) =>
@@ -198,7 +201,8 @@ export default function App() {
                   section.key !== "channels" &&
                   section.key !== "templates" &&
                   section.key !== "routes" &&
-                  section.key !== "shares",
+                  section.key !== "shares" &&
+                  section.key !== "stats",
               )
               .map((section) => (
                 <Route

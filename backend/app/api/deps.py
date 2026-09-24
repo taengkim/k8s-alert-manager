@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channels.registry import ChannelRegistry
 from app.db import get_session
-from app.models.team import TeamMembership
+from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.security import decode_jwt
 from app.services.cluster_health import ClusterHealthCache
@@ -91,3 +91,42 @@ def require_team_role(
         return user
 
     return dependency
+
+
+async def resolve_team_scope(
+    team_id: int | None, user: User, session: AsyncSession
+) -> Team | None:
+    """Authorize the requested team scope and return it (or None for admin's
+    unscoped "all teams" view).
+
+    Non-admins must supply a `team_id` they belong to (any role -- owner or
+    member). Admins may omit it to see everything, including data with no
+    team attribution at all.
+
+    Shared by app.api.alerts (originally the only caller) and
+    app.api.stats -- every read view that scopes by team uses this exact
+    semantics, so a caller granted access to a team's alerts always sees
+    the same team's stats.
+    """
+    if team_id is None:
+        if not user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="team_id is required",
+            )
+        return None
+
+    team = await session.get(Team, team_id)
+    if team is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="team not found")
+
+    if not user.is_admin:
+        result = await session.execute(
+            select(TeamMembership).where(
+                TeamMembership.team_id == team_id, TeamMembership.user_id == user.id
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+
+    return team

@@ -18,7 +18,7 @@ from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.api.deps import get_current_user, require_team_role
+from app.api.deps import get_current_user, require_team_role, resolve_team_scope
 from app.db import get_session
 from app.models.alert import AlertEvent
 from app.models.channel import Channel
@@ -65,39 +65,6 @@ def get_http_client(request: Request) -> httpx.AsyncClient:
 
 def get_hub(request: Request) -> Hub:
     return request.app.state.events_hub
-
-
-async def _resolve_team_scope(
-    team_id: int | None, user: User, session: AsyncSession
-) -> Team | None:
-    """Authorize the requested team scope and return it (or None for admin's
-    unscoped "all alerts" view).
-
-    Non-admins must supply a `team_id` they belong to. Admins may omit it to
-    see every alert, including ones without a `kam_team` label.
-    """
-    if team_id is None:
-        if not user.is_admin:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="team_id is required",
-            )
-        return None
-
-    team = await session.get(Team, team_id)
-    if team is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="team not found")
-
-    if not user.is_admin:
-        result = await session.execute(
-            select(TeamMembership).where(
-                TeamMembership.team_id == team_id, TeamMembership.user_id == user.id
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
-
-    return team
 
 
 def _flatten(cluster: Cluster, raw: dict[str, Any]) -> dict[str, Any]:
@@ -189,7 +156,7 @@ async def get_live_alerts(
     session: AsyncSession = Depends(get_session),
     http_client: httpx.AsyncClient = Depends(get_http_client),
 ) -> dict[str, Any]:
-    team = await _resolve_team_scope(team_id, user, session)
+    team = await resolve_team_scope(team_id, user, session)
 
     cluster_conditions = [Cluster.enabled.is_(True)]
     if cluster_id:
@@ -461,7 +428,7 @@ async def get_alert_history(
     paged all the way through. This is an accepted approximation for this
     phase rather than re-deriving pagination from a filter-then-count pass.
     """
-    team = await _resolve_team_scope(team_id, user, session)
+    team = await resolve_team_scope(team_id, user, session)
 
     # Pre-compiled once per share here (not per event below) -- a page can
     # hold up to 200 rows, and re-deriving the same share's compiled
@@ -660,7 +627,7 @@ async def export_alert_history(
     paginated -- `json` (small, capped, one document) or `ndjson` (larger cap,
     genuinely streamed).
     """
-    team = await _resolve_team_scope(team_id, user, session)
+    team = await resolve_team_scope(team_id, user, session)
     conditions = _build_history_conditions(
         team=team,
         cluster_id=cluster_id,
@@ -1440,7 +1407,7 @@ async def get_ack_status(
     since the caller already knows which row is whose from /live's
     `shared_from`.
     """
-    team = await _resolve_team_scope(team_id, user, session)
+    team = await resolve_team_scope(team_id, user, session)
 
     if not body.items:
         return {"matched": []}

@@ -28,6 +28,7 @@ import {
 } from "../api/teams";
 import { listUsers } from "../api/admin";
 import type { LdapMapping, Member, TeamRole } from "../api/types";
+import AuditLog from "./AuditLog";
 
 const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
   { value: "owner", label: "Owner" },
@@ -76,6 +77,18 @@ export default function TeamSettings() {
             label: "LDAP 매핑",
             children: <MappingsTab teamId={currentTeam.id} isOwner={isOwner} />,
           },
+          // Owner-only: a team's audit trail is an owner-level concern (see
+          // app.api.audit's scoping), so a plain member never sees this tab
+          // at all, matching the 403 the API itself would return.
+          ...(isOwner
+            ? [
+                {
+                  key: "audit",
+                  label: "감사 로그",
+                  children: <AuditLog fixedTeamId={currentTeam.id} />,
+                },
+              ]
+            : []),
         ]}
       />
     </div>

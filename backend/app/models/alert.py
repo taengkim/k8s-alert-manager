@@ -25,6 +25,11 @@ class AlertEvent(Base):
         ),
         Index("ix_alert_events_team_status", "team_id", "status"),
         Index("ix_alert_events_cluster_status", "cluster_id", "status"),
+        # Phase 19: backs app.services.stats's range-filtered aggregate
+        # queries (top_alerts/volume/breakdown/response_times/summary), all
+        # of which filter on (team_id, starts_at) -- without this, each is a
+        # sequential scan of alert_events on every Stats page view.
+        Index("ix_alert_events_team_starts", "team_id", "starts_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

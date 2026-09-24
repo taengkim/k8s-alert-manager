@@ -40,6 +40,10 @@ class NotificationOutbox(Base):
         # (app.worker.scheduler._dispatch_digest_flush).
         Index("ix_outbox_channel_digest_created", "channel_id", "is_digest", "created_at"),
         Index("ix_outbox_channel_status", "channel_id", "status"),
+        # Phase 19: backs app.services.stats.summary's two per-status,
+        # per-range outbox counts (delivered_in_range/failed_or_dead_in_range),
+        # which filter on exactly (team_id, status, created_at).
+        Index("ix_outbox_team_status_created", "team_id", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
