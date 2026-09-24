@@ -228,6 +228,88 @@ async def test_heartbeat_watchdog_creates_no_event_and_updates_cluster(app) -> N
         assert cluster.last_heartbeat_at is not None
 
 
+# -- Phase 17: heartbeat recovery ------------------------------------------
+
+
+async def test_heartbeat_recovery_resolves_missing_event_and_calls_hook_with_resolved(app) -> None:
+    """A Watchdog heartbeat arriving while heartbeat_state=='missing' must
+    resolve the synthetic heartbeat-lost event (app.worker.heartbeat.sweep's
+    fingerprint contract) through the normal on_event_transition hook -- the
+    same routing/notification path a real Alertmanager 'resolved' delivery
+    goes through, just triggered by a heartbeat instead.
+    """
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        cluster.heartbeat_state = "missing"
+        fingerprint = ingest.heartbeat_lost_fingerprint(cluster.id)
+        synthetic = AlertEvent(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            fingerprint=fingerprint,
+            status="firing",
+            alertname=ingest.HEARTBEAT_LOST_ALERTNAME,
+            severity="critical",
+            namespace=None,
+            labels={"alertname": ingest.HEARTBEAT_LOST_ALERTNAME, "cluster": cluster.name},
+            annotations={"description": "test"},
+            team_id=None,
+            starts_at=datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC),
+            ends_at=None,
+        )
+        session.add(synthetic)
+        await session.flush()
+        await session.commit()
+
+        payload = AlertmanagerWebhookPayload(
+            alerts=[_alert(alertname="Watchdog", kam_team=None, severity=None, namespace=None)]
+        )
+        with patch.object(ingest, "on_event_transition", new=AsyncMock()) as spy:
+            result = await ingest_webhook(session, cluster, payload)
+            await session.commit()
+
+        assert result.heartbeats_seen == 1
+        await session.refresh(cluster)
+        assert cluster.heartbeat_state == "ok"
+
+        spy.assert_awaited_once()
+        _, resolved_event, kind = spy.await_args.args
+        assert kind == "resolved"
+        assert resolved_event.id == synthetic.id
+
+        await session.refresh(synthetic)
+        assert synthetic.status == "resolved"
+        assert synthetic.ends_at is not None
+
+
+async def test_heartbeat_while_ok_does_not_touch_unrelated_firing_events(app) -> None:
+    """Recovery only fires when the PRIOR state was 'missing' -- an ordinary
+    on-time heartbeat (state already 'ok') must never resolve anything, even
+    if some other real alert happens to be firing for the same cluster.
+    """
+    async with db_module.async_session_factory() as session:
+        cluster = await _get_default_cluster(session)
+        assert cluster.heartbeat_state == "unknown"
+        cluster.heartbeat_state = "ok"
+        await session.flush()
+
+        real_alert_payload = AlertmanagerWebhookPayload(alerts=[_alert(fingerprint="fp-real")])
+        await ingest_webhook(session, cluster, real_alert_payload)
+        await session.commit()
+
+        with patch.object(ingest, "on_event_transition", new=AsyncMock()) as spy:
+            payload = AlertmanagerWebhookPayload(
+                alerts=[_alert(alertname="Watchdog", kam_team=None, severity=None, namespace=None)]
+            )
+            result = await ingest_webhook(session, cluster, payload)
+            await session.commit()
+
+        assert result.heartbeats_seen == 1
+        spy.assert_not_awaited()
+
+        row = (await session.execute(select(AlertEvent))).scalar_one()
+        assert row.status == "firing"  # untouched
+
+
 async def test_heartbeat_disabled_processes_as_normal_event(app) -> None:
     async with db_module.async_session_factory() as session:
         cluster = await _get_default_cluster(session)

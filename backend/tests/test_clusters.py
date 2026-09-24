@@ -540,6 +540,199 @@ async def test_rotate_webhook_token_invalidates_old_token(client: AsyncClient) -
         assert row is not None
 
 
+# -- Phase 17: heartbeat-missing reset on disable ----------------------------
+
+
+async def _setup_missing_cluster_with_notify_rule(
+    client: AsyncClient, name: str
+) -> tuple[int, int, int]:
+    """Admin-creates `name`, then directly wires up (via ORM) a team with a
+    notify_on_resolved rule + channel, a 'missing' heartbeat_state, and an
+    open synthetic KamClusterHeartbeatLost event -- the exact state a real
+    heartbeat sweep timeout would have left behind. Returns
+    (cluster_id, event_id, channel_id).
+    """
+    from app.channels.email import EmailConfig
+    from app.models.channel import Channel
+    from app.security import encrypt_str
+    from app.services.ingest import HEARTBEAT_LOST_ALERTNAME, heartbeat_lost_fingerprint
+
+    created = await _create_cluster(client, name=name)
+    cluster_id = created["id"]
+
+    async with db_module.async_session_factory() as session:
+        from app.models.routing import RoutingRule
+        from app.models.team import Team
+
+        team = Team(slug=f"{name}-team", name=f"{name} Team")
+        session.add(team)
+        await session.flush()
+
+        channel = Channel(
+            team_id=team.id,
+            name=f"{name}-channel",
+            type="email",
+            config_encrypted=encrypt_str(
+                EmailConfig(recipients=["oncall@example.org"]).model_dump_json()
+            ),
+        )
+        session.add(channel)
+        await session.flush()
+
+        rule = RoutingRule(
+            team_id=team.id,
+            name=f"{name}-rule",
+            action="notify",
+            notify_on_firing=True,
+            notify_on_resolved=True,
+            channels=[channel],
+        )
+        session.add(rule)
+        await session.flush()
+
+        cluster = await session.get(Cluster, cluster_id)
+        cluster.heartbeat_state = "missing"
+        cluster.heartbeat_team_id = team.id
+
+        event = AlertEvent(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            fingerprint=heartbeat_lost_fingerprint(cluster.id),
+            status="firing",
+            alertname=HEARTBEAT_LOST_ALERTNAME,
+            severity="critical",
+            namespace=None,
+            labels={"alertname": HEARTBEAT_LOST_ALERTNAME, "kam_team": team.slug},
+            annotations={"description": "test"},
+            team_id=team.id,
+            starts_at=datetime(2026, 9, 22, 0, 0, 0, tzinfo=UTC),
+        )
+        session.add(event)
+        await session.commit()
+        event_id = event.id
+
+    return cluster_id, event_id, channel.id
+
+
+async def test_disabling_cluster_while_missing_resets_heartbeat_and_resolves_event(
+    client: AsyncClient,
+) -> None:
+    """Webhook auth (app/api/webhook.py) requires enabled=True, so disabling
+    a cluster while its heartbeat is 'missing' would otherwise leave it
+    permanently stuck there -- no future heartbeat could ever arrive to
+    resolve it. The reset must route the resolution through the normal
+    route_event path, so a notify_on_resolved rule still fires a recovery
+    notification (an outbox row for the rule's channel).
+    """
+    from app.models.outbox import NotificationOutbox
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    cluster_id, event_id, channel_id = await _setup_missing_cluster_with_notify_rule(
+        client, "disable-missing"
+    )
+
+    response = await client.patch(f"/api/v1/clusters/{cluster_id}", json={"enabled": False})
+    assert response.status_code == 200, response.text
+    assert response.json()["heartbeat_state"] == "unknown"
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.enabled is False
+        assert cluster.heartbeat_state == "unknown"
+
+        event = await session.get(AlertEvent, event_id)
+        assert event.status == "resolved"
+        assert event.ends_at is not None
+
+        outbox_rows = (
+            await session.execute(
+                select(NotificationOutbox).where(NotificationOutbox.alert_event_id == event_id)
+            )
+        ).scalars().all()
+        assert len(outbox_rows) == 1
+        assert outbox_rows[0].channel_id == channel_id
+
+        audit_row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "cluster.update", AuditLog.object_ref == "disable-missing"
+                )
+            )
+        ).scalar_one()
+        assert audit_row.detail == {"heartbeat_reset_from_missing": True}
+
+
+async def test_disabling_heartbeat_enabled_while_missing_resets_heartbeat_and_resolves_event(
+    client: AsyncClient,
+) -> None:
+    """Same class of fix as disabling the cluster itself: turning
+    heartbeat_enabled off while 'missing' means app.services.ingest's
+    heartbeat hook will never run again for this cluster either, so a real
+    Watchdog heartbeat could never resolve it -- must reset + resolve just
+    the same.
+    """
+    from app.models.outbox import NotificationOutbox
+
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    cluster_id, event_id, channel_id = await _setup_missing_cluster_with_notify_rule(
+        client, "disable-hb-missing"
+    )
+
+    response = await client.patch(
+        f"/api/v1/clusters/{cluster_id}", json={"heartbeat_enabled": False}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["heartbeat_state"] == "unknown"
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, cluster_id)
+        assert cluster.heartbeat_enabled is False
+        assert cluster.heartbeat_state == "unknown"
+
+        event = await session.get(AlertEvent, event_id)
+        assert event.status == "resolved"
+        assert event.ends_at is not None
+
+        outbox_rows = (
+            await session.execute(
+                select(NotificationOutbox).where(NotificationOutbox.alert_event_id == event_id)
+            )
+        ).scalars().all()
+        assert len(outbox_rows) == 1
+        assert outbox_rows[0].channel_id == channel_id
+
+
+async def test_disabling_cluster_not_missing_has_no_heartbeat_side_effect(
+    client: AsyncClient,
+) -> None:
+    """The reset/resolve behavior is gated on heartbeat_state=='missing' --
+    disabling an 'ok' (or 'unknown') cluster is a plain disable, no synthetic
+    event to resolve, no state reset.
+    """
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+    created = await _create_cluster(client, name="disable-plain")
+
+    async with db_module.async_session_factory() as session:
+        cluster = await session.get(Cluster, created["id"])
+        cluster.heartbeat_state = "ok"
+        cluster.last_heartbeat_at = datetime.now(UTC)
+        await session.commit()
+
+    response = await client.patch(f"/api/v1/clusters/{created['id']}", json={"enabled": False})
+    assert response.status_code == 200, response.text
+    assert response.json()["heartbeat_state"] == "ok"
+
+    async with db_module.async_session_factory() as session:
+        audit_row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "cluster.update", AuditLog.object_ref == "disable-plain"
+                )
+            )
+        ).scalar_one()
+        assert audit_row.detail is None
+
+
 # -- DELETE /clusters/{id} ---------------------------------------------------
 
 

@@ -26,6 +26,10 @@ from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
 from app.security import decrypt_str
 from app.services.templating import APP_DEFAULT_TEMPLATES, render, resolve_template
+from app.worker.heartbeat import (
+    SWEEP_INTERVAL_SECONDS as HEARTBEAT_SWEEP_INTERVAL_SECONDS,
+)
+from app.worker.heartbeat import sweep as run_heartbeat_sweep
 from app.worker.scheduler import (
     maybe_run_retention_sweep,
     recover_stale_claims,
@@ -367,6 +371,7 @@ async def run_loop(
     lease_recovery_interval: float = 60.0,
     lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT,
     scheduler_interval: float = 30.0,
+    heartbeat_sweep_interval: float = HEARTBEAT_SWEEP_INTERVAL_SECONDS,
 ) -> None:
     """Poll for due outbox rows until `stop_event` is set.
 
@@ -382,13 +387,21 @@ async def run_loop(
     'retention.last_purge_at' AppSetting), so checking every 30s costs one
     cheap indexed read, not a purge attempt every 30s.
 
+    Phase 17: `app.worker.heartbeat.sweep` ticks on its own fixed
+    `heartbeat_sweep_interval` (default 60s, per that phase's brief -- unlike
+    retention it isn't gated by an AppSetting, since 60s against
+    minutes-scale timeouts is cheap to just always run). Same "piggyback on
+    the one loop that already exists" reasoning as the scheduler/retention
+    ticks above -- no separate task or stop_event handling of its own.
+
     Robust by design: any exception during a tick (claim, deliver, lease
-    recovery, scheduler dispatch, or retention) is logged and swallowed so
-    one bad iteration never kills the loop -- the next poll just tries
-    again.
+    recovery, scheduler dispatch, retention, or heartbeat sweep) is logged
+    and swallowed so one bad iteration never kills the loop -- the next poll
+    just tries again.
     """
     last_lease_recovery = time.monotonic() - lease_recovery_interval  # run once immediately
     last_scheduler_tick = time.monotonic() - scheduler_interval  # run once immediately
+    last_heartbeat_sweep = time.monotonic() - heartbeat_sweep_interval  # run once immediately
     while not stop_event.is_set():
         try:
             if time.monotonic() - last_lease_recovery >= lease_recovery_interval:
@@ -408,6 +421,14 @@ async def run_loop(
                 await run_scheduler_tick(session_factory, worker_id)
                 await maybe_run_retention_sweep(session_factory)
                 last_scheduler_tick = time.monotonic()
+
+            if time.monotonic() - last_heartbeat_sweep >= heartbeat_sweep_interval:
+                summary = await run_heartbeat_sweep(session_factory)
+                if summary["went_missing"]:
+                    logger.warning(
+                        "heartbeat sweep: cluster(s) went missing: %s", summary["went_missing"]
+                    )
+                last_heartbeat_sweep = time.monotonic()
         except Exception:
             logger.exception("outbox worker: tick failed -- continuing")
 

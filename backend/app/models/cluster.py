@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.db import Base, UTCDateTime
 
 
 class Cluster(Base):
@@ -33,9 +33,17 @@ class Cluster(Base):
     heartbeat_team_id: Mapped[int | None] = mapped_column(
         ForeignKey("teams.id"), nullable=True
     )
-    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    # Phase 17: `UTCDateTime`, not plain `DateTime(timezone=True)` -- this
+    # field is compared arithmetically (`now - last_heartbeat_at`) by
+    # app.worker.heartbeat.sweep against a cluster row loaded fresh in its
+    # own session/transaction, unlike every other heartbeat mutation before
+    # Phase 17 (app.services.ingest's hook only ever read/wrote it on an
+    # already-loaded ORM object within the same transaction). SQLite drops
+    # the UTC offset on write regardless of `timezone=True` and hands back a
+    # naive datetime on a fresh read -- `UTCDateTime` re-attaches it so that
+    # arithmetic doesn't raise "can't subtract offset-naive and
+    # offset-aware datetimes" the moment it's read from a different session.
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     heartbeat_state: Mapped[str] = mapped_column(String(16), default="unknown")
 
     created_at: Mapped[datetime] = mapped_column(

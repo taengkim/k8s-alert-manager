@@ -27,6 +27,27 @@ logger = logging.getLogger(__name__)
 # haven't resolved yet -- semantically "no end time", i.e. None.
 _AM_ZERO_TIME = "0001-01-01T00:00:00Z"
 
+# Phase 17: the alertname/fingerprint contract for the synthetic "deadman
+# switch" alert `app.worker.heartbeat.sweep` injects through this module's
+# own `ingest_webhook` when a cluster's heartbeat goes missing. Defined here
+# (not in app.worker.heartbeat) so this module's own recovery handling below
+# doesn't need to import back from there -- app.worker.heartbeat already
+# imports from this module to reuse the real ingest pipeline for injection,
+# and a two-way import would cycle.
+HEARTBEAT_LOST_ALERTNAME = "KamClusterHeartbeatLost"
+
+
+def heartbeat_lost_fingerprint(cluster_id: int) -> str:
+    """Deterministic per-cluster fingerprint for the synthetic heartbeat-lost
+    alert -- stable across occurrences (so a recovery can find and resolve
+    the right row), while `starts_at` still varies per occurrence (so a
+    cluster that goes missing, recovers, then goes missing again gets a
+    fresh `AlertEvent` identity rather than colliding with the old,
+    by-then-resolved one -- same (cluster_id, fingerprint, starts_at)
+    identity rule as any other alert, see `AlertEvent`'s docstring).
+    """
+    return f"hb-{cluster_id}"
+
 
 class AlertmanagerAlert(BaseModel):
     """One alert entry from an Alertmanager webhook v4 payload. Only the
@@ -137,6 +158,51 @@ async def on_event_transition(session: AsyncSession, event: AlertEvent, kind: st
     await route_event(session, event, kind)
 
 
+async def resolve_heartbeat_lost_event(
+    session: AsyncSession, cluster: Cluster, now: datetime
+) -> None:
+    """Phase 17 recovery: whatever `app.worker.heartbeat.sweep` injected for
+    a 'missing' `cluster` has now recovered -- resolve that synthetic event
+    through the normal `on_event_transition` hook, exactly like any other
+    firing->resolved transition (so `notify_on_resolved` rules fire a
+    recovery notification the same way they would for a real Alertmanager
+    'resolved' delivery).
+
+    Public (not `_`-prefixed): called from two places. `_ingest_one` below
+    calls it when an actual Watchdog heartbeat arrives while
+    `heartbeat_state == 'missing'` -- the ok->missing edge trigger's
+    counterpart on the way back. `app/api/clusters.py`'s `update_cluster`
+    also calls it directly when an admin disables a cluster (or turns its
+    `heartbeat_enabled` off) while it's 'missing': the webhook auth check
+    requires `enabled=True`, so a real heartbeat could otherwise never
+    arrive to resolve it, leaving it stuck 'missing' forever.
+
+    Looks up by `status == 'firing'` rather than a specific `starts_at`
+    (unlike `_get_existing`'s normal identity lookup): the caller only knows
+    "the heartbeat came back", not which occurrence's `starts_at` the sweep
+    used when it minted this cluster's currently-open incident. In the
+    steady state there is at most one firing row for this fingerprint (the
+    state machine only ever injects a new one on an ok->missing edge, and
+    that edge can't repeat while the previous incident is still open) --
+    `.all()` rather than a single lookup is just defense in depth against a
+    row surviving some other, unexpected path.
+    """
+    fingerprint = heartbeat_lost_fingerprint(cluster.id)
+    result = await session.execute(
+        select(AlertEvent).where(
+            AlertEvent.cluster_id == cluster.id,
+            AlertEvent.fingerprint == fingerprint,
+            AlertEvent.status == "firing",
+        )
+    )
+    for event in result.scalars().all():
+        event.status = "resolved"
+        event.ends_at = now
+        event.last_received_at = now
+        event.receive_count += 1
+        await on_event_transition(session, event, "resolved")
+
+
 async def _ingest_one(
     session: AsyncSession, cluster: Cluster, alert: AlertmanagerAlert, result: IngestResult
 ) -> None:
@@ -151,14 +217,23 @@ async def _ingest_one(
     silently broke dedup by minting a fresh identity on every retry of the
     same undated alert); a usable identity requires a real `startsAt`, so
     a missing/zero one is always a skip, never a guess.
+
+    Phase 17: the heartbeat branch below additionally resolves this
+    cluster's synthetic heartbeat-lost event (see
+    `resolve_heartbeat_lost_event`) when the incoming heartbeat arrives
+    while `heartbeat_state == 'missing'` -- the ok->missing edge trigger's
+    counterpart on the way back.
     """
     now = datetime.now(UTC)
     alertname = alert.labels.get("alertname", "")
 
     if cluster.heartbeat_enabled and alertname == cluster.heartbeat_alertname:
+        was_missing = cluster.heartbeat_state == "missing"
         cluster.last_heartbeat_at = now
         cluster.heartbeat_state = "ok"
         result.heartbeats_seen += 1
+        if was_missing:
+            await resolve_heartbeat_lost_event(session, cluster, now)
         return
 
     try:

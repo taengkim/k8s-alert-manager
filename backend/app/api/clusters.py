@@ -3,16 +3,19 @@ user can see, per-cluster health, and the k8s namespaces lookup used by the
 rule builder.
 
 Field visibility: every authenticated user can see id/name/display_name/
-enabled/health/heartbeat_*; only an admin additionally sees connection
-config (prometheus_url/alertmanager_url/grafana_url/rules_namespace/
-k8s_auth_kind/k8s_api_url/heartbeat config detail). Credentials and the
-webhook token hash are never returned to anyone, at any role -- the
-plaintext webhook token is only ever visible once, in the POST (create) or
-PATCH (rotate) response that just (re)generated it.
+enabled/health/heartbeat_state/last_heartbeat_at; only an admin additionally
+sees connection config (prometheus_url/alertmanager_url/grafana_url/
+rules_namespace/k8s_auth_kind/k8s_api_url) and heartbeat config detail
+(heartbeat_enabled/heartbeat_alertname/heartbeat_timeout_seconds/
+heartbeat_team_id). Credentials and the webhook token hash are never
+returned to anyone, at any role -- the plaintext webhook token is only ever
+visible once, in the POST (create) or PATCH (rotate) response that just
+(re)generated it.
 """
 
 import json
 import secrets
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -38,6 +41,7 @@ from app.models.user import User
 from app.security import encrypt_str, hash_token
 from app.services import audit
 from app.services.cluster_health import ClusterHealthCache
+from app.services.ingest import resolve_heartbeat_lost_event
 from app.services.k8s import K8sBadRequestError, K8sClientFactory, K8sUnavailableError
 
 router = APIRouter(prefix="/api/v1/clusters", tags=["clusters"])
@@ -326,11 +330,45 @@ async def update_cluster(
                 detail="unknown heartbeat_team_id",
             )
 
+    # Phase 17: captured BEFORE the plain-field loop below applies either
+    # mutation -- a real Watchdog heartbeat can only ever arrive through
+    # POST /webhook/alertmanager, whose auth check
+    # (app/api/webhook.py's _authenticate_cluster) requires `enabled=True`;
+    # and app.services.ingest's heartbeat hook only runs at all when
+    # `heartbeat_enabled` is True. So disabling either while
+    # heartbeat_state=='missing' would otherwise leave this cluster stuck
+    # 'missing' forever -- no future heartbeat delivery could ever reach the
+    # hook that resolves it -- which reads as a permanent Alerts banner with
+    # no way back to 'ok'.
+    disabling_while_missing = cluster.heartbeat_state == "missing" and (
+        ("enabled" in fields_set and body.enabled is False)
+        or ("heartbeat_enabled" in fields_set and body.heartbeat_enabled is False)
+    )
+
     changed = False
     for field in _PLAIN_UPDATE_FIELDS:
         if field in fields_set:
             setattr(cluster, field, getattr(body, field))
             changed = True
+
+    if disabling_while_missing:
+        # Reset to 'unknown' -- the same "no heartbeat history is being
+        # tracked" state a cluster starts in -- and resolve the open
+        # synthetic KamClusterHeartbeatLost event through the normal
+        # route_event path (app.services.ingest.resolve_heartbeat_lost_event,
+        # shared with the real-heartbeat recovery path in _ingest_one), so a
+        # notify_on_resolved rule still fires a recovery notification exactly
+        # as if a heartbeat had arrived.
+        #
+        # Accepted side effect of heartbeat_enabled -> False specifically:
+        # any Watchdog alert that arrives afterwards is no longer caught by
+        # the heartbeat hook (it only matches when heartbeat_enabled is True)
+        # and ingests as an ordinary, unattributed AlertEvent instead --
+        # deliberate, not a bug: an admin turning heartbeat tracking off may
+        # still want Watchdog's alerts visible in history, just no longer
+        # treated as a deadman switch.
+        cluster.heartbeat_state = "unknown"
+        await resolve_heartbeat_lost_event(session, cluster, datetime.now(UTC))
 
     # A kind change with no new `credentials` in the same request needs a
     # per-kind call: 'token' always requires credentials (there's no valid
@@ -378,6 +416,7 @@ async def update_cluster(
             action="cluster.update",
             object_type="cluster",
             object_ref=cluster.name,
+            detail={"heartbeat_reset_from_missing": True} if disabling_while_missing else None,
         )
 
     rotated_token: str | None = None
