@@ -19,6 +19,7 @@ dependencies = [
     "aiosmtplib",
     "jinja2",
     "email-validator",
+    "sse-starlette>=3.4.11",
 ]
 
 [dependency-groups]
