@@ -4,10 +4,12 @@ and (via app.services.ingest) the missing->ok recovery side.
 """
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 from sqlalchemy import select
 
 import app.db as db_module
+import app.worker.heartbeat as heartbeat_module
 from app.channels.email import EmailConfig
 from app.models.alert import AlertEvent
 from app.models.channel import Channel
@@ -371,3 +373,53 @@ async def test_sweep_handles_multiple_clusters_independently(app) -> None:
         rows = (await session.execute(select(AlertEvent))).scalars().all()
         assert len(rows) == 1
         assert rows[0].cluster_id == timed_out_id
+
+
+# -- per-cluster isolation ----------------------------------------------------
+
+
+async def test_sweep_isolates_per_cluster_failures(app) -> None:
+    """A failure injecting one cluster's synthetic alert (e.g. route_event
+    raising on a misconfigured team, a DB hiccup, ...) must not roll back or
+    block any other candidate in the same sweep tick -- each candidate is
+    evaluated/flipped in its own session/transaction.
+    """
+    async with db_module.async_session_factory() as session:
+        failing = await _create_cluster(
+            session, name="hb-fail", heartbeat_timeout_seconds=60, last_heartbeat_at=_stale(120)
+        )
+        healthy = await _create_cluster(
+            session, name="hb-ok", heartbeat_timeout_seconds=60, last_heartbeat_at=_stale(120)
+        )
+        await session.commit()
+        failing_id, healthy_id = failing.id, healthy.id
+
+    real_inject = heartbeat_module._inject_heartbeat_lost
+
+    async def flaky_inject(session, cluster, now):
+        if cluster.name == "hb-fail":
+            raise RuntimeError("simulated injection failure")
+        return await real_inject(session, cluster, now)
+
+    with patch.object(heartbeat_module, "_inject_heartbeat_lost", side_effect=flaky_inject):
+        summary = await sweep(db_module.async_session_factory)
+
+    # The failing cluster's own transaction never committed -- its state is
+    # untouched (still 'ok'), so it's simply re-evaluated (and, since it's
+    # still timed out, retried) on the next tick, per the module docstring.
+    assert summary["went_missing"] == ["hb-ok"]
+
+    async with db_module.async_session_factory() as session:
+        assert (await session.get(Cluster, failing_id)).heartbeat_state == "ok"
+        assert (await session.get(Cluster, healthy_id)).heartbeat_state == "missing"
+
+        rows = (await session.execute(select(AlertEvent))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].cluster_id == healthy_id
+
+    # And a subsequent tick, once the failure is gone, successfully catches
+    # up the cluster that failed the first time.
+    summary2 = await sweep(db_module.async_session_factory)
+    assert summary2["went_missing"] == ["hb-fail"]
+    async with db_module.async_session_factory() as session:
+        assert (await session.get(Cluster, failing_id)).heartbeat_state == "missing"
