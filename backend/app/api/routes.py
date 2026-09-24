@@ -21,7 +21,7 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.routing import RoutingMatcher, RoutingRule
 from app.models.team import Team, TeamMembership
-from app.models.template import MessageTemplate
+from app.models.template import ALERT_TEMPLATE_KIND, MessageTemplate
 from app.models.user import User
 from app.services import audit
 from app.services.routing import (
@@ -288,6 +288,15 @@ async def _validate_template(session: AsyncSession, team_id: int, template_id: i
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="template_id must belong to this team",
+        )
+    # Phase 20: a 'report'-kind template's render context (ReportData) has
+    # nothing in common with a routing rule's own alert-delivery context
+    # (AlertNotification) -- see app/models/template.py's docstring and
+    # app/api/channels.py's identical guard.
+    if template.kind != ALERT_TEMPLATE_KIND:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"template_id must be an '{ALERT_TEMPLATE_KIND}'-kind template",
         )
 
 

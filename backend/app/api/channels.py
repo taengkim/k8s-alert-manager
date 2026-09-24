@@ -27,7 +27,7 @@ from app.models.routing import (
     routing_rule_escalation_channels,
 )
 from app.models.team import Team, TeamMembership
-from app.models.template import MessageTemplate
+from app.models.template import ALERT_TEMPLATE_KIND, MessageTemplate
 from app.models.user import User
 from app.security import decrypt_str, encrypt_str
 from app.services import audit
@@ -157,6 +157,16 @@ async def _validate_template_ownership(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="template_id must belong to this team",
+        )
+    # Phase 20: a 'report'-kind template's render context (ReportData) has
+    # nothing in common with a channel's own alert-delivery context
+    # (AlertNotification) -- assigning one here would silently render
+    # blank/nonsense output via the sandbox's lenient ChainableUndefined
+    # rather than failing loudly. See app/models/template.py's docstring.
+    if template.kind != ALERT_TEMPLATE_KIND:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"template_id must be an '{ALERT_TEMPLATE_KIND}'-kind template",
         )
 
 

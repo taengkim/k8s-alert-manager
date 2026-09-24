@@ -104,6 +104,62 @@ async def test_admin_bypasses_team_rbac(client: AsyncClient) -> None:
     assert resp.status_code == 201
 
 
+async def test_create_channel_rejects_report_kind_template(client: AsyncClient) -> None:
+    """Phase 20: a 'report'-kind template's render context (ReportData) has
+    nothing to do with a channel's own alert-delivery context
+    (AlertNotification) -- assigning one must 422, not silently render
+    blank/nonsense output via the sandbox's lenient undefined handling."""
+    team_id = await _create_team("report-tpl-channel")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    tpl_resp = await client.post(
+        f"/api/v1/teams/{team_id}/templates",
+        json={"name": "rpt", "kind": "report", "title_template": "x", "body_template": "y"},
+    )
+    assert tpl_resp.status_code == 201
+    template_id = tpl_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["ops@example.org"]},
+            "template_id": template_id,
+        },
+    )
+    assert resp.status_code == 422
+
+
+async def test_create_channel_accepts_alert_kind_template(client: AsyncClient) -> None:
+    team_id = await _create_team("alert-tpl-channel")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    tpl_resp = await client.post(
+        f"/api/v1/teams/{team_id}/templates",
+        json={
+            "name": "alert-tpl",
+            "kind": "alert",
+            "title_template": "{{ alertname }}",
+            "body_template": "y",
+        },
+    )
+    assert tpl_resp.status_code == 201
+    template_id = tpl_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/channels",
+        json={
+            "name": "c1",
+            "type": "email",
+            "config": {"recipients": ["ops@example.org"]},
+            "template_id": template_id,
+        },
+    )
+    assert resp.status_code == 201
+    assert resp.json()["template_id"] == template_id
+
+
 async def test_create_channel_unknown_type_404(client: AsyncClient) -> None:
     team_id = await _create_team("t-unknown")
     await login_as(client, username="alice", group_dns=[ADMIN_DN])

@@ -4,10 +4,22 @@ title/body/body_html get rendered before delivery (see
 `app/worker/outbox.py`'s `deliver()` for where a template is resolved and
 rendered -- at delivery time, not routing time).
 
-`kind` is a free string, not a DB CHECK constraint: only 'alert' is
-supported today (enforced at the API layer, see `app/api/templates.py`),
-but leaving the column unconstrained means Phase 20's 'report' kind can
+`kind` is a free string, not a DB CHECK constraint: 'alert' (this module's
+own `ALERT_TEMPLATE_KIND`) and 'report' (Phase 20, see
+`app.services.reports.REPORT_TEMPLATE_KIND`) are both supported today,
+enforced at the API layer (see `app/api/templates.py`'s `SUPPORTED_KINDS`)
+-- leaving the column unconstrained is what let Phase 20's 'report' kind
 land without a schema migration.
+
+The two kinds are not interchangeable: only an 'alert'-kind template may be
+assigned to a `Channel`/`RoutingRule` (see `app/api/channels.py`'s
+`_validate_template_ownership` and `app/api/routes.py`'s
+`_validate_template`), and only a 'report'-kind template may be assigned to
+a `ReportSchedule` (see `app/api/reports.py`'s own `_validate_template`) --
+a template's own render context is entirely different between the two (an
+`AlertNotification` vs. `app.services.reports.ReportData`), so cross-
+assigning would render blank/nonsense output via the sandboxed environment's
+lenient `ChainableUndefined` rather than failing loudly.
 """
 
 from datetime import UTC, datetime
@@ -18,6 +30,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base, UTCDateTime
 
 MAX_TEMPLATE_LENGTH = 16384
+
+# This module's own kind -- see module docstring. 'report' (Phase 20) is
+# `app.services.reports.REPORT_TEMPLATE_KIND`, not duplicated here to avoid
+# a needless cross-import; app/api/templates.py's SUPPORTED_KINDS combines
+# both.
+ALERT_TEMPLATE_KIND = "alert"
 
 
 class MessageTemplate(Base):
@@ -30,8 +48,8 @@ class MessageTemplate(Base):
     team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    # 'alert' only for now -- see module docstring.
-    kind: Mapped[str] = mapped_column(String(32), default="alert")
+    # 'alert' | 'report' (Phase 20) -- see module docstring.
+    kind: Mapped[str] = mapped_column(String(32), default=ALERT_TEMPLATE_KIND)
     title_template: Mapped[str] = mapped_column(Text)
     body_template: Mapped[str] = mapped_column(Text)
     body_html_template: Mapped[str | None] = mapped_column(Text, nullable=True)

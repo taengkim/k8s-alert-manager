@@ -253,6 +253,51 @@ async def test_channel_from_other_team_is_422(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
+async def test_route_rejects_report_kind_template(client: AsyncClient) -> None:
+    """Phase 20: a 'report'-kind template's render context (ReportData) has
+    nothing to do with a routing rule's own alert-delivery context
+    (AlertNotification) -- assigning one must 422."""
+    team_id = await _create_team("t-report-tpl")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    tpl_resp = await client.post(
+        f"/api/v1/teams/{team_id}/templates",
+        json={"name": "rpt", "kind": "report", "title_template": "x", "body_template": "y"},
+    )
+    assert tpl_resp.status_code == 201
+    template_id = tpl_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(channel_ids=[await _create_channel(team_id)], template_id=template_id),
+    )
+    assert resp.status_code == 422
+
+
+async def test_route_accepts_alert_kind_template(client: AsyncClient) -> None:
+    team_id = await _create_team("t-alert-tpl")
+    await login_as(client, username="alice", group_dns=[ADMIN_DN])
+
+    tpl_resp = await client.post(
+        f"/api/v1/teams/{team_id}/templates",
+        json={
+            "name": "alert-tpl",
+            "kind": "alert",
+            "title_template": "{{ alertname }}",
+            "body_template": "y",
+        },
+    )
+    assert tpl_resp.status_code == 201
+    template_id = tpl_resp.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/teams/{team_id}/routes",
+        json=_notify_body(channel_ids=[await _create_channel(team_id)], template_id=template_id),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["template_id"] == template_id
+
+
 async def test_unknown_cluster_id_is_422(client: AsyncClient) -> None:
     team_id = await _create_team("t-badcluster")
     await login_as(client, username="alice", group_dns=[ADMIN_DN])
