@@ -317,34 +317,43 @@ export default function TestAlertModal({ open, onClose, teamId }: TestAlertModal
           </div>
 
           <Text strong>발송 상태 (5초마다 갱신)</Text>
-          <Table
-            size="small"
-            style={{ marginTop: 8 }}
-            rowKey="id"
-            loading={notificationsQuery.isLoading}
-            dataSource={notificationsQuery.data ?? []}
-            pagination={false}
-            locale={{ emptyText: "발송 대상 채널이 없습니다" }}
-            columns={[
-              { title: "채널", dataIndex: "channel_name", key: "channel_name" },
-              {
-                title: "트리거",
-                dataIndex: "trigger",
-                key: "trigger",
-                render: (value: string) => TRIGGER_LABEL(value),
-              },
-              {
-                title: "상태",
-                dataIndex: "status",
-                key: "status",
-                render: (value: NotificationStatus) => (
-                  <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
-                    {NOTIFICATION_STATUS_LABEL[value]}
-                  </Tag>
-                ),
-              },
-            ]}
-          />
+          {notificationsQuery.isError ? (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginTop: 8 }}
+              message="발송 상태를 불러오지 못했습니다"
+            />
+          ) : (
+            <Table
+              size="small"
+              style={{ marginTop: 8 }}
+              rowKey="id"
+              loading={notificationsQuery.isLoading}
+              dataSource={notificationsQuery.data ?? []}
+              pagination={false}
+              locale={{ emptyText: "발송 대상 채널이 없습니다" }}
+              columns={[
+                { title: "채널", dataIndex: "channel_name", key: "channel_name" },
+                {
+                  title: "트리거",
+                  dataIndex: "trigger",
+                  key: "trigger",
+                  render: (value: string) => TRIGGER_LABEL(value),
+                },
+                {
+                  title: "상태",
+                  dataIndex: "status",
+                  key: "status",
+                  render: (value: NotificationStatus) => (
+                    <Tag color={NOTIFICATION_STATUS_COLOR[value]}>
+                      {NOTIFICATION_STATUS_LABEL[value]}
+                    </Tag>
+                  ),
+                },
+              ]}
+            />
+          )}
         </div>
       )}
     </Modal>
