@@ -12,16 +12,13 @@ import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
 import Login from "./pages/Login";
-import RouteEditor from "./pages/RouteEditor";
 import RoutesPage from "./pages/Routes";
-import RuleEditor from "./pages/RuleEditor";
 import Rules from "./pages/Rules";
 import Shares from "./pages/Shares";
 import Silences from "./pages/Silences";
 import Stats from "./pages/Stats";
 import TeamSettings from "./pages/TeamSettings";
 import Templates from "./pages/Templates";
-import TemplateEditor from "./pages/TemplateEditor";
 import Admin from "./pages/Admin";
 
 const { Sider, Content } = Layout;
@@ -134,16 +131,25 @@ export default function App() {
             <Route path="/alerts" element={<Alerts />} />
             <Route path="/alerts/history" element={<AlertHistory />} />
             <Route path="/rules" element={<Rules />} />
-            <Route path="/rules/new" element={<RuleEditor />} />
-            <Route path="/rules/:slug/edit" element={<RuleEditor />} />
+            {/* /rules/new and /rules/:slug/edit are now handled as a modal
+                from within Rules.tsx -- these redirects only exist for
+                bookmarks/links made before that conversion. */}
+            <Route path="/rules/new" element={<Navigate to="/rules" replace />} />
+            <Route path="/rules/:slug/edit" element={<Navigate to="/rules" replace />} />
             <Route path="/silences" element={<Silences />} />
             <Route path="/channels" element={<Channels />} />
             <Route path="/templates" element={<Templates />} />
-            <Route path="/templates/new" element={<TemplateEditor />} />
-            <Route path="/templates/:id/edit" element={<TemplateEditor />} />
+            {/* /templates/new and /templates/:id/edit are now handled as a
+                modal from within Templates.tsx -- these redirects only
+                exist for bookmarks/links made before that conversion. */}
+            <Route path="/templates/new" element={<Navigate to="/templates" replace />} />
+            <Route path="/templates/:id/edit" element={<Navigate to="/templates" replace />} />
             <Route path="/routes" element={<RoutesPage />} />
-            <Route path="/routes/new" element={<RouteEditor />} />
-            <Route path="/routes/:id/edit" element={<RouteEditor />} />
+            {/* /routes/new and /routes/:id/edit are now handled as a modal
+                from within Routes.tsx -- these redirects only exist for
+                bookmarks/links made before that conversion. */}
+            <Route path="/routes/new" element={<Navigate to="/routes" replace />} />
+            <Route path="/routes/:id/edit" element={<Navigate to="/routes" replace />} />
             <Route path="/shares" element={<Shares />} />
             <Route path="/stats" element={<Stats />} />
             <Route path="/team" element={<TeamSettings />} />

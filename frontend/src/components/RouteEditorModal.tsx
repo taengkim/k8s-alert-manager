@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router";
 import {
   Alert,
   App,
@@ -9,6 +8,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Segmented,
   Select,
   Space,
@@ -38,8 +38,8 @@ import type {
   RouteWriteInput,
 } from "../api/routes";
 import { listTemplates } from "../api/templates";
-import TemplatePreviewPopover from "../components/TemplatePreviewPopover";
-import MatcherListEditor from "../components/MatcherListEditor";
+import TemplatePreviewPopover from "./TemplatePreviewPopover";
+import MatcherListEditor from "./MatcherListEditor";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n";
 
@@ -108,6 +108,13 @@ interface FormValues {
   renotify_interval_minutes?: number;
 }
 
+interface RouteEditorModalProps {
+  open: boolean;
+  onClose: () => void;
+  /** null/undefined = create mode. */
+  routeId?: number | null;
+}
+
 function toBody(values: FormValues): RouteWriteInput {
   return {
     name: values.name,
@@ -143,7 +150,35 @@ function toBody(values: FormValues): RouteWriteInput {
   };
 }
 
-export default function RouteEditor() {
+export default function RouteEditorModal({ open, onClose, routeId }: RouteEditorModalProps) {
+  const { t } = useI18n();
+  const isEdit = routeId != null;
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      destroyOnClose
+      width={880}
+      style={{ top: 24 }}
+      styles={{ body: { maxHeight: "calc(100vh - 160px)", overflowY: "auto" } }}
+      title={isEdit ? t("routeEditor.editTitle") : t("routeEditor.createTitle")}
+    >
+      {/* Gated on `open` so this form is a fresh component instance every
+          time it's opened -- reopening for a different route (or for
+          create, right after editing one) always starts clean. */}
+      {open && <RouteEditorFormBody routeId={routeId ?? null} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function RouteEditorFormBody({
+  routeId,
+  onClose,
+}: {
+  routeId: number | null;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
   const ACTION_OPTIONS: { value: RouteAction; label: string }[] = [
     { value: "notify", label: t("testAlert.actionNotify") },
@@ -155,9 +190,7 @@ export default function RouteEditor() {
     { value: "info", label: "info" },
     { value: "none", label: t("common.none") },
   ];
-  const { id } = useParams<{ id: string }>();
-  const isEdit = !!id;
-  const navigate = useNavigate();
+  const isEdit = routeId != null;
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { currentTeam } = useTeam();
@@ -174,8 +207,8 @@ export default function RouteEditor() {
   const escalationEnabled = Form.useWatch("escalation_enabled", form) ?? false;
 
   const routeQuery = useQuery({
-    queryKey: ["route", id],
-    queryFn: () => getRoute(Number(id)),
+    queryKey: ["route", routeId],
+    queryFn: () => getRoute(routeId!),
     enabled: isEdit,
   });
 
@@ -236,12 +269,12 @@ export default function RouteEditor() {
   const saveMutation = useMutation({
     mutationFn: (values: FormValues) => {
       const body = toBody(values);
-      return isEdit ? updateRoute(Number(id), body) : createRoute(teamId!, body);
+      return isEdit ? updateRoute(routeId!, body) : createRoute(teamId!, body);
     },
     onSuccess: () => {
       message.success(isEdit ? t("routeEditor.updateSuccess") : t("routeEditor.createSuccess"));
       queryClient.invalidateQueries({ queryKey: ["routes", teamId] });
-      navigate("/routes");
+      onClose();
     },
     onError: (err) => {
       setServerError(
@@ -284,12 +317,7 @@ export default function RouteEditor() {
   };
 
   if (!currentTeam) {
-    return (
-      <div>
-        <h2>{isEdit ? t("routeEditor.editTitle") : t("routes.createButton")}</h2>
-        <Alert type="info" showIcon message={t("common.noTeamAssigned")} />
-      </div>
-    );
+    return <Alert type="info" showIcon message={t("common.noTeamAssigned")} />;
   }
 
   const channelOptions = (channelsQuery.data ?? []).map((c) => ({
@@ -345,13 +373,7 @@ export default function RouteEditor() {
   ];
 
   return (
-    <div style={{ maxWidth: 900 }}>
-      <h2>
-        {isEdit
-          ? t("routeEditor.editTitleWithName", { name: routeQuery.data?.name ?? "" })
-          : t("routes.createButton")}
-      </h2>
-
+    <div>
       {serverError && (
         <Alert type="error" showIcon message={serverError} style={{ marginBottom: 16 }} />
       )}
@@ -520,7 +542,7 @@ export default function RouteEditor() {
           <Button type="primary" htmlType="submit" loading={saveMutation.isPending}>
             {t("common.save")}
           </Button>
-          <Button onClick={() => navigate("/routes")}>{t("common.cancel")}</Button>
+          <Button onClick={onClose}>{t("common.cancel")}</Button>
         </Space>
       </Form>
 

@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App, Button, Empty, Popconfirm, Space, Switch, Table, Tag, Typography } from "antd";
-import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
@@ -10,6 +9,7 @@ import { listClusters } from "../api/admin";
 import { deleteRoute, listRoutes, updateRoute } from "../api/routes";
 import type { RouteOut, RouteWriteInput } from "../api/routes";
 import TestAlertModal from "../components/TestAlertModal";
+import RouteEditorModal from "../components/RouteEditorModal";
 import { severityTagStyle } from "../theme";
 import { useI18n } from "../i18n";
 
@@ -46,7 +46,6 @@ function toWriteInput(route: RouteOut, overrides: Partial<RouteWriteInput> = {})
 
 export default function Routes() {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -61,6 +60,7 @@ export default function Routes() {
 
   const teamId = currentTeam?.id;
   const [testAlertModalOpen, setTestAlertModalOpen] = useState(false);
+  const [editorRouteId, setEditorRouteId] = useState<"new" | number | null>(null);
 
   const routesQuery = useQuery({
     queryKey: ["routes", teamId],
@@ -205,7 +205,7 @@ export default function Routes() {
       render: (_: unknown, route: RouteOut) =>
         isOwner ? (
           <div style={{ display: "flex", gap: 8 }}>
-            <Button size="small" onClick={() => navigate(`/routes/${route.id}/edit`)}>
+            <Button size="small" onClick={() => setEditorRouteId(route.id)}>
               {t("common.edit")}
             </Button>
             <Popconfirm
@@ -235,7 +235,7 @@ export default function Routes() {
         <Space>
           <Button onClick={() => setTestAlertModalOpen(true)}>{t("testAlert.modalTitle")}</Button>
           {isOwner && (
-            <Button type="primary" onClick={() => navigate("/routes/new")}>
+            <Button type="primary" onClick={() => setEditorRouteId("new")}>
               {t("routes.createButton")}
             </Button>
           )}
@@ -255,6 +255,12 @@ export default function Routes() {
         open={testAlertModalOpen}
         onClose={() => setTestAlertModalOpen(false)}
         teamId={currentTeam.id}
+      />
+
+      <RouteEditorModal
+        open={editorRouteId !== null}
+        onClose={() => setEditorRouteId(null)}
+        routeId={editorRouteId === "new" ? null : editorRouteId}
       />
     </div>
   );

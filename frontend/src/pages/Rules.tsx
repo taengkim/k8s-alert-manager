@@ -13,7 +13,6 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { useClusterFilter } from "../auth/ClusterFilterContext";
@@ -22,6 +21,8 @@ import { deleteRule, downloadRulesExport, listRules } from "../api/rules";
 import type { RuleOut } from "../api/rules";
 import type { Cluster } from "../api/types";
 import RuleImportModal from "../components/RuleImportModal";
+import RuleEditorModal from "../components/RuleEditorModal";
+import type { RuleEditTarget } from "../components/RuleEditorModal";
 import { severityTagStyle } from "../theme";
 import { useI18n } from "../i18n";
 
@@ -39,7 +40,6 @@ const HEALTH_BADGE: Record<string, { status: "success" | "error" | "default"; te
 
 export default function Rules() {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { user } = useAuth();
@@ -49,6 +49,7 @@ export default function Rules() {
   const teamId = currentTeam?.id;
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [editorTarget, setEditorTarget] = useState<"new" | RuleEditTarget | null>(null);
 
   const isOwner = useMemo(() => {
     if (!user || !currentTeam) return false;
@@ -198,7 +199,7 @@ export default function Rules() {
         <div style={{ display: "flex", gap: 8 }}>
           <Button
             size="small"
-            onClick={() => navigate(`/rules/${record.slug}/edit?cluster=${record.cluster.id}`)}
+            onClick={() => setEditorTarget({ slug: record.slug, clusterId: record.cluster.id })}
           >
             {t("common.edit")}
           </Button>
@@ -243,7 +244,7 @@ export default function Rules() {
               : ""}
           </Button>
           {isOwner && <Button onClick={() => setImportModalOpen(true)}>{t("common.import")}</Button>}
-          <Button type="primary" onClick={() => navigate("/rules/new")}>
+          <Button type="primary" onClick={() => setEditorTarget("new")}>
             {t("rules.createButton")}
           </Button>
         </Space>
@@ -270,6 +271,12 @@ export default function Rules() {
         open={importModalOpen}
         onClose={() => setImportModalOpen(false)}
         teamId={teamId!}
+      />
+
+      <RuleEditorModal
+        open={editorTarget !== null}
+        onClose={() => setEditorTarget(null)}
+        editTarget={editorTarget === "new" ? null : editorTarget}
       />
     </div>
   );

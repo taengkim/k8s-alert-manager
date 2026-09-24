@@ -409,6 +409,7 @@ export const ko = {
   "templates.kindColumn": "종류",
 
   // -- templateEditor --
+  "templateEditor.createTitle": "템플릿 생성",
   "templateEditor.editTitle": "템플릿 수정",
   "templateEditor.editTitleWithName": "템플릿 수정 — {name}",
   "templateEditor.updateSuccess": "템플릿이 수정되었습니다",
@@ -454,6 +455,7 @@ export const ko = {
   "routeEditor.createSuccess": "규칙이 생성되었습니다",
   "routeEditor.updateError": "규칙 수정에 실패했습니다",
   "routeEditor.createError": "규칙 생성에 실패했습니다",
+  "routeEditor.createTitle": "규칙 생성",
   "routeEditor.editTitle": "규칙 수정",
   "routeEditor.editTitleWithName": "규칙 수정 — {name}",
   "routeEditor.currentStatusColumn": "현재 상태",

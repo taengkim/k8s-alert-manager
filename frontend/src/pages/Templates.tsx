@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, App, Button, Empty, Popconfirm, Segmented, Space, Table, Tag, Typography } from "antd";
-import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
 import { ApiError } from "../api/client";
 import { deleteTemplate, listTemplates } from "../api/templates";
 import type { MessageTemplate } from "../api/templates";
+import TemplateEditorModal from "../components/TemplateEditorModal";
 import { useI18n } from "../i18n";
 import type { TranslationKey } from "../i18n";
 
@@ -27,12 +27,12 @@ function KindTag({ kind }: { kind: string }) {
 
 export default function Templates() {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { currentTeam } = useTeam();
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [editorTemplateId, setEditorTemplateId] = useState<"new" | number | null>(null);
 
   const isOwner = useMemo(() => {
     if (!user || !currentTeam) return false;
@@ -122,7 +122,7 @@ export default function Templates() {
       render: (_: unknown, template: MessageTemplate) =>
         isOwner ? (
           <div style={{ display: "flex", gap: 8 }}>
-            <Button size="small" onClick={() => navigate(`/templates/${template.id}/edit`)}>
+            <Button size="small" onClick={() => setEditorTemplateId(template.id)}>
               {t("common.edit")}
             </Button>
             <Popconfirm
@@ -158,7 +158,7 @@ export default function Templates() {
       >
         <h2 style={{ margin: 0 }}>{t("templates.titleWithTeam", { team: currentTeam.name })}</h2>
         {isOwner && (
-          <Button type="primary" onClick={() => navigate("/templates/new")}>
+          <Button type="primary" onClick={() => setEditorTemplateId("new")}>
             {t("templates.createButton")}
           </Button>
         )}
@@ -182,6 +182,12 @@ export default function Templates() {
         columns={columns}
         pagination={false}
         locale={{ emptyText: <Empty description={t("templates.empty")} /> }}
+      />
+
+      <TemplateEditorModal
+        open={editorTemplateId !== null}
+        onClose={() => setEditorTemplateId(null)}
+        templateId={editorTemplateId === "new" ? null : editorTemplateId}
       />
     </div>
   );
