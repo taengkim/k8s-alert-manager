@@ -1,7 +1,9 @@
 """The scheduled-action worker: claims and dispatches `ScheduledAction` rows
-staged by `app.services.routing.route_event` (kind='escalation') and
-`app/worker/outbox.py`'s `deliver()` (kind='renotify'), plus the daily
-retention purge sweep (`app.services.retention.purge`).
+staged by `app.services.routing.route_event` (kind='escalation'),
+`app/worker/outbox.py`'s `deliver()` (kind='renotify'), and (Phase 16)
+`app.services.routing.stage_outbox_row` (kind='digest_flush', once a
+channel's storm control parks a notification), plus the daily retention
+purge sweep (`app.services.retention.purge`).
 
 Deliberately FastAPI-free, same reasoning as `app/worker/outbox.py`: this
 runs embedded in the API process's lifespan (see `app/main.py`) via
@@ -32,7 +34,6 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -42,7 +43,7 @@ from app.models.outbox import NotificationOutbox
 from app.models.routing import RoutingRule
 from app.models.scheduled import ScheduledAction
 from app.services.retention import purge
-from app.services.routing import build_notification_for_event
+from app.services.routing import build_notification_for_event, stage_outbox_row
 from app.services.settings import get_last_purge_at
 
 logger = logging.getLogger(__name__)
@@ -145,46 +146,6 @@ async def recover_stale_claims(
     return result.rowcount or 0
 
 
-async def _stage_outbox_row(
-    session: AsyncSession,
-    event: AlertEvent,
-    trigger: str,
-    team_id: int,
-    channel: Channel,
-    rule: RoutingRule,
-    notification_payload: dict,
-) -> bool:
-    """Insert one outbox row, deduped via `NotificationOutbox`'s
-    `(alert_event_id, channel_id, trigger)` unique constraint -- the same
-    stage-and-catch-IntegrityError pattern as
-    `app.services.routing._stage_outbox`, just scoped to a single channel at
-    a time (escalation/renotify each already have their own channel list to
-    loop over, no need for that function's dict-of-matched-channels shape).
-    Returns whether a new row was actually inserted (False on dedup skip).
-    """
-    outbox = NotificationOutbox(
-        alert_event_id=event.id,
-        routing_rule_id=rule.id,
-        channel_id=channel.id,
-        team_id=team_id,
-        trigger=trigger,
-        payload=dict(notification_payload),
-    )
-    try:
-        async with session.begin_nested():
-            session.add(outbox)
-            await session.flush()
-    except IntegrityError:
-        logger.info(
-            "scheduled outbox dedup skip: event=%s channel=%s trigger=%s",
-            event.id,
-            channel.id,
-            trigger,
-        )
-        return False
-    return True
-
-
 async def _dispatch_escalation(action: ScheduledAction, session: AsyncSession) -> None:
     """Escalation dispatch (Phase 15 brief, section 3): if the event is
     still firing and unacknowledged, stage an 'escalation'-trigger outbox
@@ -255,7 +216,16 @@ async def _dispatch_escalation(action: ScheduledAction, session: AsyncSession) -
 
     staged = 0
     for channel in channels:
-        if await _stage_outbox_row(session, event, "escalation", event.team_id, channel, rule, payload):
+        inserted = await stage_outbox_row(
+            session,
+            alert_event_id=event.id,
+            routing_rule_id=rule.id,
+            channel=channel,
+            team_id=event.team_id,
+            trigger="escalation",
+            payload=payload,
+        )
+        if inserted:
             staged += 1
     logger.info(
         "escalation dispatched: event=%s rule=%s channels=%d staged=%d",
@@ -347,10 +317,101 @@ async def _dispatch_renotify(action: ScheduledAction, session: AsyncSession) -> 
         notification = await build_notification_for_event(session, event, trigger="firing")
         payload = notification.model_dump(mode="json")
         for channel in channels:
-            await _stage_outbox_row(session, event, trigger, event.team_id, channel, rule, payload)
+            await stage_outbox_row(
+                session,
+                alert_event_id=event.id,
+                routing_rule_id=rule.id,
+                channel=channel,
+                team_id=event.team_id,
+                trigger=trigger,
+                payload=payload,
+            )
 
     await schedule_renotify(session, event.id, rule)
     logger.info("renotify dispatched: event=%s rule=%s channels=%d", event.id, rule.id, len(channels))
+
+
+async def _dispatch_digest_flush(action: ScheduledAction, session: AsyncSession) -> None:
+    """Digest flush dispatch (Phase 16 brief, section 3): aggregate every
+    row currently parked (`status='digested'`, `digested_into_id` still
+    NULL) for this action's channel into a single digest send, or resolve
+    the trivial cases without one:
+
+    - 0 parked rows: nothing to do -- settles 'done' (not 'cancelled': this
+      isn't "the timer's target went away", it's the ordinary case where a
+      brief storm already drained back to normal before the window elapsed).
+    - Exactly 1: not worth digesting a single notification for UX reasons
+      (see the brief) -- restored to plain 'pending' so the outbox worker
+      delivers it individually, same as if it had never been parked.
+    - 2+: one new aggregate row (`is_digest=True`, `alert_event_id=None`,
+      `trigger='digest'`, `status='pending'`) carrying every parked row's
+      own payload, deliverable through the normal outbox claim/deliver path
+      (`app/worker/outbox.py`'s `deliver()` special-cases `is_digest` rows
+      to call the channel's `send_batch`). Each parked row is linked via
+      `digested_into_id` but keeps `status='digested'` -- the aggregate row
+      now owns this batch's own delivery/retry history, not each parked row
+      individually.
+
+    Deliberately does NOT itself schedule the next flush: if parking keeps
+    happening after this flush, the very next parked row's own
+    `_ensure_digest_flush_scheduled` call schedules a fresh one (this
+    action already settled 'done', so no pending row blocks that) --
+    exactly the same §2 dedup-via-lookup logic as the first parking that
+    ever scheduled this action, no separate "reschedule" path needed.
+    """
+    if action.channel_id is None:
+        raise _Skip("no channel")
+    channel = await session.get(Channel, action.channel_id)
+    if channel is None or channel.deleted_at is not None:
+        raise _Skip("channel deleted")
+
+    result = await session.execute(
+        select(NotificationOutbox)
+        .where(
+            NotificationOutbox.channel_id == channel.id,
+            NotificationOutbox.status == "digested",
+            NotificationOutbox.digested_into_id.is_(None),
+        )
+        .order_by(NotificationOutbox.created_at)
+    )
+    parked = list(result.scalars().all())
+
+    if not parked:
+        logger.info("digest flush: channel=%s nothing parked -- no-op", channel.id)
+        return
+
+    if len(parked) == 1:
+        parked[0].status = "pending"
+        logger.info("digest flush: channel=%s restored 1 parked row to pending", channel.id)
+        return
+
+    window_started_at = min(row.created_at for row in parked)
+    aggregate = NotificationOutbox(
+        alert_event_id=None,
+        routing_rule_id=None,
+        channel_id=channel.id,
+        team_id=channel.team_id,
+        trigger="digest",
+        payload={
+            "notifications": [row.payload for row in parked],
+            "count": len(parked),
+            "window_started_at": window_started_at.isoformat(),
+        },
+        is_digest=True,
+        status="pending",
+    )
+    session.add(aggregate)
+    await session.flush()
+
+    for row in parked:
+        row.digested_into_id = aggregate.id
+
+    logger.info(
+        "digest flush: channel=%s aggregated %d parked row(s) into outbox id=%s",
+        channel.id,
+        len(parked),
+        aggregate.id,
+    )
 
 
 DispatchHandler = Callable[[ScheduledAction, AsyncSession], Awaitable[None]]
@@ -358,6 +419,7 @@ DispatchHandler = Callable[[ScheduledAction, AsyncSession], Awaitable[None]]
 _HANDLERS: dict[str, DispatchHandler] = {
     "escalation": _dispatch_escalation,
     "renotify": _dispatch_renotify,
+    "digest_flush": _dispatch_digest_flush,
 }
 
 
