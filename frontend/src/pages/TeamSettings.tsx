@@ -46,6 +46,8 @@ import { listTemplates } from "../api/templates";
 import { listUsers } from "../api/admin";
 import type { LdapMapping, Member, TeamRole } from "../api/types";
 import AuditLog from "./AuditLog";
+import { useI18n } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
   { value: "owner", label: "Owner" },
@@ -53,6 +55,7 @@ const ROLE_OPTIONS: { value: TeamRole; label: string }[] = [
 ];
 
 export default function TeamSettings() {
+  const { t } = useI18n();
   const { user } = useAuth();
   const { currentTeam, teams } = useTeam();
 
@@ -66,12 +69,12 @@ export default function TeamSettings() {
   if (teams.length === 0 || !currentTeam) {
     return (
       <div>
-        <h2>팀 설정</h2>
+        <h2>{t("nav.team")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
@@ -79,24 +82,24 @@ export default function TeamSettings() {
 
   return (
     <div>
-      <h2>팀 설정 — {currentTeam.name}</h2>
+      <h2>{t("team.titleWithName", { team: currentTeam.name })}</h2>
       <Tabs
         items={[
           {
             key: "members",
-            label: "멤버",
+            label: t("team.membersTab"),
             children: (
               <MembersTab teamId={currentTeam.id} isOwner={isOwner} isAdmin={!!user?.is_admin} />
             ),
           },
           {
             key: "mappings",
-            label: "LDAP 매핑",
+            label: t("team.mappingsTab"),
             children: <MappingsTab teamId={currentTeam.id} isOwner={isOwner} />,
           },
           {
             key: "reports",
-            label: "리포트",
+            label: t("team.reportsTab"),
             children: <ReportsTab teamId={currentTeam.id} isOwner={isOwner} />,
           },
           // Owner-only: a team's audit trail is an owner-level concern (see
@@ -106,7 +109,7 @@ export default function TeamSettings() {
             ? [
                 {
                   key: "audit",
-                  label: "감사 로그",
+                  label: t("team.auditTab"),
                   children: <AuditLog fixedTeamId={currentTeam.id} />,
                 },
               ]
@@ -124,6 +127,7 @@ interface MembersTabProps {
 }
 
 function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
@@ -150,7 +154,7 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
       setFormError(null);
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "멤버 추가에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("team.memberAddError"));
     },
   });
 
@@ -159,27 +163,27 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-members", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
 
   const columns = [
-    { title: "아이디", dataIndex: "username", key: "username" },
-    { title: "이름", dataIndex: "display_name", key: "display_name" },
+    { title: t("login.usernameLabel"), dataIndex: "username", key: "username" },
+    { title: t("common.name"), dataIndex: "display_name", key: "display_name" },
     {
-      title: "역할",
+      title: t("team.roleColumn"),
       dataIndex: "role",
       key: "role",
       render: (role: TeamRole) => <Tag color={role === "owner" ? "gold" : "blue"}>{role}</Tag>,
     },
     {
-      title: "출처",
+      title: t("team.originColumn"),
       dataIndex: "origin",
       key: "origin",
       render: (origin: Member["origin"]) =>
         origin === "ldap" ? (
-          <Tooltip title="LDAP 매핑으로 동기화됨">
+          <Tooltip title={t("team.ldapSyncedTooltip")}>
             <Tag color="purple">ldap</Tag>
           </Tooltip>
         ) : (
@@ -193,11 +197,11 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
             key: "actions",
             render: (_: unknown, record: Member) => (
               <Popconfirm
-                title="이 멤버를 제거하시겠습니까?"
+                title={t("team.removeMemberConfirm")}
                 onConfirm={() => removeMemberMutation.mutate(record.membership_id)}
               >
                 <Button danger size="small">
-                  제거
+                  {t("team.removeButton")}
                 </Button>
               </Popconfirm>
             ),
@@ -210,7 +214,7 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
     <div>
       {isOwner && (
         <Button type="primary" onClick={() => setModalOpen(true)} style={{ marginBottom: 16 }}>
-          멤버 추가
+          {t("team.addMemberButton")}
         </Button>
       )}
       <Table<Member>
@@ -221,7 +225,7 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
         pagination={false}
       />
       <Modal
-        title="멤버 추가"
+        title={t("team.addMemberButton")}
         open={modalOpen}
         onCancel={() => {
           setModalOpen(false);
@@ -238,8 +242,8 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
           {isAdmin ? (
             <Form.Item
               name="user_id"
-              label="사용자"
-              rules={[{ required: true, message: "사용자를 선택하세요" }]}
+              label={t("team.userLabel")}
+              rules={[{ required: true, message: t("team.userRequired") }]}
             >
               <Select
                 loading={usersQuery.isLoading}
@@ -254,14 +258,14 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
           ) : (
             <Form.Item
               name="user_id"
-              label="사용자 ID"
-              help="사용자 ID(숫자)를 입력하세요"
-              rules={[{ required: true, message: "사용자 ID를 입력하세요" }]}
+              label={t("team.userIdLabel")}
+              help={t("team.userIdHelp")}
+              rules={[{ required: true, message: t("team.userIdRequired") }]}
             >
               <InputNumber style={{ width: "100%" }} min={1} />
             </Form.Item>
           )}
-          <Form.Item name="role" label="역할" initialValue="member" rules={[{ required: true }]}>
+          <Form.Item name="role" label={t("team.roleColumn")} initialValue="member" rules={[{ required: true }]}>
             <Select options={ROLE_OPTIONS} />
           </Form.Item>
         </Form>
@@ -276,6 +280,7 @@ interface MappingsTabProps {
 }
 
 function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
@@ -296,7 +301,7 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
       setFormError(null);
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "매핑 추가에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("team.mappingAddError"));
     },
   });
 
@@ -305,15 +310,15 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["team-mappings", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
 
   const columns = [
-    { title: "LDAP 그룹 DN", dataIndex: "ldap_group_dn", key: "ldap_group_dn" },
+    { title: t("team.ldapGroupDnColumn"), dataIndex: "ldap_group_dn", key: "ldap_group_dn" },
     {
-      title: "역할",
+      title: t("team.roleColumn"),
       dataIndex: "role",
       key: "role",
       render: (role: TeamRole) => <Tag color={role === "owner" ? "gold" : "blue"}>{role}</Tag>,
@@ -325,11 +330,11 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
             key: "actions",
             render: (_: unknown, record: LdapMapping) => (
               <Popconfirm
-                title="이 매핑을 삭제하시겠습니까?"
+                title={t("team.deleteMappingConfirm")}
                 onConfirm={() => removeMappingMutation.mutate(record.id)}
               >
                 <Button danger size="small">
-                  삭제
+                  {t("common.delete")}
                 </Button>
               </Popconfirm>
             ),
@@ -342,7 +347,7 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
     <div>
       {isOwner && (
         <Button type="primary" onClick={() => setModalOpen(true)} style={{ marginBottom: 16 }}>
-          매핑 추가
+          {t("team.addMappingButton")}
         </Button>
       )}
       <Table<LdapMapping>
@@ -353,7 +358,7 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
         pagination={false}
       />
       <Modal
-        title="LDAP 매핑 추가"
+        title={t("team.addMappingModalTitle")}
         open={modalOpen}
         onCancel={() => {
           setModalOpen(false);
@@ -373,12 +378,12 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
         >
           <Form.Item
             name="ldap_group_dn"
-            label="LDAP 그룹 DN"
-            rules={[{ required: true, message: "DN을 입력하세요" }]}
+            label={t("team.ldapGroupDnColumn")}
+            rules={[{ required: true, message: t("team.dnRequired") }]}
           >
             <Input placeholder="cn=team-a,ou=groups,dc=example,dc=com" />
           </Form.Item>
-          <Form.Item name="role" label="역할" initialValue="member" rules={[{ required: true }]}>
+          <Form.Item name="role" label={t("team.roleColumn")} initialValue="member" rules={[{ required: true }]}>
             <Select options={ROLE_OPTIONS} />
           </Form.Item>
         </Form>
@@ -389,20 +394,20 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
 
 // -- Reports tab (Phase 20) ------------------------------------------------------
 
-const CADENCE_LABELS: Record<ReportCadence, string> = {
-  daily: "매일",
-  weekly: "매주",
-  monthly: "매월",
+const CADENCE_LABEL_KEY: Record<ReportCadence, TranslationKey> = {
+  daily: "team.cadenceDaily",
+  weekly: "team.cadenceWeekly",
+  monthly: "team.cadenceMonthly",
 };
 
-const WEEKDAY_OPTIONS = [
-  { value: 0, label: "월요일" },
-  { value: 1, label: "화요일" },
-  { value: 2, label: "수요일" },
-  { value: 3, label: "목요일" },
-  { value: 4, label: "금요일" },
-  { value: 5, label: "토요일" },
-  { value: 6, label: "일요일" },
+const WEEKDAY_LABEL_KEYS: TranslationKey[] = [
+  "team.weekdayMon",
+  "team.weekdayTue",
+  "team.weekdayWed",
+  "team.weekdayThu",
+  "team.weekdayFri",
+  "team.weekdaySat",
+  "team.weekdaySun",
 ];
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
@@ -430,32 +435,46 @@ const TIMEZONE_OPTIONS = [
   "Australia/Sydney",
 ].map((tz) => ({ value: tz, label: tz }));
 
-function describeSchedule(schedule: ReportSchedule): string {
+function describeSchedule(schedule: ReportSchedule, t: ReturnType<typeof useI18n>["t"]): string {
   const time = `${String(schedule.hour).padStart(2, "0")}:00`;
   if (schedule.cadence === "weekly") {
-    const weekdayLabel = WEEKDAY_OPTIONS.find((w) => w.value === schedule.weekday)?.label ?? "";
-    return `${CADENCE_LABELS.weekly} ${weekdayLabel} ${time} (${schedule.timezone})`;
+    const weekdayLabel = schedule.weekday != null ? t(WEEKDAY_LABEL_KEYS[schedule.weekday]) : "";
+    return t("team.scheduleWeeklyDesc", {
+      cadence: t(CADENCE_LABEL_KEY.weekly),
+      weekday: weekdayLabel,
+      time,
+      timezone: schedule.timezone,
+    });
   }
   if (schedule.cadence === "monthly") {
-    return `${CADENCE_LABELS.monthly} 1일 ${time} (${schedule.timezone})`;
+    return t("team.scheduleMonthlyDesc", {
+      cadence: t(CADENCE_LABEL_KEY.monthly),
+      time,
+      timezone: schedule.timezone,
+    });
   }
-  return `${CADENCE_LABELS.daily} ${time} (${schedule.timezone})`;
+  return t("team.scheduleDailyDesc", {
+    cadence: t(CADENCE_LABEL_KEY.daily),
+    time,
+    timezone: schedule.timezone,
+  });
 }
 
 function LastStatusTag({ schedule }: { schedule: ReportSchedule }) {
+  const { t } = useI18n();
   if (!schedule.last_status) {
-    return <Tag>미실행</Tag>;
+    return <Tag>{t("team.notRunYet")}</Tag>;
   }
   if (schedule.last_status.startsWith("error")) {
     return (
       <Tooltip title={schedule.last_status}>
-        <Tag color="red">오류</Tag>
+        <Tag color="red">{t("team.statusError")}</Tag>
       </Tooltip>
     );
   }
   return (
     <Tooltip title={schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString() : undefined}>
-      <Tag color="green">정상</Tag>
+      <Tag color="green">{t("team.statusOk")}</Tag>
     </Tooltip>
   );
 }
@@ -476,6 +495,13 @@ interface ReportFormValues {
 }
 
 function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
+  const { t } = useI18n();
+  const WEEKDAY_OPTIONS = WEEKDAY_LABEL_KEYS.map((key, value) => ({ value, label: t(key) }));
+  const CADENCE_OPTIONS = [
+    { label: t("team.cadenceDaily"), value: "daily" },
+    { label: t("team.cadenceWeekly"), value: "weekly" },
+    { label: t("team.cadenceMonthly"), value: "monthly" },
+  ];
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [modalOpen, setModalOpen] = useState(false);
@@ -530,7 +556,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       closeModal();
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "리포트 스케줄 생성에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("team.createScheduleError"));
     },
   });
 
@@ -541,7 +567,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       closeModal();
     },
     onError: (err) => {
-      setFormError(err instanceof ApiError ? err.detail : "리포트 스케줄 수정에 실패했습니다");
+      setFormError(err instanceof ApiError ? err.detail : t("team.updateScheduleError"));
     },
   });
 
@@ -551,7 +577,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["report-schedules", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `변경에 실패했습니다: ${err.detail}` : "변경에 실패했습니다",
+        err instanceof ApiError ? `${t("common.updateError")}: ${err.detail}` : t("common.updateError"),
       );
     },
   });
@@ -561,7 +587,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["report-schedules", teamId] }),
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -569,12 +595,12 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
   const runNowMutation = useMutation({
     mutationFn: (id: number) => runReportNow(id),
     onSuccess: (result) => {
-      message.success(`${result.queued_channels}개 채널로 리포트를 발송했습니다`);
+      message.success(t("team.sendSuccess", { count: result.queued_channels }));
       queryClient.invalidateQueries({ queryKey: ["report-schedules", teamId] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `발송에 실패했습니다: ${err.detail}` : "발송에 실패했습니다",
+        err instanceof ApiError ? `${t("team.sendError")}: ${err.detail}` : t("team.sendError"),
       );
       queryClient.invalidateQueries({ queryKey: ["report-schedules", teamId] });
     },
@@ -593,19 +619,19 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
   };
 
   const columns = [
-    { title: "이름", dataIndex: "name", key: "name" },
+    { title: t("common.name"), dataIndex: "name", key: "name" },
     {
-      title: "일정",
+      title: t("team.scheduleColumn"),
       key: "schedule",
-      render: (_: unknown, record: ReportSchedule) => describeSchedule(record),
+      render: (_: unknown, record: ReportSchedule) => describeSchedule(record, t),
     },
     {
-      title: "채널 수",
+      title: t("team.channelCountColumn"),
       key: "channels",
       render: (_: unknown, record: ReportSchedule) => record.channel_ids.length,
     },
     {
-      title: "활성화",
+      title: t("common.enabled"),
       dataIndex: "enabled",
       key: "enabled",
       render: (enabled: boolean, record: ReportSchedule) => (
@@ -618,7 +644,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       ),
     },
     {
-      title: "상태",
+      title: t("common.status"),
       key: "status",
       render: (_: unknown, record: ReportSchedule) => <LastStatusTag schedule={record} />,
     },
@@ -628,31 +654,31 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       render: (_: unknown, record: ReportSchedule) => (
         <div style={{ display: "flex", gap: 8 }}>
           <Button size="small" onClick={() => setPreviewSchedule(record)}>
-            미리보기
+            {t("ruleEditor.previewTitle")}
           </Button>
           {isOwner && (
             <>
               <Popconfirm
-                title="지금 리포트를 발송하시겠습니까?"
-                description="스케줄은 그대로 유지되고, 채널로 즉시 발송됩니다."
+                title={t("team.runNowConfirmTitle")}
+                description={t("team.runNowConfirmDesc")}
                 onConfirm={() => runNowMutation.mutate(record.id)}
               >
                 <Button
                   size="small"
                   loading={runNowMutation.isPending && runNowMutation.variables === record.id}
                 >
-                  지금 발송
+                  {t("team.runNowButton")}
                 </Button>
               </Popconfirm>
               <Button size="small" onClick={() => openEditModal(record)}>
-                수정
+                {t("common.edit")}
               </Button>
               <Popconfirm
-                title="이 리포트 스케줄을 삭제하시겠습니까?"
+                title={t("team.deleteScheduleConfirm")}
                 onConfirm={() => deleteMutation.mutate(record.id)}
               >
                 <Button size="small" danger>
-                  삭제
+                  {t("common.delete")}
                 </Button>
               </Popconfirm>
             </>
@@ -666,7 +692,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
     <div>
       {isOwner && (
         <Button type="primary" onClick={openCreateModal} style={{ marginBottom: 16 }}>
-          리포트 스케줄 생성
+          {t("team.createScheduleButton")}
         </Button>
       )}
       <Table<ReportSchedule>
@@ -678,7 +704,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       />
 
       <Modal
-        title={editing ? "리포트 스케줄 수정" : "리포트 스케줄 생성"}
+        title={editing ? t("team.editScheduleTitle") : t("team.createScheduleButton")}
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
@@ -711,19 +737,15 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
         >
           <Form.Item
             name="name"
-            label="이름"
-            rules={[{ required: true, message: "이름을 입력하세요" }]}
+            label={t("common.name")}
+            rules={[{ required: true, message: t("common.nameRequired") }]}
           >
-            <Input placeholder="주간 알럿 리포트" />
+            <Input placeholder={t("team.namePlaceholderExample")} />
           </Form.Item>
 
-          <Form.Item name="cadence" label="주기" rules={[{ required: true }]}>
+          <Form.Item name="cadence" label={t("team.cadenceLabel")} rules={[{ required: true }]}>
             <Radio.Group
-              options={[
-                { label: "매일", value: "daily" },
-                { label: "매주", value: "weekly" },
-                { label: "매월", value: "monthly" },
-              ]}
+              options={CADENCE_OPTIONS}
               optionType="button"
             />
           </Form.Item>
@@ -731,25 +753,25 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
           {cadence === "weekly" && (
             <Form.Item
               name="weekday"
-              label="요일"
-              rules={[{ required: true, message: "요일을 선택하세요" }]}
+              label={t("team.weekdayLabel")}
+              rules={[{ required: true, message: t("team.weekdayRequired") }]}
             >
               <Select options={WEEKDAY_OPTIONS} />
             </Form.Item>
           )}
 
-          <Form.Item name="hour" label="시각" rules={[{ required: true }]}>
+          <Form.Item name="hour" label={t("team.hourLabel")} rules={[{ required: true }]}>
             <Select options={HOUR_OPTIONS} />
           </Form.Item>
 
-          <Form.Item name="timezone" label="타임존" rules={[{ required: true }]}>
+          <Form.Item name="timezone" label={t("team.timezoneLabel")} rules={[{ required: true }]}>
             <Select showSearch optionFilterProp="label" options={TIMEZONE_OPTIONS} />
           </Form.Item>
 
           <Form.Item
             name="channel_ids"
-            label="채널"
-            rules={[{ required: true, message: "채널을 하나 이상 선택하세요" }]}
+            label={t("common.channel")}
+            rules={[{ required: true, message: t("routeEditor.channelsRequired") }]}
           >
             <Select
               mode="multiple"
@@ -763,13 +785,13 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
 
           <Form.Item
             name="template_id"
-            label="메시지 템플릿"
-            help="비워두면 기본 리포트 템플릿을 사용합니다"
+            label={t("channels.messageTemplateLabel")}
+            help={t("team.reportTemplateHelp")}
           >
             <Select
               allowClear
               loading={templatesQuery.isLoading}
-              placeholder="기본 템플릿"
+              placeholder={t("team.defaultTemplatePlaceholder")}
               options={reportTemplates.map((t) => ({ value: t.id, label: t.name }))}
             />
           </Form.Item>
@@ -777,12 +799,12 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
       </Modal>
 
       <Drawer
-        title={previewSchedule ? `미리보기 — ${previewSchedule.name}` : "미리보기"}
+        title={previewSchedule ? t("team.previewTitleWithName", { name: previewSchedule.name }) : t("ruleEditor.previewTitle")}
         open={previewSchedule !== null}
         onClose={() => setPreviewSchedule(null)}
         width={520}
       >
-        {previewQuery.isLoading && <Typography.Text type="secondary">불러오는 중...</Typography.Text>}
+        {previewQuery.isLoading && <Typography.Text type="secondary">{t("common.loading")}</Typography.Text>}
         {previewQuery.isError && (
           <Alert
             type="error"
@@ -790,7 +812,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
             message={
               previewQuery.error instanceof ApiError
                 ? previewQuery.error.detail
-                : "미리보기를 불러오지 못했습니다"
+                : t("team.previewLoadError")
             }
           />
         )}
@@ -798,7 +820,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
           <Space direction="vertical" style={{ width: "100%" }} size={16}>
             <div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                제목
+                {t("templateEditor.renderedTitleLabel")}
               </Typography.Text>
               <div style={{ fontWeight: 600 }}>{previewQuery.data.title}</div>
             </div>
