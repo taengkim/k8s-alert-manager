@@ -31,6 +31,12 @@ from app.models.team import Team, TeamMembership
 from app.models.user import User
 from app.services import audit
 from app.services.alertmanager import AlertmanagerClient, AlertmanagerUnavailableError
+from app.services.events_hub import (
+    Hub,
+    build_event,
+    build_event_from_transition,
+    publish_after_commit,
+)
 from app.services.grafana import resolve_grafana_url
 from app.services.ingest import (
     AlertmanagerAlert,
@@ -55,6 +61,10 @@ router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
 
 def get_http_client(request: Request) -> httpx.AsyncClient:
     return request.app.state.http_client
+
+
+def get_hub(request: Request) -> Hub:
+    return request.app.state.events_hub
 
 
 async def _resolve_team_scope(
@@ -892,6 +902,7 @@ async def ack_alert(
     event_id: int,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Acknowledge one alert event.
 
@@ -922,6 +933,21 @@ async def ack_alert(
         )
         await session.commit()
         await session.refresh(event)
+        # Phase 18: publish AFTER the commit above -- see
+        # app.services.events_hub.publish_after_commit's docstring.
+        publish_after_commit(
+            hub,
+            build_event(
+                "alert_acked",
+                event_id=event.id,
+                team_id=event.team_id,
+                cluster=event.cluster_name,
+                namespace=event.namespace,
+                alertname=event.alertname,
+                severity=event.severity,
+                is_test=event.is_test,
+            ),
+        )
 
     return await _serialize_one_detail(session, event)
 
@@ -931,6 +957,7 @@ async def unack_alert(
     event_id: int,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     event = await _get_event_or_404(session, event_id)
     await _authorize_event_access(session, event, user)
@@ -948,6 +975,19 @@ async def unack_alert(
         )
         await session.commit()
         await session.refresh(event)
+        publish_after_commit(
+            hub,
+            build_event(
+                "alert_unacked",
+                event_id=event.id,
+                team_id=event.team_id,
+                cluster=event.cluster_name,
+                namespace=event.namespace,
+                alertname=event.alertname,
+                severity=event.severity,
+                is_test=event.is_test,
+            ),
+        )
 
     return await _serialize_one_detail(session, event)
 
@@ -1063,6 +1103,7 @@ async def create_alert_comment(
     body: CommentCreate,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     event = await _get_event_or_404(session, event_id)
     await _authorize_event_access(session, event, user)
@@ -1082,6 +1123,19 @@ async def create_alert_comment(
     )
     await session.commit()
     await session.refresh(comment)
+    publish_after_commit(
+        hub,
+        build_event(
+            "comment_added",
+            event_id=event.id,
+            team_id=event.team_id,
+            cluster=event.cluster_name,
+            namespace=event.namespace,
+            alertname=event.alertname,
+            severity=event.severity,
+            is_test=event.is_test,
+        ),
+    )
 
     return _serialize_comment(comment, user)
 
@@ -1161,6 +1215,7 @@ async def fire_test_alert(
     body: TestAlertCreate,
     actor: User = Depends(require_team_role("member")),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Fire a synthetic alert through the real ingest+routing pipeline --
     `ingest_webhook` is called directly (not the webhook HTTP endpoint;
@@ -1202,7 +1257,7 @@ async def fire_test_alert(
             )
         ]
     )
-    await ingest_webhook(session, cluster, payload)
+    ingest_result = await ingest_webhook(session, cluster, payload)
 
     event = (
         await session.execute(
@@ -1278,6 +1333,13 @@ async def fire_test_alert(
         detail={"cluster_id": cluster.id, "alertname": body.alertname, "fingerprint": fingerprint},
     )
     await session.commit()
+    # Phase 18: `ingest_result.transitions` was collected before `is_test`
+    # was set True above, but `build_event_from_transition` reads fields
+    # straight off the live `event` object (not a pre-commit snapshot), so
+    # it correctly reports is_test=True here -- see AlertTransition's
+    # docstring.
+    for transition in ingest_result.transitions:
+        publish_after_commit(hub, build_event_from_transition(transition))
 
     return {
         "event_id": event.id,
@@ -1292,6 +1354,7 @@ async def resolve_test_alert(
     event_id: int,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    hub: Hub = Depends(get_hub),
 ) -> dict[str, Any]:
     """Manually resolve a test alert (POST .../test-alert rows only -- 422
     on any other row), using the same firing->resolved transition
@@ -1327,6 +1390,19 @@ async def resolve_test_alert(
         )
         await session.commit()
         await session.refresh(event)
+        publish_after_commit(
+            hub,
+            build_event(
+                "alert_resolved",
+                event_id=event.id,
+                team_id=event.team_id,
+                cluster=event.cluster_name,
+                namespace=event.namespace,
+                alertname=event.alertname,
+                severity=event.severity,
+                is_test=event.is_test,
+            ),
+        )
 
     return await _serialize_one_detail(session, event)
 
