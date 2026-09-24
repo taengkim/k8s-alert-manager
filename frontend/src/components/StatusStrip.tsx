@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
-import { App as AntApp, Dropdown, Space, Switch, Tooltip, Typography } from "antd";
+import { App as AntApp, Dropdown, Segmented, Space, Switch, Tooltip, Typography } from "antd";
 import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
@@ -15,6 +15,7 @@ import {
   type AlertStreamStatus,
 } from "../api/useAlertStream";
 import { heartbeatColor, palette, severity, severityColor } from "../theme";
+import { useI18n, type Lang, type TranslationKey } from "../i18n";
 import TeamSwitcher from "./TeamSwitcher";
 import ClusterFilterSelect from "./ClusterFilterSelect";
 
@@ -22,10 +23,10 @@ dayjs.extend(relativeTime);
 
 const { Text } = Typography;
 
-const CONNECTION_LABEL: Record<AlertStreamStatus, string> = {
-  open: "실시간 연결됨",
-  connecting: "재연결 중...",
-  closed: "연결 끊김",
+const CONNECTION_LABEL_KEY: Record<AlertStreamStatus, TranslationKey> = {
+  open: "strip.connOpen",
+  connecting: "strip.connConnecting",
+  closed: "strip.connClosed",
 };
 
 const LIVE_SEVERITIES: { key: "critical" | "warning" | "info"; label: string }[] = [
@@ -47,9 +48,10 @@ function SeverityCountPill({
   label: string;
   count: number;
 }) {
+  const { t } = useI18n();
   const dotColor = count > 0 ? severityColor(severityKey) : severity.none;
   return (
-    <Tooltip title={`${label} ${count}건 발생 중`}>
+    <Tooltip title={t("strip.severityFiring", { label, count })}>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
         <span
           aria-hidden
@@ -73,15 +75,21 @@ function SeverityCountPill({
 
 function HeartbeatDots() {
   const { clusters } = useClusterFilter();
+  const { t } = useI18n();
   if (clusters.length === 0) return null;
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
       {clusters.map((c) => (
         <Tooltip
           key={c.id}
-          title={`${c.display_name} · ${
-            c.last_heartbeat_at ? `마지막 수신 ${dayjs(c.last_heartbeat_at).fromNow()}` : "수신 이력 없음"
-          }`}
+          title={
+            c.last_heartbeat_at
+              ? t("strip.lastHeartbeat", {
+                  cluster: c.display_name,
+                  ago: dayjs(c.last_heartbeat_at).fromNow(),
+                })
+              : t("strip.noHeartbeat", { cluster: c.display_name })
+          }
         >
           <span
             aria-hidden
@@ -101,8 +109,9 @@ function HeartbeatDots() {
 
 function ConnectionDot() {
   const status = useAlertStreamStatus();
+  const { t } = useI18n();
   return (
-    <Tooltip title={CONNECTION_LABEL[status]}>
+    <Tooltip title={t(CONNECTION_LABEL_KEY[status])}>
       <span
         aria-hidden
         style={{
@@ -134,6 +143,7 @@ export default function StatusStrip({ title }: StatusStripProps) {
   const { currentTeam } = useTeam();
   const navigate = useNavigate();
   const { message } = AntApp.useApp();
+  const { t, lang, setLang } = useI18n();
   const [webNotify, setWebNotify] = useState(isWebNotifyEnabled);
   const isAdmin = !!user?.is_admin;
   const teamId = currentTeam?.id;
@@ -162,7 +172,7 @@ export default function StatusStrip({ title }: StatusStripProps) {
     const granted = await setWebNotifyEnabled(checked);
     setWebNotify(granted);
     if (checked && !granted) {
-      message.warning("브라우저 알림 권한이 거부되었습니다");
+      message.warning(t("menu.webNotifyDenied"));
     }
   };
 
@@ -226,12 +236,32 @@ export default function StatusStrip({ title }: StatusStripProps) {
                     style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <span>브라우저 알림</span>
+                    <span>{t("menu.webNotify")}</span>
                     <Switch size="small" checked={webNotify} onChange={handleToggleWebNotify} />
                   </div>
                 ),
               },
-              { key: "logout", label: "로그아웃", onClick: handleLogout },
+              {
+                key: "language",
+                label: (
+                  <div
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <span>{t("menu.language")}</span>
+                    <Segmented
+                      size="small"
+                      value={lang}
+                      options={[
+                        { label: "한국어", value: "ko" },
+                        { label: "EN", value: "en" },
+                      ]}
+                      onChange={(value) => setLang(value as Lang)}
+                    />
+                  </div>
+                ),
+              },
+              { key: "logout", label: t("menu.logout"), onClick: handleLogout },
             ],
           }}
         >

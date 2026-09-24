@@ -7,6 +7,7 @@ import { TeamProvider } from "./auth/TeamContext";
 import { ClusterFilterProvider, useClusterFilter } from "./auth/ClusterFilterContext";
 import StatusStrip from "./components/StatusStrip";
 import { monoFontFamily, palette } from "./theme";
+import { useI18n, type TranslationKey } from "./i18n";
 import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
@@ -25,45 +26,49 @@ import Admin from "./pages/Admin";
 
 const { Sider, Content } = Layout;
 
-const sections = [
-  { key: "alerts", label: "Alerts", path: "/alerts" },
-  { key: "rules", label: "Rules", path: "/rules" },
-  { key: "silences", label: "Silences", path: "/silences" },
-  { key: "channels", label: "Channels", path: "/channels" },
-  { key: "templates", label: "템플릿", path: "/templates" },
-  { key: "routes", label: "Routes", path: "/routes" },
-  { key: "shares", label: "공유", path: "/shares" },
-  { key: "stats", label: "통계", path: "/stats" },
+const sections: { key: string; titleKey: TranslationKey; path: string }[] = [
+  { key: "alerts", titleKey: "nav.alerts", path: "/alerts" },
+  { key: "rules", titleKey: "nav.rules", path: "/rules" },
+  { key: "silences", titleKey: "nav.silences", path: "/silences" },
+  { key: "channels", titleKey: "nav.channels", path: "/channels" },
+  { key: "templates", titleKey: "nav.templates", path: "/templates" },
+  { key: "routes", titleKey: "nav.routes", path: "/routes" },
+  { key: "shares", titleKey: "nav.shares", path: "/shares" },
+  { key: "stats", titleKey: "nav.stats", path: "/stats" },
 ];
 
-// Path -> section title for the StatusStrip's left-hand label. Kept next to
-// `sections`/selectedKeys below since both are derived from the same route
+// Path -> section title key for the StatusStrip's left-hand label. Kept next
+// to `sections`/selectedKeys below since both are derived from the same route
 // table -- most specific path first (see selectedKeys' own note on why
 // "/alerts/history" has to win over "/alerts").
-const TITLE_BY_PATH: { path: string; title: string }[] = [
-  { path: "/alerts/history", title: "알럿 이력" },
-  ...sections.map((s) => ({ path: s.path, title: s.label })),
-  { path: "/team", title: "팀 설정" },
-  { path: "/admin", title: "관리자" },
+const TITLE_KEY_BY_PATH: { path: string; titleKey: TranslationKey }[] = [
+  { path: "/alerts/history", titleKey: "nav.history" },
+  ...sections.map((s) => ({ path: s.path, titleKey: s.titleKey })),
+  { path: "/team", titleKey: "nav.team" },
+  { path: "/admin", titleKey: "nav.admin" },
 ];
 
 function AppLayout() {
   const { user } = useAuth();
   const location = useLocation();
   const { isError: clustersError } = useClusterFilter();
+  const { t } = useI18n();
 
   const menuItems = useMemo(() => {
     const items = sections.map((section) => ({
       key: section.path,
-      label: <Link to={section.path}>{section.label}</Link>,
+      label: <Link to={section.path}>{t(section.titleKey)}</Link>,
     }));
-    items.push({ key: "/alerts/history", label: <Link to="/alerts/history">알럿 이력</Link> });
-    items.push({ key: "/team", label: <Link to="/team">팀 설정</Link> });
+    items.push({
+      key: "/alerts/history",
+      label: <Link to="/alerts/history">{t("nav.history")}</Link>,
+    });
+    items.push({ key: "/team", label: <Link to="/team">{t("nav.team")}</Link> });
     if (user?.is_admin) {
-      items.push({ key: "/admin", label: <Link to="/admin">관리자</Link> });
+      items.push({ key: "/admin", label: <Link to="/admin">{t("nav.admin")}</Link> });
     }
     return items;
-  }, [user]);
+  }, [user, t]);
 
   const selectedKeys = useMemo(() => {
     // "/alerts/history" must be checked before "/alerts" -- both match a
@@ -75,9 +80,9 @@ function AppLayout() {
   }, [location.pathname]);
 
   const sectionTitle = useMemo(() => {
-    const match = TITLE_BY_PATH.find((entry) => location.pathname.startsWith(entry.path));
-    return match?.title ?? "K8s Alert Manager";
-  }, [location.pathname]);
+    const match = TITLE_KEY_BY_PATH.find((entry) => location.pathname.startsWith(entry.path));
+    return match ? t(match.titleKey) : t("app.title");
+  }, [location.pathname, t]);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -98,7 +103,7 @@ function AppLayout() {
               type="error"
               showIcon
               style={{ marginBottom: 16 }}
-              message="클러스터 목록을 불러오지 못했습니다 — 표시된 목록이 불완전할 수 있습니다"
+              message={t("shell.clustersLoadError")}
             />
           )}
           <Outlet />
