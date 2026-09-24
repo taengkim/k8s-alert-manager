@@ -334,7 +334,7 @@ export const ko = {
   "channels.testSuccess": "테스트 알림을 발송했습니다",
   "channels.testError": "테스트 발송에 실패했습니다",
   "channels.deleteConfirm": "이 채널을 삭제하시겠습니까?",
-  "channels.addButton": "채널 추가",
+  "channels.addButton": "채널 생성",
   "channels.editTitle": "채널 수정",
   "channels.typeRequired": "타입을 선택하세요",
   "channels.messageTemplateLabel": "메시지 템플릿",
@@ -446,7 +446,7 @@ export const ko = {
   "routes.deleteSuccess": "규칙이 삭제되었습니다",
   "routes.channelCount": "{count}개",
   "routes.deleteConfirm": "이 규칙을 삭제하시겠습니까?",
-  "routes.createButton": "규칙 생성",
+  "routes.createButton": "라우팅 규칙 생성",
   "routes.empty": "규칙이 없습니다",
 
   // -- routeEditor --
@@ -692,7 +692,7 @@ export const ko = {
   "adminClusters.rotateConfirmDesc": "기존 토큰은 즉시 무효화됩니다.",
   "adminClusters.rotateButton": "토큰 회전",
   "adminClusters.deleteConfirm": "이 클러스터를 삭제하시겠습니까?",
-  "adminClusters.addButton": "클러스터 추가",
+  "adminClusters.addButton": "클러스터 생성",
   "adminClusters.editTitleWithName": "클러스터 수정 — {name}",
   "adminClusters.nameSlugLabel": "이름 (slug)",
   "adminClusters.nameLockedHelp": "생성 후 변경할 수 없습니다",
