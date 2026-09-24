@@ -1,15 +1,19 @@
 """Tests for app/worker/outbox.py: claim/deliver/backoff/lease lifecycle.
 
-Only the SQLite claim_batch branch is exercised here (the whole test suite
-runs against an in-memory SQLite db -- see tests/conftest.py); the
-Postgres `FOR UPDATE SKIP LOCKED` branch is straightforward, well-trodden
-SQL and isn't covered by an automated test in this repo, since that would
-require a live Postgres instance.
+Most of this file exercises the SQLite claim_batch branch (the default test
+run's in-memory SQLite db -- see tests/conftest.py). The Postgres
+`FOR UPDATE SKIP LOCKED` branch additionally gets one concurrency test of
+its own (see test_claim_batch_concurrent_postgres_sessions_claim_disjoint_
+rows below) that only runs against a real Postgres instance -- set
+KAM_DATABASE_URL to the docker-compose.dev.yml `postgres` profile's URL
+(see deploy/README.md) before `uv run pytest`; it skips itself otherwise.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
@@ -200,6 +204,57 @@ async def test_claim_batch_respects_limit(app) -> None:
 
         claimed = await claim_batch(session, "worker-1", limit=2)
         assert len(claimed) == 2
+
+
+async def test_claim_batch_concurrent_postgres_sessions_claim_disjoint_rows(app) -> None:
+    """Two workers racing `claim_batch` against the same due rows, on real
+    Postgres, must never both claim the same row -- the whole point of
+    `FOR UPDATE SKIP LOCKED` (see claim_batch's docstring). Deferred all the
+    way from Phase 9 (routing/outbox) to this packaging phase, since it
+    needs a live Postgres instance rather than the default in-memory SQLite
+    the rest of this file runs against (see tests/conftest.py).
+    """
+    async with db_module.async_session_factory() as probe:
+        dialect = probe.get_bind().dialect.name
+    if dialect != "postgresql":
+        pytest.skip(
+            "exercises the Postgres FOR UPDATE SKIP LOCKED claim_batch branch; "
+            "set KAM_DATABASE_URL to a postgresql+asyncpg:// URL to run this"
+        )
+
+    total_rows = 40
+    per_worker_limit = 25  # > total_rows / 2, so a naive (non-locking) claim
+    # would very likely double-claim at least one row if run without SKIP
+    # LOCKED protecting it.
+
+    async with db_module.async_session_factory() as session:
+        team, cluster, channel = await _setup(session)
+        rows = []
+        for i in range(total_rows):
+            event = await _create_event(session, cluster, team, fingerprint=f"fp-{i}")
+            rows.append(await _create_outbox_row(session, team, channel, event))
+        await session.commit()
+        all_ids = {row.id for row in rows}
+
+    session_a = db_module.async_session_factory()
+    session_b = db_module.async_session_factory()
+    try:
+        claimed_a, claimed_b = await asyncio.gather(
+            claim_batch(session_a, "worker-a", limit=per_worker_limit),
+            claim_batch(session_b, "worker-b", limit=per_worker_limit),
+        )
+    finally:
+        await session_a.close()
+        await session_b.close()
+
+    ids_a = {row.id for row in claimed_a}
+    ids_b = {row.id for row in claimed_b}
+
+    assert not (ids_a & ids_b), (
+        f"worker-a and worker-b both claimed: {ids_a & ids_b} -- SKIP LOCKED "
+        "should make concurrent claims disjoint"
+    )
+    assert ids_a | ids_b == all_ids, "every due row must be claimed exactly once between the two workers"
 
 
 async def test_deliver_success_marks_delivered(app) -> None:

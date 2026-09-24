@@ -110,7 +110,15 @@ async def claim_due_actions(
         if not claimed_ids:
             return []
         result = await session.execute(
-            select(ScheduledAction).where(ScheduledAction.id.in_(claimed_ids))
+            select(ScheduledAction)
+            .where(ScheduledAction.id.in_(claimed_ids))
+            # See app.worker.outbox.claim_batch's identical follow-up SELECT
+            # for why this is needed: this session's `expire_on_commit=False`
+            # means a row already loaded here (e.g. by whoever staged this
+            # very action) would otherwise come back with its stale
+            # pre-claim status/due_at instead of what the UPDATE above just
+            # committed.
+            .execution_options(populate_existing=True)
         )
         return list(result.scalars().all())
 
