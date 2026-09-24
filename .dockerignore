@@ -1,0 +1,31 @@
+# Keep the build context small and avoid baking host-local state into the
+# image. Mirrors .gitignore where applicable, plus VCS/dev-only dirs.
+
+.git/
+.omc/
+.superpowers/
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/kam.db
+backend/kam.db-shm
+backend/kam.db-wal
+backend/app/static/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/**/*.tsbuildinfo
+
+# Dev-only infra, not needed inside the image
+dev/
+docs/
+plugins/
+deploy/k8s/
+
+.env
+.DS_Store
