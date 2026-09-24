@@ -23,6 +23,7 @@ import type { RuleOut } from "../api/rules";
 import type { Cluster } from "../api/types";
 import RuleImportModal from "../components/RuleImportModal";
 import { severityTagStyle } from "../theme";
+import { useI18n } from "../i18n";
 
 interface RuleRow extends RuleOut {
   cluster: Cluster;
@@ -37,6 +38,7 @@ const HEALTH_BADGE: Record<string, { status: "success" | "error" | "default"; te
 };
 
 export default function Rules() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
@@ -89,12 +91,12 @@ export default function Rules() {
   const deleteMutation = useMutation({
     mutationFn: (rule: RuleRow) => deleteRule(teamId!, rule.cluster.id, rule.slug),
     onSuccess: (_data, rule) => {
-      message.success("룰이 삭제되었습니다");
+      message.success(t("rules.deleteSuccess"));
       queryClient.invalidateQueries({ queryKey: ["rules", teamId, rule.cluster.id] });
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `삭제에 실패했습니다: ${err.detail}` : "삭제에 실패했습니다",
+        err instanceof ApiError ? `${t("common.deleteError")}: ${err.detail}` : t("common.deleteError"),
       );
     },
   });
@@ -126,7 +128,7 @@ export default function Rules() {
     },
     onError: (err) => {
       message.error(
-        err instanceof ApiError ? `내보내기에 실패했습니다: ${err.detail}` : "내보내기에 실패했습니다",
+        err instanceof ApiError ? `${t("common.exportError")}: ${err.detail}` : t("common.exportError"),
       );
     },
   });
@@ -134,34 +136,34 @@ export default function Rules() {
   if (teams.length === 0 || !currentTeam) {
     return (
       <div>
-        <h2>룰</h2>
+        <h2>{t("rules.title")}</h2>
         <Alert
           type="info"
           showIcon
-          message="소속된 팀이 없습니다"
-          description="관리자에게 팀 추가를 요청하세요."
+          message={t("common.noTeamAssigned")}
+          description={t("common.requestTeamAssignment")}
         />
       </div>
     );
   }
 
   const columns = [
-    { title: "알럿명", dataIndex: "alert_name", key: "alert_name" },
-    { title: "슬러그", dataIndex: "slug", key: "slug" },
+    { title: t("alerts.alertName"), dataIndex: "alert_name", key: "alert_name" },
+    { title: t("rules.slugColumn"), dataIndex: "slug", key: "slug" },
     {
-      title: "클러스터",
+      title: t("common.cluster"),
       key: "cluster",
       width: 140,
       render: (_: unknown, record: RuleRow) => <Tag>{record.cluster.display_name}</Tag>,
     },
     {
-      title: "심각도",
+      title: t("common.severity"),
       dataIndex: "severity",
       key: "severity",
       render: (value: string) => <Tag style={severityTagStyle(value)}>{value}</Tag>,
     },
     {
-      title: "표현식",
+      title: t("rules.exprColumn"),
       dataIndex: "expr",
       key: "expr",
       ellipsis: true,
@@ -179,7 +181,7 @@ export default function Rules() {
       render: (value: string | null) => value ?? <Text type="secondary">-</Text>,
     },
     {
-      title: "상태",
+      title: t("common.status"),
       dataIndex: "health",
       key: "health",
       width: 100,
@@ -198,10 +200,10 @@ export default function Rules() {
             size="small"
             onClick={() => navigate(`/rules/${record.slug}/edit?cluster=${record.cluster.id}`)}
           >
-            수정
+            {t("common.edit")}
           </Button>
           <Popconfirm
-            title="이 룰을 삭제하시겠습니까?"
+            title={t("rules.deleteConfirm")}
             onConfirm={() => deleteMutation.mutate(record)}
           >
             <Button
@@ -209,7 +211,7 @@ export default function Rules() {
               danger
               loading={deleteMutation.isPending && deleteMutation.variables?.slug === record.slug}
             >
-              삭제
+              {t("common.delete")}
             </Button>
           </Popconfirm>
         </div>
@@ -228,18 +230,21 @@ export default function Rules() {
         }}
       >
         <h2 style={{ margin: 0 }}>
-          룰{" "}
+          {t("rules.title")}{" "}
           <Text type="secondary" style={{ fontSize: 14, fontWeight: "normal" }}>
-            ({rules.length}건)
+            ({t("alerts.count", { count: rules.length })})
           </Text>
         </h2>
         <Space>
           <Button loading={exportMutation.isPending} onClick={() => exportMutation.mutate()}>
-            내보내기{selectedRowKeys.length > 0 ? ` (${selectedRowKeys.length}건 선택)` : ""}
+            {t("common.export")}
+            {selectedRowKeys.length > 0
+              ? t("rules.selectedSuffix", { count: selectedRowKeys.length })
+              : ""}
           </Button>
-          {isOwner && <Button onClick={() => setImportModalOpen(true)}>가져오기</Button>}
+          {isOwner && <Button onClick={() => setImportModalOpen(true)}>{t("common.import")}</Button>}
           <Button type="primary" onClick={() => navigate("/rules/new")}>
-            룰 생성
+            {t("rules.createButton")}
           </Button>
         </Space>
       </div>
@@ -258,7 +263,7 @@ export default function Rules() {
         dataSource={rules}
         columns={columns}
         pagination={{ pageSize: 20 }}
-        locale={{ emptyText: <Empty description="룰이 없습니다" /> }}
+        locale={{ emptyText: <Empty description={t("rules.empty")} /> }}
       />
 
       <RuleImportModal
