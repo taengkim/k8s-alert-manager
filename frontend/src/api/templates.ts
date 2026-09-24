@@ -96,6 +96,6 @@ export function previewTemplate(body: TemplatePreviewInput): Promise<TemplatePre
   return apiFetch<TemplatePreviewResult>("/templates/preview", { method: "POST", body });
 }
 
-export function listTemplateVariables(): Promise<TemplateVariable[]> {
-  return apiFetch<TemplateVariable[]>("/templates/variables");
+export function listTemplateVariables(kind: string = "alert"): Promise<TemplateVariable[]> {
+  return apiFetch<TemplateVariable[]>(`/templates/variables?kind=${encodeURIComponent(kind)}`);
 }

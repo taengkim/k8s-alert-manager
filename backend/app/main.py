@@ -21,6 +21,7 @@ from app.api.clusters import router as clusters_router
 from app.api.events import router as events_router
 from app.api.metrics import router as metrics_router
 from app.api.ops import router as ops_router
+from app.api.reports import router as reports_router
 from app.api.routes import router as routes_router
 from app.api.routes import team_router as routes_team_router
 from app.api.rules import router as rules_router
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(shared_with_me_router)
     app.include_router(stats_router)
     app.include_router(audit_router)
+    app.include_router(reports_router)
     return app
 
 

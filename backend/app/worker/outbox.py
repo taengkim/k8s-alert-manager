@@ -34,6 +34,7 @@ from app.worker.heartbeat import sweep as run_heartbeat_sweep
 from app.worker.scheduler import (
     maybe_run_retention_sweep,
     recover_stale_claims,
+    run_report_sweep,
     run_scheduler_tick,
     schedule_renotify,
 )
@@ -217,7 +218,21 @@ async def deliver(row: NotificationOutbox, registry: ChannelRegistry, session: A
             else None
         )
 
-        if row.is_digest:
+        if row.trigger == "report":
+            # Phase 20: a scheduled-report row has no alert_event_id,
+            # routing_rule_id, or template resolution of its own -- rendering
+            # already happened once, at schedule-sweep time
+            # (app.worker.scheduler.dispatch_report_schedule), and the
+            # result is frozen into row.payload["rendered"]. There's no
+            # per-attempt "current template" concept to re-resolve the way
+            # there is for an alert: a render failure at generation time
+            # already fell back to the default report template there (see
+            # app.services.reports.render_report), so there's nothing left
+            # to fall back to on a delivery retry either.
+            message = RenderedMessage(**row.payload["rendered"])
+            async with asyncio.timeout(DELIVERY_TIMEOUT_SECONDS):
+                await instance.send_message(message)
+        elif row.is_digest:
             # Phase 16: a digest aggregate row has no routing_rule_id of its
             # own (rule is None, per row.routing_rule_id being NULL -- see
             # app.worker.scheduler._dispatch_digest_flush) and no single
@@ -373,6 +388,7 @@ async def run_loop(
     lease_timeout: timedelta = DEFAULT_LEASE_TIMEOUT,
     scheduler_interval: float = 30.0,
     heartbeat_sweep_interval: float = HEARTBEAT_SWEEP_INTERVAL_SECONDS,
+    report_sweep_interval: float = 60.0,
     hub: Hub | None = None,
 ) -> None:
     """Poll for due outbox rows until `stop_event` is set.
@@ -396,10 +412,16 @@ async def run_loop(
     the one loop that already exists" reasoning as the scheduler/retention
     ticks above -- no separate task or stop_event handling of its own.
 
+    Phase 20: `app.worker.scheduler.run_report_sweep` ticks on its own fixed
+    `report_sweep_interval` (default 60s, per that phase's brief) -- same
+    "piggyback on the one loop that already exists, fixed interval, not
+    AppSetting-gated" reasoning as the heartbeat sweep above (a due report
+    schedule is comparatively rare -- checking every 60s is cheap).
+
     Robust by design: any exception during a tick (claim, deliver, lease
-    recovery, scheduler dispatch, retention, or heartbeat sweep) is logged
-    and swallowed so one bad iteration never kills the loop -- the next poll
-    just tries again.
+    recovery, scheduler dispatch, retention, heartbeat sweep, or report
+    sweep) is logged and swallowed so one bad iteration never kills the loop
+    -- the next poll just tries again.
 
     Phase 18: `hub` is optional (default `None`) and passed straight through
     to `app.worker.heartbeat.sweep` -- this module stays FastAPI-free and
@@ -414,6 +436,7 @@ async def run_loop(
     last_lease_recovery = time.monotonic() - lease_recovery_interval  # run once immediately
     last_scheduler_tick = time.monotonic() - scheduler_interval  # run once immediately
     last_heartbeat_sweep = time.monotonic() - heartbeat_sweep_interval  # run once immediately
+    last_report_sweep = time.monotonic() - report_sweep_interval  # run once immediately
     while not stop_event.is_set():
         try:
             if time.monotonic() - last_lease_recovery >= lease_recovery_interval:
@@ -441,6 +464,12 @@ async def run_loop(
                         "heartbeat sweep: cluster(s) went missing: %s", summary["went_missing"]
                     )
                 last_heartbeat_sweep = time.monotonic()
+
+            if time.monotonic() - last_report_sweep >= report_sweep_interval:
+                dispatched = await run_report_sweep(session_factory, worker_id)
+                if dispatched:
+                    logger.info("report sweep: dispatched %d schedule(s)", dispatched)
+                last_report_sweep = time.monotonic()
         except Exception:
             logger.exception("outbox worker: tick failed -- continuing")
 

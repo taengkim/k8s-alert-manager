@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, App, Button, Empty, Popconfirm, Space, Table, Tag, Typography } from "antd";
+import { Alert, App, Button, Empty, Popconfirm, Segmented, Space, Table, Tag, Typography } from "antd";
 import { useNavigate } from "react-router";
 import { useAuth } from "../auth/AuthProvider";
 import { useTeam } from "../auth/TeamContext";
@@ -10,12 +10,25 @@ import type { MessageTemplate } from "../api/templates";
 
 const { Text } = Typography;
 
+type KindFilter = "all" | "alert" | "report";
+
+const KIND_LABELS: Record<string, { label: string; color: string }> = {
+  alert: { label: "알럿", color: "blue" },
+  report: { label: "리포트", color: "green" },
+};
+
+function KindTag({ kind }: { kind: string }) {
+  const meta = KIND_LABELS[kind] ?? { label: kind, color: "default" };
+  return <Tag color={meta.color}>{meta.label}</Tag>;
+}
+
 export default function Templates() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const { currentTeam } = useTeam();
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
 
   const isOwner = useMemo(() => {
     if (!user || !currentTeam) return false;
@@ -64,10 +77,18 @@ export default function Templates() {
     );
   }
 
-  const templates = templatesQuery.data ?? [];
+  const allTemplates = templatesQuery.data ?? [];
+  const templates =
+    kindFilter === "all" ? allTemplates : allTemplates.filter((t) => t.kind === kindFilter);
 
   const columns = [
     { title: "이름", dataIndex: "name", key: "name" },
+    {
+      title: "종류",
+      dataIndex: "kind",
+      key: "kind",
+      render: (kind: string) => <KindTag kind={kind} />,
+    },
     {
       title: "설명",
       dataIndex: "description",
@@ -131,6 +152,17 @@ export default function Templates() {
           </Button>
         )}
       </div>
+
+      <Segmented
+        style={{ marginBottom: 16 }}
+        value={kindFilter}
+        onChange={(value) => setKindFilter(value as KindFilter)}
+        options={[
+          { label: "전체", value: "all" },
+          { label: "알럿", value: "alert" },
+          { label: "리포트", value: "report" },
+        ]}
+      />
 
       <Table<MessageTemplate>
         rowKey="id"

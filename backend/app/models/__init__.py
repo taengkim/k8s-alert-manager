@@ -10,6 +10,7 @@ from app.models.channel import Channel
 from app.models.cluster import Cluster
 from app.models.comment import AlertComment
 from app.models.outbox import NotificationOutbox
+from app.models.report import ReportSchedule, report_schedule_channels
 from app.models.routing import (
     RoutingMatcher,
     RoutingRule,
@@ -34,6 +35,7 @@ __all__ = [
     "Cluster",
     "MessageTemplate",
     "NotificationOutbox",
+    "ReportSchedule",
     "RoutingMatcher",
     "RoutingRule",
     "ScheduledAction",
@@ -42,6 +44,7 @@ __all__ = [
     "TeamLdapMapping",
     "TeamMembership",
     "User",
+    "report_schedule_channels",
     "routing_rule_channels",
     "routing_rule_escalation_channels",
 ]
