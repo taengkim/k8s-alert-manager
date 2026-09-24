@@ -186,6 +186,7 @@ function TeamsTab() {
           setFormError(null);
         }}
         onOk={() => createForm.submit()}
+        okText={t("common.save")}
         confirmLoading={createMutation.isPending}
         destroyOnClose
       >
@@ -226,6 +227,7 @@ function TeamsTab() {
           setFormError(null);
         }}
         onOk={() => editForm.submit()}
+        okText={t("common.save")}
         confirmLoading={editMutation.isPending}
         destroyOnClose
       >

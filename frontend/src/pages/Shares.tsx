@@ -261,6 +261,7 @@ function OutgoingTab({ teamId }: { teamId: number }) {
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
+        okText={t("common.save")}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
         destroyOnClose
         width={640}

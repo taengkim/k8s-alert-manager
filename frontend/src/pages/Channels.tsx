@@ -290,6 +290,7 @@ function ChannelsTable({ teamId, isOwner }: ChannelsTableProps) {
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
+        okText={t("common.save")}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
         destroyOnClose
       >

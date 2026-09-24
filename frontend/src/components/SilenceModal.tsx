@@ -109,6 +109,7 @@ export default function SilenceModal({
       open={open}
       onCancel={handleClose}
       onOk={() => form.submit()}
+      okText={t("common.save")}
       confirmLoading={mutation.isPending}
       destroyOnClose
     >
