@@ -232,6 +232,7 @@ function MembersTab({ teamId, isOwner, isAdmin }: MembersTabProps) {
           setFormError(null);
         }}
         onOk={() => form.submit()}
+        okText={t("common.save")}
         confirmLoading={addMemberMutation.isPending}
         destroyOnClose
       >
@@ -365,6 +366,7 @@ function MappingsTab({ teamId, isOwner }: MappingsTabProps) {
           setFormError(null);
         }}
         onOk={() => form.submit()}
+        okText={t("common.save")}
         confirmLoading={addMappingMutation.isPending}
         destroyOnClose
       >
@@ -708,6 +710,7 @@ function ReportsTab({ teamId, isOwner }: ReportsTabProps) {
         open={modalOpen}
         onCancel={closeModal}
         onOk={() => form.submit()}
+        okText={t("common.save")}
         confirmLoading={createMutation.isPending || updateMutation.isPending}
         destroyOnClose
         width={560}

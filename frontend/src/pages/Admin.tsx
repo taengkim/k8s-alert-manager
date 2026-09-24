@@ -186,6 +186,7 @@ function TeamsTab() {
           setFormError(null);
         }}
         onOk={() => createForm.submit()}
+        okText={t("common.save")}
         confirmLoading={createMutation.isPending}
         destroyOnClose
       >
@@ -226,6 +227,7 @@ function TeamsTab() {
           setFormError(null);
         }}
         onOk={() => editForm.submit()}
+        okText={t("common.save")}
         confirmLoading={editMutation.isPending}
         destroyOnClose
       >
@@ -309,6 +311,7 @@ function UsersTab() {
       render: (value: boolean, record: AdminUser) => (
         <Switch
           checked={value}
+          loading={patchMutation.isPending && patchMutation.variables?.id === record.id}
           onChange={(checked) => patchMutation.mutate({ id: record.id, body: { is_active: checked } })}
         />
       ),
