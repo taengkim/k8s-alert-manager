@@ -86,9 +86,18 @@ class NotificationOutbox(Base):
     # Phase 16: set on a parked row once app.worker.scheduler._dispatch_digest_flush
     # aggregates it into a digest send -- points at that aggregate
     # (is_digest=True) row. NULL for every non-parked row, and for a parked
-    # row still awaiting its flush. ON DELETE SET NULL: deleting the
-    # aggregate row (retention purge) must not delete the parked rows it
-    # summarized, which still record real delivery history of their own.
+    # row still awaiting its flush. A parked row records NO delivery history
+    # of its own once linked -- the aggregate row owns it from here on (see
+    # _dispatch_digest_flush) -- so under normal operation
+    # app.services.retention._purge_notification_outbox force-deletes a
+    # parked row's children ALONGSIDE its aggregate, the same batch, the
+    # moment the aggregate becomes purge-eligible; it never relies on this
+    # FK's ON DELETE SET NULL to do that cleanup. SET NULL here is only a
+    # defensive backstop against an aggregate row deleted through some other
+    # path (a direct DB edit, a future admin tool, ...) -- it keeps a
+    # surviving parked row's own row intact (not cascaded away) rather than
+    # crashing on a dangling FK, even though that parked row is then, in
+    # practice, indistinguishable from one still awaiting a flush.
     digested_into_id: Mapped[int | None] = mapped_column(
         ForeignKey("notification_outbox.id", ondelete="SET NULL"), nullable=True
     )

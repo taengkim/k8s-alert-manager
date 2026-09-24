@@ -169,6 +169,14 @@ class EmailChannel(NotificationChannel):
         if not notifications:
             return
         count = len(notifications)
+        # The subject/body's one "team" label is the FIRST item's team_slug,
+        # not necessarily every item's -- a channel parking notifications
+        # from a cross-team escalation (Channel.allow_cross_team_escalation)
+        # can bundle items whose own routing rule belongs to a different
+        # team than the channel's owner. Deliberate simplification: this
+        # phase doesn't attempt a "mixed teams" label, since the channel
+        # itself always belongs to exactly one team and that's the audience
+        # actually reading the digest.
         team_slug = notifications[0].team_slug
         context = {"count": count, "team": team_slug, "items": _digest_items(notifications)}
 

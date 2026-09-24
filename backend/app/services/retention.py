@@ -144,6 +144,57 @@ async def _purge_alert_events(
             return total
 
 
+async def _purge_notification_outbox(
+    session_factory: async_sessionmaker[AsyncSession], *, cutoff: datetime
+) -> int:
+    """Purge `notification_outbox` rows past their retention window --
+    'delivered'/'dead' rows older than `cutoff`, same base query as every
+    other `_delete_batches` target, EXCEPT: when a row in that batch is a
+    digest AGGREGATE row (`is_digest=True`), this also force-deletes every
+    row it aggregated (`digested_into_id` pointing at it), regardless of
+    THEIR own age or status (Phase 16).
+
+    Without this, a parked ('digested') row would outlive its aggregate --
+    `digested_into_id`'s `ON DELETE SET NULL` would fire, leaving a row
+    whose real delivery/retry history was entirely superseded by that now-
+    gone aggregate (see `app.worker.scheduler._dispatch_digest_flush`)
+    looking exactly like one still awaiting a flush: a dead end in the
+    notification history UI, potentially forever (a parked row tied to a
+    firing event that never resolves is never swept via its own event
+    either -- `_purge_alert_events` never purges a firing event). Mirrors
+    `_purge_alert_events`'s own "force-delete dependents regardless of
+    their own window" pattern below, just in the other direction (a parked
+    row whose OWNING EVENT is purged first is unaffected by this function --
+    it already goes with that event, aggregate-linked or not).
+
+    Returns the true count of `notification_outbox` rows removed (the
+    batch's own qualifying rows PLUS every child force-deleted alongside
+    an aggregate among them) -- unlike `_purge_alert_events`'s `alert_events`
+    return value, which deliberately does NOT count the outbox rows it
+    force-deletes alongside each event, this field exists specifically to
+    summarize `notification_outbox` deletions, so undercounting here would
+    just be a wrong number in the purge summary/audit log for no reason.
+    """
+    select_ids = select(NotificationOutbox.id).where(
+        NotificationOutbox.status.in_(("delivered", "dead")), NotificationOutbox.created_at < cutoff
+    )
+    total = 0
+    while True:
+        async with session_factory() as session:
+            result = await session.execute(select_ids.limit(BATCH_SIZE))
+            ids = [row[0] for row in result.all()]
+            if not ids:
+                return total
+            children_result = await session.execute(
+                delete(NotificationOutbox).where(NotificationOutbox.digested_into_id.in_(ids))
+            )
+            await session.execute(delete(NotificationOutbox).where(NotificationOutbox.id.in_(ids)))
+            await session.commit()
+        total += len(ids) + (children_result.rowcount or 0)
+        if len(ids) < BATCH_SIZE:
+            return total
+
+
 async def purge(
     session_factory: async_sessionmaker[AsyncSession], *, actor_user_id: int | None = None
 ) -> dict[str, int]:
@@ -178,14 +229,9 @@ async def purge(
         delete_by_ids=lambda ids: delete(ScheduledAction).where(ScheduledAction.id.in_(ids)),
     )
 
-    summary.notification_outbox = await _delete_batches(
+    summary.notification_outbox = await _purge_notification_outbox(
         session_factory,
-        select_ids=select(NotificationOutbox.id).where(
-            NotificationOutbox.status.in_(("delivered", "dead")),
-            NotificationOutbox.created_at
-            < now - timedelta(days=settings["retention.notification_outbox_days"]),
-        ),
-        delete_by_ids=lambda ids: delete(NotificationOutbox).where(NotificationOutbox.id.in_(ids)),
+        cutoff=now - timedelta(days=settings["retention.notification_outbox_days"]),
     )
 
     summary.alert_events = await _purge_alert_events(
