@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { Dropdown, Layout, Menu } from "antd";
+import { useMemo, useState } from "react";
+import { App as AntApp, Dropdown, Layout, Menu, Switch, Tooltip } from "antd";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router";
 import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import RequireAuth from "./auth/RequireAuth";
@@ -7,6 +7,12 @@ import { TeamProvider } from "./auth/TeamContext";
 import { ClusterFilterProvider } from "./auth/ClusterFilterContext";
 import TeamSwitcher from "./components/TeamSwitcher";
 import ClusterFilterSelect from "./components/ClusterFilterSelect";
+import {
+  isWebNotifyEnabled,
+  setWebNotifyEnabled,
+  useAlertStreamStatus,
+  type AlertStreamStatus,
+} from "./api/useAlertStream";
 import Alerts from "./pages/Alerts";
 import AlertHistory from "./pages/AlertHistory";
 import Channels from "./pages/Channels";
@@ -35,10 +41,43 @@ const sections = [
   { key: "shares", label: "공유", path: "/shares" },
 ];
 
+const CONNECTION_LABEL: Record<AlertStreamStatus, string> = {
+  open: "실시간 연결됨",
+  connecting: "재연결 중...",
+  closed: "연결 끊김",
+};
+
+function ConnectionIndicator() {
+  const status = useAlertStreamStatus();
+  return (
+    <Tooltip title={CONNECTION_LABEL[status]}>
+      <span
+        style={{
+          display: "inline-block",
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: status === "open" ? "#52c41a" : "#999",
+        }}
+      />
+    </Tooltip>
+  );
+}
+
 function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { message } = AntApp.useApp();
+  const [webNotify, setWebNotify] = useState(isWebNotifyEnabled);
+
+  const handleToggleWebNotify = async (checked: boolean) => {
+    const granted = await setWebNotifyEnabled(checked);
+    setWebNotify(granted);
+    if (checked && !granted) {
+      message.warning("브라우저 알림 권한이 거부되었습니다");
+    }
+  };
 
   const menuItems = useMemo(() => {
     const items = sections.map((section) => ({
@@ -84,9 +123,28 @@ function AppLayout() {
         >
           <span>K8s Alert Manager</span>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <ConnectionIndicator />
             <ClusterFilterSelect />
             <TeamSwitcher />
-            <Dropdown menu={{ items: [{ key: "logout", label: "로그아웃", onClick: handleLogout }] }}>
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "web-notify",
+                    label: (
+                      <div
+                        style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <span>브라우저 알림</span>
+                        <Switch size="small" checked={webNotify} onChange={handleToggleWebNotify} />
+                      </div>
+                    ),
+                  },
+                  { key: "logout", label: "로그아웃", onClick: handleLogout },
+                ],
+              }}
+            >
               <span style={{ cursor: "pointer", color: "white" }}>{user?.display_name} ▾</span>
             </Dropdown>
           </div>
