@@ -151,6 +151,18 @@ class EmailChannel(NotificationChannel):
         subject = strip_header_newlines(f"{self.config.subject_prefix} {msg.title}")
         await self._send_mime(subject, msg.body, msg.body_html)
 
+    async def send_message(self, msg: RenderedMessage) -> None:
+        """Phase 20 scheduled report delivery: an ordinary email, with no
+        alert-styled header/layout at all -- overrides `NotificationChannel`'s
+        default `send()`-adapter implementation so a report never has to flow
+        through a synthetic placeholder `AlertNotification` just to reach
+        this channel's own MIME-building code. `subject_prefix` still applies
+        (it's per-channel config, not an alert-specific concern), same as
+        `send()`; `msg.body`/`msg.body_html` are used exactly as rendered.
+        """
+        subject = strip_header_newlines(f"{self.config.subject_prefix} {msg.title}")
+        await self._send_mime(subject, msg.body, msg.body_html)
+
     async def send_batch(
         self, notifications: list[AlertNotification], msgs: list[RenderedMessage]
     ) -> None:

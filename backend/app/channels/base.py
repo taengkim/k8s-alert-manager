@@ -24,6 +24,19 @@ implementation (a plain per-item `send()` loop), so a third-party channel
 written before this phase keeps working unchanged, just without a genuine
 "one summary message" digest experience until it overrides `send_batch()`
 itself.
+
+Phase 20 adds `send_message()` for scheduled report delivery (see
+`app.services.reports`/`app.worker.scheduler.dispatch_report_schedule`): a
+report has no `AlertNotification` behind it at all -- there's no single
+alert, event, or trigger it's "about" -- so a channel receives just the
+already-rendered `RenderedMessage`. NOT breaking: the default implementation
+adapts to `send()` with a synthetic placeholder notification
+(`AlertNotification.example_info()`), so a third-party channel written
+before this phase still delivers a report (through whatever alert-shaped
+formatting its own `send()` applies) without any code changes, just without
+a genuine "plain message, no alert framing" experience until it overrides
+`send_message()` itself -- see `app/channels/email.py`'s `EmailChannel` for
+the built-in example.
 """
 
 from abc import ABC, abstractmethod
@@ -37,7 +50,11 @@ class AlertNotification(BaseModel):
     """Everything a channel needs to format and deliver one notification."""
 
     event_id: int | None  # None for a synthetic test send (see `example()`).
-    trigger: Literal["firing", "resolved", "test"]
+    # 'info' (Phase 20): the placeholder AlertNotification send_message()'s
+    # default adapter passes to send() -- never a real alert, just a
+    # structurally-valid stand-in so a channel that hasn't overridden
+    # send_message() still receives something shaped like what it expects.
+    trigger: Literal["firing", "resolved", "test", "info"]
     alertname: str
     severity: str | None
     namespace: str | None
@@ -77,6 +94,35 @@ class AlertNotification(BaseModel):
             ends_at=None,
             team_slug="platform",
             app_url="http://localhost:5173",
+            runbook_url=None,
+            grafana_url=None,
+        )
+
+    @classmethod
+    def example_info(cls) -> "AlertNotification":
+        """A synthetic, alert-less placeholder used by `send_message()`'s
+        default `send()` adapter (Phase 20: scheduled report delivery) --
+        every field here is a generic stand-in, never real alert data. The
+        actual report content lives entirely in the `RenderedMessage` passed
+        alongside it; this only exists so a channel that hasn't overridden
+        `send_message()` still gets a structurally valid `AlertNotification`
+        to work with (e.g. a webhook plugin that dumps `notification.
+        model_dump()` into its payload).
+        """
+        now = datetime.now(UTC)
+        return cls(
+            event_id=None,
+            trigger="info",
+            alertname="KamReport",
+            severity=None,
+            namespace=None,
+            cluster="-",
+            labels={},
+            annotations={},
+            starts_at=now,
+            ends_at=None,
+            team_slug="-",
+            app_url=None,
             runbook_url=None,
             grafana_url=None,
         )
@@ -171,6 +217,25 @@ class NotificationChannel(ABC):
         """
         for notification, msg in zip(notifications, msgs, strict=True):
             await self.send(notification, msg)
+
+    async def send_message(self, msg: RenderedMessage) -> None:
+        """Deliver `msg` with no alert/event behind it at all (Phase 20:
+        scheduled report delivery -- see `app.services.reports` and
+        `app/worker/outbox.py`'s `deliver()`, which calls this instead of
+        `send()` for a `trigger == 'report'` outbox row).
+
+        Default implementation, kept for third-party channel backward
+        compatibility (a plugin written before this phase never overrode
+        this method): adapts to `send()` using a synthetic placeholder
+        notification (`AlertNotification.example_info()`) alongside the real
+        `msg` -- same "old plugin keeps working, just without the newer,
+        more specific experience" posture as `send_batch()`'s own default.
+
+        A channel that wants a genuine "plain message" delivery -- no
+        alert-shaped framing at all -- should override this instead (see
+        `app/channels/email.py`'s `EmailChannel` for the built-in example).
+        """
+        await self.send(AlertNotification.example_info(), msg)
 
     async def send_test(self) -> None:
         """Send a synthetic test notification, rendered from this channel
