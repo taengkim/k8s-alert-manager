@@ -257,6 +257,7 @@ interface PatchUserContext {
 
 function UsersTab() {
   const queryClient = useQueryClient();
+  const { message } = App.useApp();
   const usersQuery = useQuery({ queryKey: ["admin-users"], queryFn: listUsers });
 
   const patchMutation = useMutation<AdminUser, Error, PatchUserVars, PatchUserContext>({
@@ -269,10 +270,13 @@ function UsersTab() {
       );
       return { previous };
     },
-    onError: (_err, _vars, context) => {
+    onError: (err, _vars, context) => {
       if (context?.previous) {
         queryClient.setQueryData(["admin-users"], context.previous);
       }
+      message.error(
+        err instanceof ApiError ? `사용자 수정에 실패했습니다: ${err.detail}` : "사용자 수정에 실패했습니다",
+      );
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
