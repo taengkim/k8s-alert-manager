@@ -141,6 +141,7 @@ deploy/           # Dockerfile(멀티스테이지), k8s 매니페스트(최소 R
 dev/              # kind 설정, kube-prometheus-stack values, LDAP 부트스트랩, setup/teardown
 plugins/          # 채널 플러그인 참조 구현 (example_webhook_channel)
 docs/design.md    # 승인된 전체 설계 문서
+docs/channel-plugins.md  # 채널 플러그인 개발·등록 가이드
 ```
 
 ## 시작하기 (로컬 올인원 개발 환경)
@@ -236,16 +237,16 @@ cd backend && KAM_DATABASE_URL=postgresql+asyncpg://kam:kam@localhost:5432/kam u
 
 ## 채널 플러그인 개발
 
-`NotificationChannel` ABC(`backend/app/channels/base.py`)를 구현한 `.py` 파일을
-`KAM_PLUGINS_DIR`에 두거나 `kam.channels` entry point로 등록하면 채널 타입이 추가됩니다.
+이메일 외 채널(Slack, 웹훅, 사내 메신저 등)은 `NotificationChannel` ABC를 구현한 파이썬 클래스
+하나로 추가합니다. 설정 폼(JSON Schema → UI 자동 생성)·암호화 저장·재시도·폭풍 제어·템플릿
+렌더링은 앱이 처리하므로 프론트엔드 작업이 필요 없습니다.
 
-- `config_schema`(Pydantic 모델)의 JSON Schema가 API로 노출되어 **프론트엔드가 설정 폼을
-  자동 렌더링**합니다 — 플러그인 추가에 프론트 작업이 필요 없습니다.
-- 구현 포인트: `send(notification, rendered_message)` 필수,
-  `send_batch()`(digest 묶음)와 `send_message()`(리포트 등 알럿 없는 콘텐츠)는 선택
-  오버라이드(기본 어댑터 제공).
-- 채널 설정은 DB에 Fernet 암호화로 저장됩니다.
+- 등록 방식: `.py` 파일을 `KAM_PLUGINS_DIR`에 두거나, 패키지의 `kam.channels` entry point로 선언
+- 필수 구현: `send(notification, msg)` — 실패 시 `ChannelDeliveryError` raise(워커가 재시도)
+- 선택 구현: `send_batch()`(다이제스트 한 통), `send_message()`(리포트), `default_templates`
 
+인터페이스 레퍼런스, 최소 구현 예제, 등록/배포 방법, UI에서 채널 인스턴스 만들기, 트러블슈팅은
+**[`docs/channel-plugins.md`](./docs/channel-plugins.md)** 를 참고하세요.
 참조 구현: [`plugins/example_webhook_channel/`](./plugins/example_webhook_channel/)
 
 ## 멀티 클러스터 (개발 시뮬레이션)
